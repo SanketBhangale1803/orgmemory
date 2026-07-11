@@ -1,0 +1,12 @@
+Jenkins pipeline build #418
+Stage: integration-test
+Service: reddit_service
+
+ERROR KafkaTimeoutError: broker kafka:9092 returned advertised address localhost:9092
+FAILED integration test test_consumer_receives_reddit_post after 60 seconds
+Build marked FAILURE
+
+Operator notes:
+- Inspect the integration-test log and archive the timeout output.
+- Verify the compose listener configuration used by the Jenkins agent.
+- Re-run the failed stage only after Kafka health is confirmed.

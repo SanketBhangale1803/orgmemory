@@ -1,0 +1,20 @@
+services:
+  kafka:
+    image: apache/kafka:latest
+    environment:
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+  reddit_service:
+    image: company/reddit-service:latest
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      - kafka
+  instagram_service:
+    image: company/instagram-service:latest
+    environment:
+      MEDIA_STORAGE_PATH: /var/lib/instagram/media
+    volumes:
+      - instagram_media:/var/lib/instagram/media
+volumes:
+  instagram_media:

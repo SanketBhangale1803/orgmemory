@@ -1,0 +1,67 @@
+services:
+  arcadedb:
+    image: arcadedata/arcadedb:26.5.1
+    environment:
+      JAVA_OPTS: "-Darcadedb.server.rootPassword=${ARCADEDB_PASSWORD:-runbook_dev_password}"
+    ports:
+      - "2480:2480"
+      - "2424:2424"
+    volumes:
+      - arcadedb_data:/home/arcadedb/databases
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:2480/api/v1/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build:
+      context: backend
+      additional_contexts:
+        hcag: ../hcag
+        agentgate: ../agentgate
+    env_file: .env
+    environment:
+      ARCADEDB_HOST: arcadedb
+      SQLITE_PATH: /workspace/runbook/data/runbook.db
+      GENERATED_RUNBOOKS_DIR: /workspace/runbook/generated_runbooks
+      REPO_CACHE_DIR: /workspace/runbook/data/repos
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/workspace/runbook/data
+      - ./generated_runbooks:/workspace/runbook/generated_runbooks
+      - ./demo_data:/workspace/runbook/demo_data:ro
+      - ..:/workspace/local_repos:ro
+    depends_on:
+      arcadedb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  frontend:
+    build:
+      context: frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  mcp:
+    build: mcp_server
+    environment:
+      RUNBOOK_API_URL: http://backend:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    profiles: ["mcp"]
+    stdin_open: true
+
+volumes:
+  arcadedb_data:
