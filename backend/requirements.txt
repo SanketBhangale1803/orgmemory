@@ -11,4 +11,4 @@ boto3>=1.35,<2
 PyJWT[crypto]==2.10.1
 openai==1.59.6
 fastembed==0.7.3
-structlog==24.4.0
+structlog==26.1.0
