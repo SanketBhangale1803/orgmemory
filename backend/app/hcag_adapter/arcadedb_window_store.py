@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.core.database import utcnow
+from app.core.database import row, utcnow
 from app.graph.base import GraphStore
 
 
@@ -22,11 +22,20 @@ def canonical_window_id(project_id: str, domain: str, subdomain: str) -> str:
 class ArcadeDBWindowStore:
     def __init__(self, graph: GraphStore):
         self.graph = graph
-        self._counts: dict[str, int] = {}
+
+    @staticmethod
+    def _item_count(project_id: str, domain: str, subdomain: str) -> int:
+        result = row(
+            "SELECT COUNT(*) value FROM knowledge_items WHERE project_id=? "
+            "AND json_extract(metadata_json, '$.hcag.domain')=? "
+            "AND json_extract(metadata_json, '$.hcag.subdomain')=?",
+            (project_id, domain, subdomain),
+        )
+        return int((result or {}).get("value") or 0)
 
     def ensure_window(self, project_id: str, domain: str, subdomain: str) -> str:
         window_id = canonical_window_id(project_id, domain, subdomain)
-        self._counts[window_id] = self._counts.get(window_id, 0)
+        item_count = self._item_count(project_id, domain, subdomain)
         self.graph.upsert_node(
             "ContextWindow",
             {
@@ -35,26 +44,29 @@ class ArcadeDBWindowStore:
                 "domain": domain,
                 "subdomain": subdomain,
                 "name": f"{domain}.{subdomain}",
-                "item_count": self._counts[window_id],
+                "item_count": item_count,
                 "updated_at": utcnow(),
             },
         )
         return window_id
 
     def record_item(self, project_id: str, domain: str, subdomain: str) -> str:
+        return self.ensure_window(project_id, domain, subdomain)
+
+    def record_chunk(self, project_id: str, domain: str, subdomain: str, chunk_id: str) -> str:
+        """Attach an evidence chunk to its durable HCAG context window.
+
+        Context windows used to be decorative counters. This edge makes the
+        memory boundary traversable in ArcadeDB and lets retrieval traces and
+        the graph UI show the exact evidence contained by each window.
+        """
         window_id = self.ensure_window(project_id, domain, subdomain)
-        self._counts[window_id] += 1
-        self.graph.upsert_node(
+        self.graph.link(
+            "CONTEXT_WINDOW_CONTAINS_CHUNK",
             "ContextWindow",
-            {
-                "id": window_id,
-                "project_id": project_id,
-                "domain": domain,
-                "subdomain": subdomain,
-                "name": f"{domain}.{subdomain}",
-                "item_count": self._counts[window_id],
-                "updated_at": utcnow(),
-            },
+            window_id,
+            "KnowledgeChunk",
+            chunk_id,
         )
         return window_id
 

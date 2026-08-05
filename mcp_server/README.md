@@ -1,31 +1,30 @@
-# Runbook MCP server
+# OrgMemory MCP server
 
-This is a real MCP stdio server. It intentionally remains silent and waits when started directly; an MCP client owns its stdin/stdout lifecycle. Use `python server.py --health` for a command that checks the backend and exits.
+The stdio server exposes company memory to Cursor and other MCP clients. Configure a client to run `make -C /absolute/path/to/runbook mcp` with `RUNBOOK_API_URL` and a workspace-scoped `RUNBOOK_API_KEY` (legacy environment names remain compatible).
 
-Configure clients to run `make -C /absolute/path/to/runbook mcp`, or run the virtual environment command documented in the root README. The tools call the same Runbook API as the dashboard, so evidence grounding, AgentGate decisions, and audit history stay consistent.
+Preferred tools:
 
-## Tools
+- `orgmemory_ingest_github_repo`
+- `orgmemory_ingest_slack_channel`
+- `orgmemory_upload_source`
+- `orgmemory_ask`
+- `orgmemory_search_memories`
+- `orgmemory_get_company_profile`
+- `orgmemory_get_project_profile`
+- `orgmemory_get_service_profile`
+- `orgmemory_get_memory_graph`
+- `orgmemory_list_memory_conflicts`
+- `orgmemory_list_memory_updates`
+- `orgmemory_list_source_revisions`
+- `orgmemory_list_change_sets`
+- `orgmemory_compile_skill`
+- `orgmemory_list_skills`
+- `orgmemory_create_work`
+- `orgmemory_list_work`
+- `orgmemory_get_work`
+- `orgmemory_resolve_work_step`
+- `orgmemory_complete_work_step`
 
-- `runbook_ingest_github_repo`
-- `runbook_ingest_slack_channel`
-- `runbook_upload_knowledge`
-- `runbook_ask`
-- `runbook_extract_runbooks`
-- `runbook_list_runbooks`
-- `runbook_get_runbook`
-- `runbook_get_graph_summary`
-- `runbook_get_service_graph`
-- `runbook_get_blast_radius` — dependency blast radius from real graph edges
-- `runbook_simulate_incident` — dry-run a runbook through the AgentGate policy; nothing executes
-- `runbook_check_runbook_drift` — re-check runbook sources against current knowledge
-- `runbook_propose_action`
-- `runbook_list_pending_approvals`
-- `runbook_get_audit_log`
+All answers, profiles, and work packages come from source-backed memory and include retrieval lineage. `orgmemory_create_work` prepares a portable agent packet. Consequential connector steps stay in `pending_approval` until `orgmemory_resolve_work_step` approves them; a worker reports the exact outcome through `orgmemory_complete_work_step`.
 
-## Client patterns
-
-- Cursor / Claude Desktop: configure this directory as a stdio MCP server command.
-- ChatGPT tools/connectors: expose the same backend endpoints through a connector manifest or hosted tool bridge.
-- Slack bot: call `runbook_ask`, `runbook_extract_runbooks`, and approval tools from message actions.
-- GitHub App: trigger `runbook_ingest_github_repo` from installation/repository webhooks.
-- ClickUp/Jira automation: use `runbook_upload_knowledge` for ticket exports until live connectors are added.
+Legacy `runbook_*` tools remain available during migration but represent advanced compatibility features, not the primary product surface.

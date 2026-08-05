@@ -72,6 +72,7 @@ def test_api_key_lifecycle(graph):
     created = create_api_key("CI automation", workspace_id="ws_test")
     assert created["api_key"].startswith("rbk_")
     assert created["key_prefix"] == created["api_key"][:12]
+    assert created["workspace_id"] == "ws_test"
 
     listed = list_api_keys("ws_test")
     assert listed and listed[0]["status"] == "active"

@@ -89,7 +89,7 @@ def test_no_confident_answer_without_evidence(graph):
 
     assert result["confidence"] <= 0.25
     assert result["evidence"] == []
-    assert result["answer"] == "I do not have enough evidence to answer this confidently."
+    assert result["answer"] == "I do not have enough company memory to answer this confidently."
 
 
 def test_no_hardcoded_service_response_path_present():

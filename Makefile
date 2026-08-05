@@ -2,7 +2,7 @@ SHELL := /bin/bash
 BACKEND_PY := backend/.venv/bin/python
 MCP_PY := mcp_server/.venv/bin/python
 
-.PHONY: runbook dev backend frontend mcp test lint ci format demo reset docker-up docker-down arcade-init graph-check benchmark
+.PHONY: runbook dev backend frontend mcp mcp-http test sdk-test sdk-install lint ci conference-check runtime-check format demo reset docker-up docker-down arcade-init graph-check benchmark
 
 runbook:
 	docker compose --profile mcp up --build
@@ -27,27 +27,47 @@ frontend/node_modules:
 	cd frontend && npm install
 
 backend: $(BACKEND_PY)
-	cd backend && .venv/bin/uvicorn app.main:app --reload --port 8000
+	cd backend && .venv/bin/python -m uvicorn app.main:app --reload --port 8000
 
 frontend: frontend/node_modules
 	cd frontend && npm run dev
 
 mcp: $(MCP_PY)
-	RUNBOOK_API_URL=$${RUNBOOK_API_URL:-http://localhost:8000} $(MCP_PY) mcp_server/server.py
+	RUNBOOK_API_URL=$${RUNBOOK_API_URL:-http://localhost:8000} RUNBOOK_API_KEY=$${RUNBOOK_API_KEY:-} $(MCP_PY) mcp_server/server.py --transport stdio
+
+mcp-http: $(MCP_PY)
+	RUNBOOK_API_URL=$${RUNBOOK_API_URL:-http://localhost:8000} MCP_PUBLIC_URL=$${MCP_PUBLIC_URL:-http://localhost:8001} MCP_OAUTH_ISSUER_URL=$${MCP_OAUTH_ISSUER_URL:-http://localhost:8000} $(MCP_PY) mcp_server/server.py --transport streamable-http --host 0.0.0.0 --port 8001
 
 test: $(BACKEND_PY) frontend/node_modules
-	cd backend && .venv/bin/pytest
+	$(BACKEND_PY) -m pytest backend
 	cd frontend && npm test
+	PYTHONPATH=python_sdk/src $(BACKEND_PY) -m pytest -q python_sdk/tests
+
+sdk-test: $(BACKEND_PY)
+	PYTHONPATH=python_sdk/src $(BACKEND_PY) -m pytest -q python_sdk/tests
+
+sdk-install: $(BACKEND_PY)
+	$(BACKEND_PY) -m pip install -e ./python_sdk
 
 lint: $(BACKEND_PY) frontend/node_modules
-	cd backend && .venv/bin/ruff check app tests scripts && .venv/bin/black --check app tests scripts
+	$(BACKEND_PY) -m ruff check backend/app backend/tests backend/scripts
+	$(BACKEND_PY) -m black --check backend/app backend/tests backend/scripts
 	cd frontend && npx tsc --noEmit
 
 ci: test lint
 	cd frontend && npm run build
 
+conference-check: ci
+	docker compose config --quiet
+
+runtime-check:
+	docker compose exec backend curl --fail --silent --show-error http://localhost:8000/api/health
+	docker compose exec backend curl --fail --silent --show-error http://localhost:8000/api/health/graph
+	docker compose exec backend curl --fail --silent --show-error --head http://frontend:3000
+
 format: $(BACKEND_PY)
-	cd backend && .venv/bin/ruff check --fix app tests scripts && .venv/bin/black app tests scripts
+	$(BACKEND_PY) -m ruff check --fix backend/app backend/tests backend/scripts
+	$(BACKEND_PY) -m black backend/app backend/tests backend/scripts
 
 arcade-init:
 	docker compose up -d arcadedb

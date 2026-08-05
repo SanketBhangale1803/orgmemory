@@ -4,10 +4,17 @@
 .DS_Store
 **/.venv/
 **/node_modules/
+*.egg-info/
 frontend/.next/
 frontend/out/
+desktop/dist/
+desktop/src-tauri/target/
 *.tsbuildinfo
 data/
+*.db
+*.sqlite
+*.sqlite3
+.connector_key
 generated_runbooks/*/
 *.pyc
 __pycache__/

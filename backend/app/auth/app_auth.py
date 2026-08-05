@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import smtplib
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from email.message import EmailMessage
+from secrets import randbelow
 from typing import Any
 from uuid import uuid4
 
@@ -31,59 +34,218 @@ def create_dev_session(
     user = row("SELECT * FROM users WHERE email=?", (email,))
     user_id = user["id"] if user else new_id("usr")
     with connect() as conn:
+        if user:
+            # A local session must not replace a GitHub identity: SQLite
+            # REPLACE deletes the user row and cascades workspace membership.
+            conn.execute(
+                "UPDATE users SET display_name=?,updated_at=? WHERE id=?",
+                (display_name, now, user_id),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO users VALUES (?,?,?,?,?,?,?,?)",
+                (user_id, email, display_name, "dev", email, "owner", now, now),
+            )
+    membership = row(
+        """SELECT m.workspace_id FROM workspace_members m
+        JOIN workspaces w ON w.id=m.workspace_id
+        WHERE m.user_id=? AND m.status='active'
+        ORDER BY CASE WHEN w.slug=? THEN 1 ELSE 0 END,m.created_at LIMIT 1""",
+        (user_id, DEFAULT_WORKSPACE_SLUG),
+    )
+    workspace_id = (
+        membership["workspace_id"]
+        if membership
+        else ensure_workspace("Local workspace", DEFAULT_WORKSPACE_SLUG, user_id, "owner")["id"]
+    )
+    return issue_session(user_id, workspace_id)
+
+
+def create_oauth_session(
+    provider: str,
+    external_id: str,
+    email: str,
+    display_name: str,
+    workspace_name: str,
+) -> dict[str, Any]:
+    """Create or refresh a real identity and issue a workspace-bound session."""
+    now = utcnow()
+    user = row(
+        "SELECT * FROM users WHERE auth_provider=? AND external_id=?",
+        (provider, external_id),
+    ) or row("SELECT * FROM users WHERE email=?", (email,))
+    user_id = user["id"] if user else new_id("usr")
+    with connect() as conn:
+        if user:
+            conn.execute(
+                "UPDATE users SET email=?,display_name=?,auth_provider=?,external_id=?,updated_at=? WHERE id=?",
+                (email, display_name, provider, external_id, now, user_id),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO users VALUES (?,?,?,?,?,?,?,?)",
+                (user_id, email, display_name, provider, external_id, "owner", now, now),
+            )
+    membership = row(
+        "SELECT workspace_id FROM workspace_members WHERE user_id=? AND status='active' ORDER BY created_at LIMIT 1",
+        (user_id,),
+    )
+    if membership:
+        workspace_id = membership["workspace_id"]
+    else:
+        base_slug = slugify(workspace_name)
+        slug = base_slug
+        suffix = 2
+        while row("SELECT id FROM workspaces WHERE slug=?", (slug,)):
+            slug = f"{base_slug[:54]}-{suffix}"
+            suffix += 1
+        workspace_id = ensure_workspace(workspace_name, slug, user_id, "owner")["id"]
+    return issue_session(user_id, workspace_id)
+
+
+def request_email_login_code(email: str) -> dict[str, Any]:
+    """Issue a short-lived, one-time sign-in code without storing the raw code."""
+    normalized = email.strip().casefold()
+    if not settings.email_auth_enabled:
+        raise ValueError("Email sign-in is disabled")
+    if not settings.auth_dev_mode and not (settings.smtp_host and settings.email_from):
+        raise ValueError("Email delivery is not configured")
+
+    now = datetime.now(UTC)
+    latest = row(
+        "SELECT created_at FROM email_login_codes WHERE email=? ORDER BY created_at DESC LIMIT 1",
+        (normalized,),
+    )
+    if (
+        latest
+        and (now - datetime.fromisoformat(latest["created_at"])).total_seconds()
+        < settings.email_code_resend_seconds
+    ):
+        raise ValueError("Please wait before requesting another sign-in code")
+    code = f"{randbelow(1_000_000):06d}"
+    expires_at = (now + timedelta(minutes=settings.email_code_ttl_minutes)).isoformat()
+    with connect() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO users VALUES (?,?,?,?,?,?,?,?)",
+            "UPDATE email_login_codes SET used_at=? WHERE email=? AND used_at IS NULL",
+            (now.isoformat(), normalized),
+        )
+        conn.execute(
+            """INSERT INTO email_login_codes
+            (id,email,code_hash,attempts,expires_at,used_at,created_at)
+            VALUES (?,?,?,?,?,NULL,?)""",
             (
-                user_id,
-                email,
-                display_name,
-                "dev",
-                email,
-                "owner",
-                user["created_at"] if user else now,
-                now,
+                new_id("emc"),
+                normalized,
+                _hash_email_code(normalized, code),
+                0,
+                expires_at,
+                now.isoformat(),
             ),
         )
-    workspace = ensure_workspace("Local workspace", DEFAULT_WORKSPACE_SLUG, user_id, "owner")
+
+    if settings.smtp_host and settings.email_from:
+        _send_login_code(normalized, code)
+        return {
+            "sent": True,
+            "delivery": "email",
+            "expires_in_seconds": settings.email_code_ttl_minutes * 60,
+        }
+    return {
+        "sent": True,
+        "delivery": "development",
+        "development_code": code,
+        "expires_in_seconds": settings.email_code_ttl_minutes * 60,
+    }
+
+
+def verify_email_login_code(email: str, code: str) -> dict[str, Any]:
+    normalized = email.strip().casefold()
+    record = row(
+        """SELECT * FROM email_login_codes
+        WHERE email=? AND used_at IS NULL ORDER BY created_at DESC LIMIT 1""",
+        (normalized,),
+    )
+    if not record:
+        raise ValueError("The sign-in code is invalid or expired")
+    now = datetime.now(UTC)
+    if datetime.fromisoformat(record["expires_at"]) < now or int(record["attempts"]) >= 5:
+        with connect() as conn:
+            conn.execute(
+                "UPDATE email_login_codes SET used_at=? WHERE id=?",
+                (now.isoformat(), record["id"]),
+            )
+        raise ValueError("The sign-in code is invalid or expired")
+    if not hmac.compare_digest(
+        record["code_hash"],
+        _hash_email_code(normalized, code),
+    ):
+        with connect() as conn:
+            conn.execute(
+                "UPDATE email_login_codes SET attempts=attempts+1 WHERE id=?",
+                (record["id"],),
+            )
+        raise ValueError("The sign-in code is invalid or expired")
+
+    with connect() as conn:
+        conn.execute(
+            "UPDATE email_login_codes SET used_at=? WHERE id=?",
+            (now.isoformat(), record["id"]),
+        )
+    local_part, _, domain = normalized.partition("@")
+    display_name = local_part.replace(".", " ").replace("_", " ").title() or normalized
+    workspace_name = f"{domain or 'Company'} workspace"
+    return create_oauth_session(
+        "email",
+        normalized,
+        normalized,
+        display_name,
+        workspace_name,
+    )
+
+
+def issue_session(user_id: str, workspace_id: str | None = None) -> dict[str, Any]:
     token = _token()
+    now = utcnow()
     expires = (datetime.now(UTC) + timedelta(days=7)).isoformat()
     with connect() as conn:
         conn.execute(
-            "INSERT INTO sessions VALUES (?,?,?,?,?)",
-            (new_id("ses"), user_id, _hash_token(token), expires, now),
+            """INSERT INTO sessions
+            (id,user_id,workspace_id,token_hash,expires_at,created_at)
+            VALUES (?,?,?,?,?,?)""",
+            (new_id("ses"), user_id, workspace_id or "", _hash_token(token), expires, now),
         )
-    return {"token": token, "expires_at": expires, "user": me_for_user(user_id, workspace["id"])}
+    return {"token": token, "expires_at": expires, "user": me_for_user(user_id, workspace_id)}
 
 
 def ensure_workspace(name: str, slug: str, owner_id: str, role: str = "owner") -> dict[str, Any]:
     now = utcnow()
     workspace = row("SELECT * FROM workspaces WHERE slug=?", (slug,))
     workspace_id = workspace["id"] if workspace else new_id("wsp")
+    membership = row(
+        "SELECT id,created_at FROM workspace_members WHERE workspace_id=? AND user_id=?",
+        (workspace_id, owner_id),
+    )
     with connect() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO workspaces VALUES (?,?,?,?,?)",
+            """INSERT INTO workspaces(id,name,slug,created_at,updated_at) VALUES (?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET name=excluded.name,slug=excluded.slug,
+            updated_at=excluded.updated_at""",
             (workspace_id, name, slug, workspace["created_at"] if workspace else now, now),
         )
         conn.execute(
-            "INSERT OR REPLACE INTO workspace_members VALUES (?,?,?,?,?,?,?,?)",
+            """INSERT INTO workspace_members
+            (id,workspace_id,user_id,role,status,invited_email,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,?)
+            ON CONFLICT(workspace_id,user_id) DO UPDATE SET role=excluded.role,
+            status=excluded.status,updated_at=excluded.updated_at""",
             (
-                (
-                    row(
-                        "SELECT id FROM workspace_members WHERE workspace_id=? AND user_id=?",
-                        (workspace_id, owner_id),
-                    )["id"]
-                    if row(
-                        "SELECT id FROM workspace_members WHERE workspace_id=? AND user_id=?",
-                        (workspace_id, owner_id),
-                    )
-                    else new_id("mem")
-                ),
+                membership["id"] if membership else new_id("mem"),
                 workspace_id,
                 owner_id,
                 role,
                 "active",
                 "",
-                now,
+                membership["created_at"] if membership else now,
                 now,
             ),
         )
@@ -98,7 +260,7 @@ def me_from_token(token: str | None) -> dict[str, Any] | None:
         return None
     if session["expires_at"] < datetime.now(UTC).isoformat():
         return None
-    return me_for_user(session["user_id"])
+    return me_for_user(session["user_id"], session.get("workspace_id") or None)
 
 
 def me_for_user(user_id: str, workspace_id: str | None = None) -> dict[str, Any]:
@@ -207,6 +369,30 @@ def _token() -> str:
 
 def _hash_token(token: str) -> str:
     return hmac.new(settings.jwt_secret.encode(), token.encode(), hashlib.sha256).hexdigest()
+
+
+def _hash_email_code(email: str, code: str) -> str:
+    payload = f"{email}:{code}".encode()
+    return hmac.new(settings.jwt_secret.encode(), payload, hashlib.sha256).hexdigest()
+
+
+def _send_login_code(email: str, code: str) -> None:
+    message = EmailMessage()
+    message["Subject"] = f"{code} is your OrgMemory sign-in code"
+    message["From"] = settings.email_from
+    message["To"] = email
+    message.set_content(
+        "Use this one-time code to sign in to OrgMemory:\n\n"
+        f"{code}\n\n"
+        f"It expires in {settings.email_code_ttl_minutes} minutes. "
+        "If you did not request it, you can ignore this email."
+    )
+    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=20) as smtp:
+        if settings.smtp_starttls:
+            smtp.starttls()
+        if settings.smtp_user:
+            smtp.login(settings.smtp_user, settings.smtp_password)
+        smtp.send_message(message)
 
 
 def slugify(value: str) -> str:

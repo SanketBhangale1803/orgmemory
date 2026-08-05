@@ -1,87 +1,48 @@
 from __future__ import annotations
 
-import json
+import base64
+import hashlib
 from datetime import UTC, datetime, timedelta
 from secrets import token_urlsafe
 
-from cryptography.fernet import Fernet
+from app.core.database import connect, utcnow
 
-from app.core.config import settings
-from app.core.database import connect, new_id, rows, utcnow
+from .vault import OAuthTokenVault
 
 
-class ConnectorSecrets:
-    def __init__(self):
-        key_path = settings.sqlite_path.parent / ".connector_key"
-        if settings.integration_encryption_key:
-            key = settings.integration_encryption_key.encode()
-        elif key_path.exists():
-            key = key_path.read_bytes().strip()
-        else:
-            key_path.parent.mkdir(parents=True, exist_ok=True)
-            key = Fernet.generate_key()
-            key_path.write_bytes(key)
-            key_path.chmod(0o600)
-        self.cipher = Fernet(key)
-
-    def save(
-        self,
-        provider: str,
-        external_id: str,
-        display_name: str,
-        token: str,
-        metadata: dict | None = None,
-    ) -> str:
-        connection_id, now = new_id("conn"), utcnow()
-        encrypted = self.cipher.encrypt(token.encode()).decode()
-        with connect() as conn:
-            conn.execute(
-                """INSERT INTO connector_accounts VALUES (?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(provider,external_id) DO UPDATE SET display_name=excluded.display_name,status='connected',secret_encrypted=excluded.secret_encrypted,metadata_json=excluded.metadata_json,updated_at=excluded.updated_at""",
-                (
-                    connection_id,
-                    provider,
-                    external_id,
-                    display_name,
-                    "connected",
-                    encrypted,
-                    json.dumps(metadata or {}),
-                    now,
-                    now,
-                ),
-            )
-        return connection_id
-
-    def token(self, provider: str) -> str | None:
-        accounts = rows(
-            "SELECT secret_encrypted FROM connector_accounts WHERE provider=? AND status='connected' ORDER BY updated_at DESC LIMIT 1",
-            (provider,),
-        )
-        return (
-            self.cipher.decrypt(accounts[0]["secret_encrypted"].encode()).decode()
-            if accounts
-            else None
-        )
-
-    def status(self, provider: str) -> list[dict]:
-        return rows(
-            "SELECT id,external_id,display_name,status,metadata_json,created_at,updated_at FROM connector_accounts WHERE provider=? ORDER BY updated_at DESC",
-            (provider,),
-        )
+class ConnectorSecrets(OAuthTokenVault):
+    """Backward-compatible name for the production OAuth token vault."""
 
 
 class OAuthStateStore:
-    def create(self, provider: str) -> str:
+    def create(
+        self,
+        provider: str,
+        *,
+        intent: str = "connect",
+        workspace_id: str = "",
+        user_id: str = "",
+        use_pkce: bool = False,
+    ) -> dict[str, str]:
         state = token_urlsafe(32)
+        verifier = token_urlsafe(64) if use_pkce else ""
         expires = (datetime.now(UTC) + timedelta(minutes=10)).isoformat()
         with connect() as conn:
-            conn.execute("INSERT INTO oauth_states VALUES (?,?,?,NULL)", (state, provider, expires))
-        return state
+            conn.execute(
+                "INSERT INTO oauth_flows VALUES (?,?,?,?,?,?,?,NULL)",
+                (state, provider, intent, workspace_id, user_id, verifier, expires),
+            )
+        challenge = ""
+        if verifier:
+            digest = hashlib.sha256(verifier.encode()).digest()
+            challenge = base64.urlsafe_b64encode(digest).decode().rstrip("=")
+        return {"state": state, "code_challenge": challenge}
 
-    def consume(self, provider: str, state: str) -> None:
+    def consume(self, provider: str, state: str) -> dict:
         with connect() as conn:
             row = conn.execute(
-                "SELECT * FROM oauth_states WHERE state=? AND provider=?", (state, provider)
+                "SELECT * FROM oauth_flows WHERE state=? AND provider=?",
+                (state, provider),
             ).fetchone()
             if (
                 not row
@@ -89,4 +50,5 @@ class OAuthStateStore:
                 or datetime.fromisoformat(row["expires_at"]) < datetime.now(UTC)
             ):
                 raise ValueError("OAuth state is invalid or expired")
-            conn.execute("UPDATE oauth_states SET used_at=? WHERE state=?", (utcnow(), state))
+            conn.execute("UPDATE oauth_flows SET used_at=? WHERE state=?", (utcnow(), state))
+            return dict(row)

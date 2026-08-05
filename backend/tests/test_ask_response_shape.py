@@ -54,7 +54,7 @@ def test_ask_without_evidence_reports_no_trust(graph):
     project_id = ingestion.create_project("Ask empty")
     retrieval = RetrievalService(hcag, audit)
     result = retrieval.ask(project_id, "@runbook why is billing_service failing?")
-    assert result["answer"] == "I do not have enough evidence to answer this confidently."
+    assert result["answer"] == "I do not have enough company memory to answer this confidently."
     assert result["trust_score"]["score"] == 0.0
     assert result["trust_score"]["level"] == "none"
     assert result["related_slack_messages"] == []

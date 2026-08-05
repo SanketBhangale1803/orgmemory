@@ -35,6 +35,7 @@ def create_api_key(name: str, workspace_id: str = "", created_by: str = "") -> d
     return {
         "id": key_id,
         "name": name.strip(),
+        "workspace_id": workspace_id,
         "key_prefix": secret[:12],
         "created_at": now,
         # Returned exactly once; only the hash is stored.

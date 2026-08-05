@@ -10,6 +10,7 @@ from .base import GraphEvidence, GraphStore
 from .graph_ranker import rank_records
 from .migrations import schema_commands
 from .schema import EDGE_TYPES, PROJECT_SCOPED_VERTEX_TYPES, VERTEX_TYPES
+from .traversal import evidence_from_hits, find_traversal_hits
 
 __all__ = ["ArcadeDBGraphStore", "rank_records"]
 
@@ -96,7 +97,13 @@ class ArcadeDBGraphStore(GraphStore):
         self._upsert("ChangeImpact", impact)
 
     def clear_repository_knowledge(self, project_id: str) -> None:
-        for source_type in ("repo_file", "github_issue", "pull_request"):
+        for source_type in (
+            "repo_file",
+            "github_issue",
+            "pull_request",
+            "repository_metadata",
+            "github_commit",
+        ):
             self.client.command(
                 "DELETE FROM KnowledgeChunk WHERE project_id=:project_id AND source_type=:source_type",
                 {"project_id": project_id, "source_type": source_type},
@@ -105,11 +112,16 @@ class ArcadeDBGraphStore(GraphStore):
                 "DELETE FROM KnowledgeItem WHERE project_id=:project_id AND source_type=:source_type",
                 {"project_id": project_id, "source_type": source_type},
             )
-        for vertex_type in ("File", "Issue", "PullRequest"):
+        for vertex_type in ("File", "Issue", "PullRequest", "Commit"):
             self.client.command(
                 f"DELETE FROM {vertex_type} WHERE project_id=:project_id",
                 {"project_id": project_id},
             )
+        self.client.command(
+            "DELETE FROM EvidenceSource WHERE project_id=:project_id "
+            "AND source_type='repository_metadata'",
+            {"project_id": project_id},
+        )
         for vertex_type in (
             "Directory",
             "Package",
@@ -139,6 +151,64 @@ class ArcadeDBGraphStore(GraphStore):
                 {"project_id": project_id},
             )
 
+    def delete_source_knowledge(
+        self, project_id: str, source_id: str, source_type: str = ""
+    ) -> int:
+        items = self.client.query(
+            "SELECT id FROM KnowledgeItem WHERE project_id=:project_id AND source_id=:source_id",
+            {"project_id": project_id, "source_id": source_id},
+        )
+        for item in items:
+            self.client.command(
+                "DELETE FROM KnowledgeChunk WHERE project_id=:project_id AND item_id=:item_id",
+                {"project_id": project_id, "item_id": item["id"]},
+            )
+        self.client.command(
+            "DELETE FROM KnowledgeItem WHERE project_id=:project_id AND source_id=:source_id",
+            {"project_id": project_id, "source_id": source_id},
+        )
+        vertex_type = {
+            "repo_file": "File",
+            "github_issue": "Issue",
+            "pull_request": "PullRequest",
+        }.get(source_type, "EvidenceSource")
+        self.client.command(
+            f"DELETE FROM {vertex_type} WHERE project_id=:project_id AND id=:source_id",
+            {"project_id": project_id, "source_id": source_id},
+        )
+        return len(items)
+
+    def delete_project_nodes(self, project_id: str, node_types: list[str]) -> int:
+        deleted = 0
+        for node_type in node_types:
+            if node_type not in VERTEX_TYPES or node_type == "Project":
+                continue
+            records = self.client.query(
+                f"SELECT count(*) AS count FROM {node_type} WHERE project_id=:project_id",
+                {"project_id": project_id},
+            )
+            deleted += int((records[0] if records else {}).get("count", 0) or 0)
+            self.client.command(
+                f"DELETE FROM {node_type} WHERE project_id=:project_id",
+                {"project_id": project_id},
+            )
+        return deleted
+
+    def delete_project(self, project_id: str) -> int:
+        deleted = self.delete_project_nodes(
+            project_id, [node_type for node_type in VERTEX_TYPES if node_type != "Project"]
+        )
+        records = self.client.query(
+            "SELECT count(*) AS count FROM Project WHERE id=:project_id",
+            {"project_id": project_id},
+        )
+        deleted += int((records[0] if records else {}).get("count", 0) or 0)
+        self.client.command(
+            "DELETE FROM Project WHERE id=:project_id",
+            {"project_id": project_id},
+        )
+        return deleted
+
     def upsert_knowledge_item(self, item: dict[str, Any]) -> None:
         self._upsert("KnowledgeItem", item)
 
@@ -167,10 +237,40 @@ class ArcadeDBGraphStore(GraphStore):
         self, project_id: str, query: str, service_name: str | None = None, limit: int = 12
     ) -> list[GraphEvidence]:
         records = self.client.query(
-            "SELECT id,text,source_type,source_title,source_url,service_names,metadata_json FROM KnowledgeChunk WHERE project_id=:project_id",
+            "SELECT id,text,source_type,source_title,source_url,service_names,metadata_json,"
+            "search_terms,embedding,embedding_model,embedding_version,content_hash,"
+            "context_window,domain,subdomain "
+            "FROM KnowledgeChunk WHERE project_id=:project_id",
             {"project_id": project_id},
         )
         return rank_records(records, query, service_name, limit)
+
+    def traverse_context(
+        self,
+        project_id: str,
+        query: str,
+        *,
+        max_hops: int = 3,
+        limit: int = 12,
+    ) -> list[GraphEvidence]:
+        nodes = self.list_nodes(project_id, limit=100_000)
+        for vertex_type in ("Language", "Dependency"):
+            records = self.client.query(f"SELECT FROM {vertex_type} LIMIT 10000")
+            nodes.extend({"node_type": vertex_type, **dict(record)} for record in records)
+        edges = self.list_edges(project_id, limit=100_000)
+        hits = find_traversal_hits(
+            nodes,
+            edges,
+            query,
+            max_hops=max_hops,
+            limit=limit,
+        )
+        chunks = {
+            str(node.get("id") or ""): node
+            for node in nodes
+            if node.get("node_type") == "KnowledgeChunk"
+        }
+        return evidence_from_hits(hits, chunks)
 
     def get_retrieval_trace(self, project_id: str, chunk_ids: list[str]) -> list[dict[str, Any]]:
         if not chunk_ids:

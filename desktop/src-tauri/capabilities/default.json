@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Explicit local bridge capabilities",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:allow-open", "notification:default", "shell:allow-spawn", "shell:allow-kill", "updater:default"]
+}

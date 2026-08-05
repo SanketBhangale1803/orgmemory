@@ -31,6 +31,7 @@ LANGUAGE_BY_SUFFIX = {
     ".toml": "TOML",
     ".css": "CSS",
     ".ejs": "EJS",
+    ".ipynb": "Jupyter Notebook",
 }
 
 

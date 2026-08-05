@@ -4,6 +4,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends git curl && rm 
 WORKDIR /workspace/runbook/backend
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+ENV RUNBOOK_EMBEDDING_CACHE_DIR=/opt/runbook-models
+RUN python -c "from fastembed import TextEmbedding; from fastembed.rerank.cross_encoder import TextCrossEncoder; TextEmbedding('BAAI/bge-small-en-v1.5', cache_dir='/opt/runbook-models'); TextCrossEncoder('Xenova/ms-marco-MiniLM-L-6-v2', cache_dir='/opt/runbook-models')"
 COPY . .
 COPY --from=hcag . /workspace/hcag
 COPY --from=agentgate . /workspace/agentgate

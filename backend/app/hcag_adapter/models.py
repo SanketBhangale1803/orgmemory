@@ -11,6 +11,10 @@ class RouteResult:
     service_name: str | None
     boundary_type: str
     confidence: float
+    resolved_query: str = ""
+    context_reused: bool = False
+    query_count: int = 0
+    plan: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -24,3 +28,7 @@ class HCAGTrace:
     graph_paths: list[dict[str, Any]] = field(default_factory=list)
     confidence: float = 0.0
     engine: str = "hcag"
+    resolved_query: str = ""
+    context_reused: bool = False
+    query_count: int = 0
+    plan: dict[str, Any] = field(default_factory=dict)

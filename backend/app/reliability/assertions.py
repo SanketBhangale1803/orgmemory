@@ -8,9 +8,11 @@ document chunks or model-generated facts.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.audit import AuditService
+from app.core.config import settings
 from app.core.database import connect, new_id, row, rows, utcnow
 from app.graph.base import GraphStore
 
@@ -98,6 +100,7 @@ class OperationalAssertionService:
         created = []
         sources = list(payload.get("sources") or [])
         primary_source = sources[0] if sources else {}
+        owner, owner_source = self._suggest_owner(project_id, sources)
         for step in payload.get("steps", []):
             step_id = f"{runbook['id']}:{step['id']}"
             existing = row(
@@ -126,7 +129,8 @@ class OperationalAssertionService:
                         ),
                         "commit_sha": primary_source.get("commit_sha", ""),
                         "source_updated_at": primary_source.get("source_updated_at", ""),
-                        "verification_owner": "owner unknown",
+                        "verification_owner": owner,
+                        "verification_reason": f"Owner auto-suggested from {owner_source}",
                         "evidence": [
                             {
                                 "source_item_id": source.get("item_id", ""),
@@ -150,12 +154,168 @@ class OperationalAssertionService:
         return created
 
     def list(self, project_id: str, status: str | None = None) -> list[dict[str, Any]]:
+        self.assign_suggested_owners(project_id)
+        self.auto_verify_undisputed(project_id)
         sql = "SELECT * FROM operational_assertions WHERE project_id=?"
         params: tuple[Any, ...] = (project_id,)
         if status:
             sql += " AND status=?"
             params += (status,)
-        return [self._decode(item) for item in rows(sql + " ORDER BY updated_at DESC", params)]
+        records = [self._decode(item) for item in rows(sql + " ORDER BY updated_at DESC", params)]
+        # Runbook extraction is replaceable. If a prior extraction was removed
+        # or failed, its step assertions must not remain visible as live policy.
+        valid_runbook_ids = {
+            item["id"] for item in rows("SELECT id FROM runbooks WHERE project_id=?", (project_id,))
+        }
+        return [
+            record
+            for record in records
+            if record.get("subject_type") != "runbook_step"
+            or bool(set(record.get("affected_runbook_ids") or []).intersection(valid_runbook_ids))
+        ]
+
+    def assign_suggested_owners(self, project_id: str) -> dict[str, Any]:
+        updated: list[str] = []
+        for raw in rows(
+            "SELECT * FROM operational_assertions WHERE project_id=? AND "
+            "(verification_owner='' OR lower(verification_owner)='owner unknown')",
+            (project_id,),
+        ):
+            record = self._decode(raw)
+            owner, source = self._suggest_owner(project_id, record.get("evidence") or [])
+            with connect() as conn:
+                conn.execute(
+                    "UPDATE operational_assertions SET verification_owner=?, "
+                    "verification_reason=?, updated_at=? WHERE id=? AND project_id=?",
+                    (
+                        owner,
+                        f"Owner auto-suggested from {source}",
+                        utcnow(),
+                        record["id"],
+                        project_id,
+                    ),
+                )
+            refreshed = self.get(record["id"], project_id)
+            if refreshed:
+                self._sync_graph(refreshed)
+                updated.append(record["id"])
+        if updated:
+            self.audit.record(
+                "assertion.owners_suggested",
+                f"Suggested owners for {len(updated)} assertions",
+                project_id,
+                payload={"assertion_ids": updated},
+            )
+        return {"updated": len(updated), "assertion_ids": updated}
+
+    def auto_verify_undisputed(self, project_id: str) -> dict[str, Any]:
+        if not settings.assertion_auto_verify_enabled:
+            return {"enabled": False, "verified": 0}
+        cutoff = datetime.now(UTC) - timedelta(days=max(1, settings.assertion_auto_verify_days))
+        verified: list[str] = []
+        for raw in rows(
+            "SELECT * FROM operational_assertions WHERE project_id=? AND status='proposed' "
+            "AND policy_status='unverified'",
+            (project_id,),
+        ):
+            record = self._decode(raw)
+            try:
+                created = datetime.fromisoformat(str(record["created_at"]).replace("Z", "+00:00"))
+                if not created.tzinfo:
+                    created = created.replace(tzinfo=UTC)
+            except (TypeError, ValueError):
+                continue
+            if created > cutoff or not record.get("commit_sha"):
+                continue
+            if record.get("verification_owner") in {"", "owner unknown"}:
+                continue
+            evidence_ids = [item.get("source_item_id") for item in record.get("evidence") or []]
+            current_versions = []
+            for item_id in evidence_ids:
+                item = row("SELECT metadata_json FROM knowledge_items WHERE id=?", (item_id,))
+                if not item:
+                    continue
+                try:
+                    current_versions.append(json.loads(item["metadata_json"] or "{}"))
+                except json.JSONDecodeError:
+                    continue
+            if not current_versions or any(
+                value.get("commit_sha") != record["commit_sha"] for value in current_versions
+            ):
+                continue
+            self.transition(
+                record["id"],
+                "verify",
+                "Runbook stability policy",
+                f"Auto-verified after {settings.assertion_auto_verify_days} days with unchanged commit evidence.",
+                project_id,
+            )
+            verified.append(record["id"])
+        return {"enabled": True, "verified": len(verified), "assertion_ids": verified}
+
+    def bulk_review(
+        self,
+        project_id: str,
+        assertion_ids: list[str],
+        action: str,
+        actor: str,
+        reason: str,
+        owner: str = "",
+    ) -> dict[str, Any]:
+        if not assertion_ids:
+            raise ValueError("Select at least one assertion")
+        results: list[dict[str, Any]] = []
+        for assertion_id in dict.fromkeys(assertion_ids):
+            record = self.get(assertion_id, project_id)
+            if not record:
+                raise ValueError(f"Assertion {assertion_id} is not in this project")
+            if owner.strip():
+                with connect() as conn:
+                    conn.execute(
+                        "UPDATE operational_assertions SET verification_owner=?, updated_at=? "
+                        "WHERE id=? AND project_id=?",
+                        (owner.strip(), utcnow(), assertion_id, project_id),
+                    )
+            results.append(self.transition(assertion_id, action, actor, reason, project_id))
+        return {"reviewed": len(results), "action": action, "assertions": results}
+
+    def _suggest_owner(self, project_id: str, evidence: list[dict[str, Any]]) -> tuple[str, str]:
+        for item in evidence:
+            item_id = item.get("source_item_id")
+            if not item_id:
+                continue
+            source = row("SELECT metadata_json FROM knowledge_items WHERE id=?", (item_id,))
+            if not source:
+                continue
+            try:
+                metadata = json.loads(source["metadata_json"] or "{}")
+            except json.JSONDecodeError:
+                continue
+            if metadata.get("owner"):
+                return str(metadata["owner"]), str(metadata.get("owner_source") or "source owner")
+            if metadata.get("latest_commit_author"):
+                return str(metadata["latest_commit_author"]), "last committer"
+        metadata_items = rows(
+            "SELECT metadata_json FROM knowledge_items WHERE project_id=? "
+            "AND source_type='repository_metadata' ORDER BY created_at DESC",
+            (project_id,),
+        )
+        for item in metadata_items:
+            try:
+                metadata = json.loads(item["metadata_json"] or "{}")
+            except json.JSONDecodeError:
+                continue
+            if metadata.get("latest_commit_author"):
+                return str(metadata["latest_commit_author"]), "repository last committer"
+            if metadata.get("owner"):
+                return str(metadata["owner"]), "repository owner"
+        project = row("SELECT repository FROM projects WHERE id=?", (project_id,)) or {}
+        repository = str(project.get("repository") or "")
+        if "github.com/" in repository:
+            slug = repository.split("github.com/", 1)[1].strip("/").removesuffix(".git")
+            if "/" in slug:
+                return slug.split("/", 1)[0], "repository namespace"
+        return "Workspace reliability team", "workspace reliability fallback"
 
     def get(self, assertion_id: str, project_id: str | None = None) -> dict[str, Any] | None:
         sql = "SELECT * FROM operational_assertions WHERE id=?"

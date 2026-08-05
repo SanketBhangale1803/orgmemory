@@ -8,6 +8,7 @@ from app.core.config import settings
 from .arcadedb_store import ArcadeDBGraphStore, rank_records
 from .base import GraphEvidence, GraphStore
 from .schema import EDGE_TYPES, PROJECT_SCOPED_VERTEX_TYPES, VERTEX_TYPES
+from .traversal import evidence_from_hits, find_traversal_hits
 
 
 class InMemoryGraphStore(GraphStore):
@@ -78,7 +79,13 @@ class InMemoryGraphStore(GraphStore):
 
     def clear_repository_knowledge(self, project_id: str) -> None:
         removed: set[str] = set()
-        repository_sources = {"repo_file", "github_issue", "pull_request"}
+        repository_sources = {
+            "repo_file",
+            "github_issue",
+            "pull_request",
+            "repository_metadata",
+            "github_commit",
+        }
         for kind in ("KnowledgeChunk", "KnowledgeItem"):
             for vertex_id, value in list(self.vertices[kind].items()):
                 if (
@@ -91,6 +98,7 @@ class InMemoryGraphStore(GraphStore):
             "File",
             "Issue",
             "PullRequest",
+            "Commit",
             "Directory",
             "Package",
             "Service",
@@ -118,11 +126,73 @@ class InMemoryGraphStore(GraphStore):
                 if value.get("project_id") == project_id:
                     removed.add(vertex_id)
                     del self.vertices[kind][vertex_id]
+        for vertex_id, value in list(self.vertices["EvidenceSource"].items()):
+            if (
+                value.get("project_id") == project_id
+                and value.get("source_type") == "repository_metadata"
+            ):
+                removed.add(vertex_id)
+                del self.vertices["EvidenceSource"][vertex_id]
         self.edges = [
             edge
             for edge in self.edges
             if edge["from_id"] not in removed and edge["to_id"] not in removed
         ]
+
+    def delete_source_knowledge(
+        self, project_id: str, source_id: str, source_type: str = ""
+    ) -> int:
+        item_ids = {
+            vertex_id
+            for vertex_id, value in self.vertices["KnowledgeItem"].items()
+            if value.get("project_id") == project_id and value.get("source_id") == source_id
+        }
+        chunk_ids = {
+            vertex_id
+            for vertex_id, value in self.vertices["KnowledgeChunk"].items()
+            if value.get("project_id") == project_id
+            and (value.get("item_id") in item_ids or value.get("source_id") == source_id)
+        }
+        removed = item_ids | chunk_ids
+        for item_id in item_ids:
+            self.vertices["KnowledgeItem"].pop(item_id, None)
+        for chunk_id in chunk_ids:
+            self.vertices["KnowledgeChunk"].pop(chunk_id, None)
+        vertex_type = {
+            "repo_file": "File",
+            "github_issue": "Issue",
+            "pull_request": "PullRequest",
+        }.get(source_type, "EvidenceSource")
+        self.vertices[vertex_type].pop(source_id, None)
+        removed.add(source_id)
+        self.edges = [
+            edge
+            for edge in self.edges
+            if edge["from_id"] not in removed and edge["to_id"] not in removed
+        ]
+        return len(item_ids) + len(chunk_ids)
+
+    def delete_project_nodes(self, project_id: str, node_types: list[str]) -> int:
+        removed: set[str] = set()
+        for node_type in node_types:
+            for vertex_id, value in list(self.vertices[node_type].items()):
+                if value.get("project_id") == project_id:
+                    removed.add(vertex_id)
+                    del self.vertices[node_type][vertex_id]
+        self.edges = [
+            edge
+            for edge in self.edges
+            if edge["from_id"] not in removed and edge["to_id"] not in removed
+        ]
+        return len(removed)
+
+    def delete_project(self, project_id: str) -> int:
+        deleted = self.delete_project_nodes(
+            project_id, [node_type for node_type in VERTEX_TYPES if node_type != "Project"]
+        )
+        if self.vertices["Project"].pop(project_id, None) is not None:
+            deleted += 1
+        return deleted
 
     def upsert_knowledge_item(self, item: dict[str, Any]) -> None:
         self._put("KnowledgeItem", item)
@@ -155,6 +225,32 @@ class InMemoryGraphStore(GraphStore):
             if value.get("project_id") == project_id
         ]
         return rank_records(records, query, service_name, limit)
+
+    def traverse_context(
+        self,
+        project_id: str,
+        query: str,
+        *,
+        max_hops: int = 3,
+        limit: int = 12,
+    ) -> list[GraphEvidence]:
+        nodes = self.list_nodes(project_id, limit=100_000)
+        for kind in ("Language", "Dependency"):
+            nodes.extend({"node_type": kind, **value} for value in self.vertices[kind].values())
+        edges = self.list_edges(project_id, limit=100_000)
+        hits = find_traversal_hits(
+            nodes,
+            edges,
+            query,
+            max_hops=max_hops,
+            limit=limit,
+        )
+        chunks = {
+            str(node.get("id") or ""): node
+            for node in nodes
+            if node.get("node_type") == "KnowledgeChunk"
+        }
+        return evidence_from_hits(hits, chunks)
 
     def get_retrieval_trace(self, project_id: str, chunk_ids: list[str]) -> list[dict[str, Any]]:
         return [

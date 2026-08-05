@@ -26,6 +26,9 @@ services:
       SQLITE_PATH: /workspace/runbook/data/runbook.db
       GENERATED_RUNBOOKS_DIR: /workspace/runbook/generated_runbooks
       REPO_CACHE_DIR: /workspace/runbook/data/repos
+      RUNBOOK_EMBEDDING_PROVIDER: ${RUNBOOK_EMBEDDING_PROVIDER:-fastembed}
+      RUNBOOK_RERANKER_PROVIDER: ${RUNBOOK_RERANKER_PROVIDER:-fastembed}
+      RUNBOOK_EMBEDDING_CACHE_DIR: /opt/runbook-models
     ports:
       - "8000:8000"
     volumes:
@@ -57,6 +60,10 @@ services:
     build: mcp_server
     environment:
       RUNBOOK_API_URL: http://backend:8000
+      MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-http://localhost:8001}
+      MCP_OAUTH_ISSUER_URL: ${MCP_OAUTH_ISSUER_URL:-http://localhost:8000}
+    ports:
+      - "8001:8001"
     depends_on:
       backend:
         condition: service_healthy

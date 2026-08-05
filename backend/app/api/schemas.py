@@ -9,10 +9,18 @@ class GitHubIngestRequest(BaseModel):
     repo_url_or_path: str
     project_name: str
     workspace_id: str | None = None
+    team_ids: list[str] = Field(default_factory=list, max_length=50)
+
+
+class GitHubBulkIngestRequest(BaseModel):
+    owner: str | None = Field(default=None, max_length=200)
+    include_archived: bool = False
+    max_repositories: int = Field(500, ge=1, le=500)
+    workspace_id: str | None = None
 
 
 class UploadRequest(BaseModel):
-    project_id: str
+    project_id: str = Field(min_length=4, max_length=128)
     source_type: Literal[
         "incident",
         "slack_export",
@@ -24,16 +32,22 @@ class UploadRequest(BaseModel):
         "support_ticket",
         "other",
         "slack",
+        "report",
     ]
-    title: str
-    content: str
-    source_url: str = ""
+    title: str = Field(min_length=1, max_length=500)
+    content: str = Field(min_length=1, max_length=2_000_000)
+    source_url: str = Field(default="", max_length=2_000)
+    source_id: str | None = Field(default=None, max_length=500)
+    team_ids: list[str] = Field(default_factory=list, max_length=50)
+    artifact_type: str = Field(default="", max_length=100)
+    artifact_name: str = Field(default="", max_length=500)
 
 
 class SlackIngestRequest(BaseModel):
     project_id: str
     channel_id: str
     limit: int = Field(200, ge=1, le=1000)
+    team_ids: list[str] = Field(default_factory=list, max_length=50)
 
 
 class TokenRequest(BaseModel):
@@ -42,8 +56,106 @@ class TokenRequest(BaseModel):
 
 
 class AskRequest(BaseModel):
+    project_id: str = Field(min_length=4, max_length=128)
+    query: str = Field(min_length=3, max_length=4_000)
+    token_budget: int = Field(6000, ge=500, le=32000)
+    model: Literal["gpt", "claude", "gemini", "grok", "kimi"] | None = None
+    # Which surface asked. Recorded on the context event so the outcome corpus can
+    # separate what works for a person in the web chat from what works for an
+    # agent calling through MCP.
+    surface: str = Field("web", max_length=32)
+    # "workspace" searches every project the caller can see — the default for the
+    # chat, where nobody is thinking in repositories. "project" restores the hard
+    # single-repository boundary. "auto" leaves the decision to the router.
+    scope: Literal["auto", "workspace", "project"] = "auto"
+
+
+class ExecuteRequest(BaseModel):
+    project_id: str = Field(min_length=4, max_length=128)
+    # The handoff envelope from an /api/ask response, passed back verbatim.
+    handoff: dict[str, Any]
+    context_event_id: str = Field("", max_length=128)
+    executor: Literal["cursor", "claude"] | None = None
+    # Publishing to a shared remote is opt-in per request *and* per deployment.
+    push: bool = False
+
+
+class ActionRecordRequest(BaseModel):
+    context_event_id: str = Field(min_length=4, max_length=128)
+    action_type: str = Field(min_length=2, max_length=64)
+    target: str = Field("", max_length=64)
+    surface: str = Field("", max_length=32)
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class OutcomeRecordRequest(BaseModel):
+    context_event_id: str = Field(min_length=4, max_length=128)
+    outcome: Literal["succeeded", "failed", "partial", "abandoned", "unknown"]
+    action_event_id: str = Field("", max_length=128)
+    signal: str = Field("human", max_length=32)
+    reason: str = Field("", max_length=2_000)
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryWorkCreateRequest(BaseModel):
+    project_id: str = Field(min_length=4, max_length=128)
+    objective: str = Field(min_length=3, max_length=4_000)
+
+
+class MemoryWorkResolveRequest(BaseModel):
+    approved: bool
+    channel_id: str = Field(default="", max_length=100)
+    message: str = Field(default="", max_length=35_000)
+
+
+class MemoryWorkCompleteRequest(BaseModel):
+    output: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryRepairRequest(BaseModel):
+    repository_only: bool = False
+    clear_work_history: bool = True
+
+
+class SemanticChangeInterpretRequest(BaseModel):
+    project_id: str = Field(min_length=4, max_length=128)
+    diff: str = Field(min_length=1, max_length=500_000)
+    repository: str = Field(default="", max_length=500)
+    commit_sha: str = Field(default="", max_length=100)
+    source_url: str = Field(default="", max_length=2_000)
+    delivery_id: str = Field(default="", max_length=200)
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
+class TeamCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    parent_team_id: str | None = None
+
+
+class TeamMemberRequest(BaseModel):
+    user_id: str
+    role: Literal["lead", "member", "viewer"] = "member"
+
+
+class ProjectTeamRequest(BaseModel):
+    team_id: str
+    access_level: Literal["read", "write", "owner"] = "read"
+
+
+class ArtifactSaveRequest(BaseModel):
     project_id: str
-    query: str
+    name: str = Field(min_length=1, max_length=500)
+    artifact_type: Literal["report", "brief", "profile", "document"] = "report"
+    content: str = Field(min_length=1, max_length=2_000_000)
+    source_ids: list[str] = Field(default_factory=list, max_length=500)
+    memory_ids: list[str] = Field(default_factory=list, max_length=500)
+    context_envelope_id: str = ""
+
+
+class SkillCompileRequest(BaseModel):
+    project_id: str
+    name: str = Field(min_length=1, max_length=200)
+    team_id: str = ""
 
 
 class ExtractRequest(BaseModel):
@@ -70,8 +182,30 @@ class DevLoginRequest(BaseModel):
     display_name: str = "Demo User"
 
 
+class EmailCodeRequest(BaseModel):
+    email: str = Field(
+        min_length=5,
+        max_length=320,
+        pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
+    )
+
+
+class EmailCodeVerifyRequest(BaseModel):
+    email: str = Field(
+        min_length=5,
+        max_length=320,
+        pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
+    )
+    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+
+
 class WorkspaceCreateRequest(BaseModel):
     name: str
+
+
+class ProjectCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    team_ids: list[str] = Field(default_factory=list, max_length=50)
 
 
 class InviteMemberRequest(BaseModel):
@@ -127,3 +261,42 @@ class AssertionDecisionRequest(BaseModel):
     actor: str = "demo-user"
     reason: str = ""
     superseded_by: str = ""
+
+
+class BulkAssertionReviewRequest(BaseModel):
+    assertion_ids: list[str] = Field(min_length=1, max_length=200)
+    action: Literal["verify", "dismiss", "mark_stale", "supersede"] = "verify"
+    actor: str = "demo-user"
+    reason: str = "Bulk review approved against current evidence."
+    owner: str = ""
+
+
+class ConnectorToolInvokeRequest(BaseModel):
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    idempotency_key: str = Field(default="", max_length=200)
+
+
+class ConnectorToolResolveRequest(BaseModel):
+    approved: bool
+
+
+class ConnectorSyncRequest(BaseModel):
+    resource_id: str = Field(min_length=1, max_length=500)
+    project_id: str = Field(default="", max_length=128)
+    cursor: dict[str, Any] = Field(default_factory=dict)
+    idempotency_key: str = Field(default="", max_length=200)
+
+
+class CustomConnectorCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    server_url: str = Field(min_length=8, max_length=2_000)
+    version: str = Field(default="1.0.0", min_length=1, max_length=100)
+    oauth: dict[str, Any] = Field(default_factory=dict)
+    manifest: dict[str, Any] = Field(default_factory=dict)
+    signing_key_id: str = Field(default="", max_length=200)
+
+
+class MCPOAuthClientCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    redirect_uris: list[str] = Field(min_length=1, max_length=20)
+    scopes: list[Literal["read", "write"]] = Field(default_factory=lambda: ["read"])

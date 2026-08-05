@@ -2,23 +2,30 @@
 
 ## Authentication and sessions
 
-- Application login is separate from source connectors. Dev login
-  (`AUTH_DEV_MODE=true`) issues real User/Workspace/WorkspaceMember/Session
-  rows; Google/GitHub/Microsoft env plumbing exists for provider-backed
-  sessions issuing the same session model.
-- Sessions are bearer tokens stored as hashes with expiry.
-- OAuth states are random, expire after ten minutes, and are single-use.
+- Application login is separate from source connectors. Google and GitHub identity
+  login request identity scopes only; private source access is requested later
+  from the Connectors domain. Passwordless email stores only a short-lived HMAC
+  of the one-time code and consumes it once. Dev login (`AUTH_DEV_MODE=true`) is an explicit
+  local-only fallback and issues the same User/Workspace/WorkspaceMember/Session rows.
+- Browser sessions use a seven-day, HTTP-only, SameSite=Lax cookie. The server
+  stores only the HMAC hash and expiry. Every `/api` route is authenticated by
+  default except health checks and the minimum OAuth/login callback surface.
+- Google and GitHub OAuth use PKCE plus an unguessable state. Connector flows bind the
+  state to an intent, user, and workspace. States expire after ten minutes and
+  are single-use.
 
 ## Secrets
 
-- Connector tokens are verified against the provider before storage and
-  encrypted at rest with Fernet. Production deployments should supply a
+- Connector grants are stored per workspace and encrypted at rest with Fernet.
+  They are never returned to the browser. Production deployments should supply a
   KMS-managed `INTEGRATION_ENCRYPTION_KEY`.
 - Git credentials are passed to `git clone` through a temporary askpass
   file and environment variable, not embedded in URLs or arguments.
 - API keys (`/api/keys`) are shown once at creation; only a SHA-256 hash
   and a 12-character prefix are stored. Revocation is a tombstone so the
-  audit trail survives.
+  audit trail survives. New keys are bound to the creator's active workspace;
+  the MCP bridge forwards them as bearer credentials, and the API rejects
+  keys that are unscoped, revoked, invalid, or used against another workspace.
 
 ## RBAC
 
@@ -52,4 +59,4 @@ and ask; viewers read.
 Every consequential event is recorded: ingestion jobs, queries answered,
 runbook generation, drift checks, simulations, action proposals/approvals/
 denials, memory approvals, importer runs, API key lifecycle, connector
-connections.
+connections and disconnections.

@@ -1,95 +1,238 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
+import logging
+import time
 from pathlib import Path
+from threading import Thread
+from urllib.parse import urlencode
 
-from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.responses import RedirectResponse
 
 from app.approvals import ApprovalService
 from app.audit import AuditService
-from app.auth import ConnectorSecrets, OAuthStateStore
-from app.auth.api_keys import create_api_key, list_api_keys, revoke_api_key
+from app.auth import (
+    ConnectorSecrets,
+    OAuthStateStore,
+    complete_google_oauth,
+    google_oauth_url,
+)
+from app.auth.api_keys import (
+    create_api_key,
+    list_api_keys,
+    revoke_api_key,
+    verify_api_key,
+)
 from app.auth.app_auth import (
     bearer_token,
     create_dev_session,
+    create_oauth_session,
     create_workspace,
     invite_member,
     list_workspaces,
     logout,
     me_from_token,
+    request_email_login_code,
+    verify_email_login_code,
     workspace_members,
 )
+from app.auth.mcp_oauth import principal_from_mcp_token, register_mcp_client
+from app.company_context import CompanyContextService
+from app.connectors.application import OrgMemorySyncApplier
+from app.connectors.base import WebhookRequest
 from app.connectors.github import GitHubConnector
+from app.connectors.runtime import ConnectorRuntime
 from app.connectors.slack import SlackConnector
-from app.connectors.stubs import planned_connectors
+from app.connectors.stubs.registry import connector_catalog as product_connector_catalog
+from app.connectors.sync import SyncEngine
 from app.core.config import settings
 from app.core.database import connect, decode, new_id, row, rows, utcnow
+from app.execution import ExecutionError, available_executors
+from app.execution import execute as execute_run
+from app.execution import get as get_execution_run
+from app.execution import list_runs as list_execution_runs
+from app.execution import start as start_execution_run
+from app.governance import ScopeService
 from app.graph import get_graph_store
 from app.hcag_adapter import HCAGAdapter
 from app.importers import NotConnectedError, get_importer, importer_statuses
+from app.ingestion.maintenance import (
+    rebuild_atomic_memories_from_index,
+    rebuild_services_from_index,
+    reset_project_derived_memory,
+)
 from app.ingestion.repository import RepositoryIngestor
 from app.ingestion.service import IngestionService
 from app.ingestion.slack import SlackIngestor
-from app.intelligence import DriftService, SimulationService, blast_radius, correlate_changes
-from app.memory import OperationalMemoryService
+from app.intelligence import (
+    DriftService,
+    SimulationService,
+    blast_radius,
+    correlate_changes,
+)
+from app.llm import model_catalog
+from app.memory import (
+    ChangeIntelligenceService,
+    CompanyBrainService,
+    CompanyMemoryService,
+    OperationalMemoryService,
+)
+from app.memory.change_intelligence import github_diff
+from app.outcomes import export_training_records, record_action, record_outcome
+from app.outcomes import stats as outcome_stats
 from app.reliability import ChangeImpactService, OperationalAssertionService
 from app.retrieval import RetrievalService
 from app.runbooks import RunbookService
+from app.skills import get as get_learned_skill
+from app.skills import list_skills as list_learned_skills
+from app.skills import retire as retire_learned_skill_record
+from app.work import MemoryWorkService
 
 from .schemas import (
+    ActionRecordRequest,
     ApiKeyCreateRequest,
+    ArtifactSaveRequest,
     AskRequest,
     AssertionDecisionRequest,
+    BulkAssertionReviewRequest,
     ChangeImpactAnalyzeRequest,
+    ConnectorSyncRequest,
+    ConnectorToolInvokeRequest,
+    ConnectorToolResolveRequest,
     CorrelateRequest,
+    CustomConnectorCreateRequest,
     DevLoginRequest,
+    EmailCodeRequest,
+    EmailCodeVerifyRequest,
+    ExecuteRequest,
     ExtractRequest,
+    GitHubBulkIngestRequest,
     GitHubIngestRequest,
     ImporterRunRequest,
     InviteMemberRequest,
+    MCPOAuthClientCreateRequest,
+    MemoryRepairRequest,
     MemoryResolveRequest,
+    MemoryWorkCompleteRequest,
+    MemoryWorkCreateRequest,
+    MemoryWorkResolveRequest,
+    OutcomeRecordRequest,
+    ProjectCreateRequest,
+    ProjectTeamRequest,
     ProposeRequest,
     ResolveRequest,
+    SemanticChangeInterpretRequest,
     SimulateRequest,
+    SkillCompileRequest,
     SlackIngestRequest,
-    TokenRequest,
+    TeamCreateRequest,
+    TeamMemberRequest,
     UploadRequest,
     WorkspaceCreateRequest,
 )
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 graph = get_graph_store()
 audit = AuditService()
 hcag = HCAGAdapter(graph)
+company_context = CompanyContextService(graph, hcag.context_store)
 ingestion = IngestionService(graph, hcag, audit)
-github = GitHubConnector()
-slack = SlackConnector()
-repository_ingestor = RepositoryIngestor(ingestion, graph, github)
-slack_ingestor = SlackIngestor(ingestion, graph, slack)
 retrieval = RetrievalService(hcag, audit)
 runbooks = RunbookService(graph, hcag, audit)
 approvals = ApprovalService(graph, runbooks, audit=audit)
 drift = DriftService(graph, runbooks, hcag, audit)
 simulation = SimulationService(runbooks, approvals.gate, audit)
 memories = OperationalMemoryService(graph, audit)
+company_memory = CompanyMemoryService(graph)
+company_brain = CompanyBrainService(graph)
+scopes = ScopeService()
 assertions = OperationalAssertionService(graph, audit)
 change_impacts = ChangeImpactService(graph, assertions, audit)
+change_intelligence = ChangeIntelligenceService(graph)
+memory_work = MemoryWorkService(retrieval, company_brain, audit)
+connector_runtime = ConnectorRuntime(audit=audit)
+connector_sync = SyncEngine(
+    OrgMemorySyncApplier(ingestion, graph),
+    registry=connector_runtime.registry,
+    audit=audit,
+)
 
 
 def fail(exc: Exception):
     raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def _authenticate(authorization: str | None) -> dict:
+    """Resolve a user session or workspace-scoped API key into one principal."""
+    token = bearer_token(authorization)
+    principal = me_from_token(token)
+    if principal:
+        return {**principal, "auth_type": "session"}
+
+    api_key = verify_api_key(token or "")
+    if api_key:
+        if not api_key["workspace_id"]:
+            # Keys made before workspace scoping cannot safely access tenant data.
+            raise HTTPException(401, "API key is not workspace-scoped; create a replacement key")
+        return {
+            "id": f"key:{api_key['id']}",
+            "email": "",
+            "display_name": api_key["name"],
+            "active_workspace_id": api_key["workspace_id"],
+            "role": "member",
+            "auth_type": "api_key",
+            "api_key_id": api_key["id"],
+        }
+
+    oauth_principal = principal_from_mcp_token(token or "")
+    if oauth_principal:
+        return oauth_principal
+
+    raise HTTPException(401, "Not authenticated")
+
+
+def _authorize_workspace(
+    authorization: str | None, workspace_id: str = "", *, admin: bool = False
+) -> dict:
+    """Authorize a principal against its active workspace and optional admin boundary."""
+    principal = _authenticate(authorization)
+    active_workspace_id = principal.get("active_workspace_id", "")
+    if workspace_id and workspace_id != active_workspace_id:
+        raise HTTPException(403, "Workspace is not available to this principal")
+    if admin and (
+        principal["auth_type"] in {"api_key", "mcp_oauth"}
+        or principal["role"] not in {"owner", "admin"}
+    ):
+        raise HTTPException(403, "Owner or admin session required")
+    return principal
+
+
 def _authorize_project(project_id: str, authorization: str | None, write: bool = False) -> dict:
-    """Authorize reliability data through the caller's active workspace."""
-    principal = me_from_token(bearer_token(authorization))
-    if not principal and settings.auth_dev_mode:
-        principal = create_dev_session()["user"]
+    """Authorize project data through the caller's active workspace."""
+    principal = _authenticate(authorization)
     if not principal:
         raise HTTPException(401, "Not authenticated")
     if write and principal["role"] == "viewer":
         raise HTTPException(403, "Viewer role cannot make reliability decisions")
+    if write and principal.get("auth_type") == "mcp_oauth" and "write" not in principal.get(
+        "oauth_scopes", []
+    ):
+        raise HTTPException(403, "MCP OAuth token does not include the write scope")
     if not row("SELECT id FROM projects WHERE id=?", (project_id,)):
         raise HTTPException(404, "Project not found")
     linked = rows("SELECT workspace_id FROM workspace_projects WHERE project_id=?", (project_id,))
@@ -101,14 +244,169 @@ def _authorize_project(project_id: str, authorization: str | None, write: bool =
             raise HTTPException(403, "Only an owner or admin can claim an unlinked project")
         with connect() as conn:
             conn.execute(
-                "INSERT OR IGNORE INTO workspace_projects VALUES (?,?)", (workspace_id, project_id)
+                "INSERT OR IGNORE INTO workspace_projects VALUES (?,?)",
+                (workspace_id, project_id),
             )
+    if principal["role"] not in {"owner", "admin"}:
+        team_ids = scopes.team_ids_for_user(workspace_id, principal["id"])
+        if not scopes.can_access_project(project_id, team_ids, write=write):
+            raise HTTPException(403, "Project is restricted to another team")
     return principal
+
+
+def _principal_team_ids(principal: dict) -> list[str] | None:
+    if principal.get("role") in {"owner", "admin"}:
+        return None
+    return scopes.team_ids_for_user(
+        principal.get("active_workspace_id", ""), principal.get("id", "")
+    )
+
+
+def _validate_team_scope(principal: dict, team_ids: list[str]) -> list[str]:
+    requested = sorted(set(team_ids))
+    if not requested:
+        return []
+    workspace_teams = {item["id"] for item in scopes.list_teams(principal["active_workspace_id"])}
+    if not set(requested).issubset(workspace_teams):
+        raise HTTPException(403, "One or more teams are outside the active workspace")
+    allowed = _principal_team_ids(principal)
+    if allowed is not None and not set(requested).issubset(set(allowed)):
+        raise HTTPException(403, "A source can only be shared with your teams")
+    return requested
+
+
+def _security_trim_graph_nodes(project_id: str, nodes: list[dict], principal: dict) -> list[dict]:
+    team_ids = _principal_team_ids(principal)
+    if team_ids is None:
+        return nodes
+    visible_memories = scopes.visible_memory_ids(project_id, team_ids)
+    source_node_types = {
+        "Source",
+        "SourceRevision",
+        "MemoryChangeSet",
+        "File",
+        "Issue",
+        "PullRequest",
+        "SlackMessage",
+        "EvidenceSource",
+        "KnowledgeItem",
+        "KnowledgeChunk",
+    }
+    candidate_sources = {
+        str(node.get("source_id") or node.get("id") or "")
+        for node in nodes
+        if node.get("node_type") in source_node_types
+    }
+    artifact_sources: dict[str, set[str]] = {}
+    for node in nodes:
+        node_type = node.get("node_type")
+        revision = None
+        if node_type == "Artifact":
+            revision = row(
+                "SELECT source_ids_json FROM artifact_revisions WHERE id=?",
+                (node.get("current_revision_id"),),
+            )
+        elif node_type == "ArtifactRevision":
+            revision = row(
+                "SELECT source_ids_json FROM artifact_revisions WHERE id=?",
+                (node.get("id"),),
+            )
+        if revision:
+            artifact_sources[str(node.get("id") or "")] = set(
+                json.loads(revision.get("source_ids_json") or "[]")
+            )
+            candidate_sources.update(artifact_sources[str(node.get("id") or "")])
+    visible_sources = scopes.visible_source_ids(project_id, candidate_sources, team_ids)
+    output: list[dict] = []
+    for node in nodes:
+        node_type = node.get("node_type")
+        if (
+            node_type == "MemoryUnit"
+            and visible_memories is not None
+            and node.get("id") not in visible_memories
+        ):
+            continue
+        if node_type in source_node_types:
+            source_id = str(node.get("source_id") or node.get("id") or "")
+            if source_id not in visible_sources:
+                continue
+        if node_type == "ContextEnvelope" and node.get("principal_id") != principal.get("id"):
+            continue
+        if node_type == "SkillSpec" and node.get("team_id") not in {"", *team_ids}:
+            continue
+        if node_type in {"Artifact", "ArtifactRevision"}:
+            dependencies = artifact_sources.get(str(node.get("id") or ""), set())
+            if not dependencies.issubset(visible_sources):
+                continue
+        output.append(node)
+    return output
+
+
+def _security_trim_graph_edges(project_id: str, edges: list[dict], principal: dict) -> list[dict]:
+    if _principal_team_ids(principal) is None:
+        return edges
+    visible_nodes = _security_trim_graph_nodes(
+        project_id, graph.list_nodes(project_id, limit=100_000), principal
+    )
+    visible_ids = {str(node.get("id") or "") for node in visible_nodes}
+    return [
+        edge
+        for edge in edges
+        if str(edge.get("from_id") or "") in visible_ids
+        and str(edge.get("to_id") or "") in visible_ids
+    ]
+
+
+def _security_trim_graph_summary(project_id: str, principal: dict) -> dict:
+    if _principal_team_ids(principal) is None:
+        return graph.graph_summary(project_id)
+    nodes = _security_trim_graph_nodes(
+        project_id, graph.list_nodes(project_id, limit=100_000), principal
+    )
+    edges = _security_trim_graph_edges(
+        project_id, graph.list_edges(project_id, limit=100_000), principal
+    )
+    node_counts: dict[str, int] = {}
+    edge_counts: dict[str, int] = {}
+    for node in nodes:
+        kind = str(node.get("node_type") or "Unknown")
+        node_counts[kind] = node_counts.get(kind, 0) + 1
+    for edge in edges:
+        kind = str(edge.get("relationship") or "Unknown")
+        edge_counts[kind] = edge_counts.get(kind, 0) + 1
+    return {
+        "project_id": project_id,
+        "node_counts": node_counts,
+        "edge_counts": edge_counts,
+        "total_nodes": len(nodes),
+        "total_edges": len(edges),
+        "services": [node for node in nodes if node.get("node_type") == "Service"],
+        "files": [node for node in nodes if node.get("node_type") == "File"],
+    }
+
+
+def _visible_project_ids(principal: dict) -> set[str] | None:
+    """Return projects visible to the caller's active workspace."""
+    linked = {
+        item["project_id"]
+        for item in rows(
+            "SELECT project_id FROM workspace_projects WHERE workspace_id=?",
+            (principal["active_workspace_id"],),
+        )
+    }
+    team_ids = _principal_team_ids(principal)
+    if team_ids is None:
+        return linked
+    return {project_id for project_id in linked if scopes.can_access_project(project_id, team_ids)}
 
 
 @router.get("/health")
 def health():
-    return {"status": "ok", "product": "Runbook"}
+    return {
+        "status": "ok",
+        "product": "OrgMemory",
+        "semantic_index": hcag.backfill_status,
+    }
 
 
 @router.get("/auth/me")
@@ -117,22 +415,117 @@ def auth_me(authorization: str | None = Header(default=None)):
     principal = me_from_token(token)
     if principal:
         return principal
-    if settings.auth_dev_mode:
-        return create_dev_session()["user"]
     raise HTTPException(401, "Not authenticated")
 
 
+@router.get("/auth/providers")
+def auth_providers():
+    github = bool(settings.github_client_id and settings.github_client_secret)
+    google = bool(settings.google_client_id and settings.google_client_secret)
+    email = bool(
+        settings.email_auth_enabled
+        and (settings.auth_dev_mode or settings.smtp_host and settings.email_from)
+    )
+    return {
+        "github": github,
+        "google": google,
+        "email": email,
+        "development": settings.auth_dev_mode,
+        "details": {
+            "github": {
+                "configured": github,
+                "setup": ("Ready" if github else "Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET"),
+            },
+            "google": {
+                "configured": google,
+                "setup": ("Ready" if google else "Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET"),
+            },
+            "email": {
+                "configured": email,
+                "setup": (
+                    "Ready" if email else "Set SMTP_HOST and EMAIL_FROM, or enable development auth"
+                ),
+            },
+        },
+    }
+
+
+@router.get("/models")
+def models():
+    catalog = model_catalog()
+    return {
+        "models": catalog,
+        "configured": sum(1 for item in catalog if item["configured"]),
+        "default": settings.org_memory_default_model_provider,
+        "fallback": "deterministic_grounding",
+    }
+
+
+@router.get("/platforms")
+def platforms():
+    """Public source and delivery catalog for the marketing surface.
+
+    The authenticated `/connectors/catalog` route serves the same list; this one
+    carries no workspace data so the landing page can show the real integration
+    status instead of a hand-maintained copy.
+    """
+    catalog = product_connector_catalog()
+    return {
+        "platforms": catalog,
+        "live": sum(1 for item in catalog if item["status"] == "live"),
+    }
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        settings.session_cookie_name,
+        token,
+        max_age=7 * 24 * 60 * 60,
+        httponly=True,
+        secure=settings.environment.casefold() == "production",
+        samesite="lax",
+        domain=settings.session_cookie_domain or None,
+        path="/",
+    )
+
+
 @router.post("/auth/dev-login")
-def auth_dev_login(request: DevLoginRequest):
+def auth_dev_login(request: DevLoginRequest, response: Response):
     try:
-        return create_dev_session(request.email, request.display_name)
+        result = create_dev_session(request.email, request.display_name)
+        _set_session_cookie(response, result["token"])
+        return result
+    except Exception as exc:
+        fail(exc)
+
+
+@router.post("/auth/email/request")
+def auth_email_request(request: EmailCodeRequest):
+    try:
+        return request_email_login_code(request.email)
+    except Exception as exc:
+        fail(exc)
+
+
+@router.post("/auth/email/verify")
+def auth_email_verify(request: EmailCodeVerifyRequest, response: Response):
+    try:
+        result = verify_email_login_code(request.email, request.code)
+        _set_session_cookie(response, result["token"])
+        return result
     except Exception as exc:
         fail(exc)
 
 
 @router.post("/auth/logout")
-def auth_logout(authorization: str | None = Header(default=None)):
-    return logout(bearer_token(authorization))
+def auth_logout(response: Response, authorization: str | None = Header(default=None)):
+    result = logout(bearer_token(authorization))
+    response.delete_cookie(
+        settings.session_cookie_name,
+        domain=settings.session_cookie_domain or None,
+        path="/",
+    )
+    return result
 
 
 @router.get("/workspaces")
@@ -151,14 +544,75 @@ def create_workspace_endpoint(
 
 
 @router.get("/workspaces/{workspace_id}/members")
-def members(workspace_id: str):
+def members(workspace_id: str, authorization: str | None = Header(default=None)):
+    _authorize_workspace(authorization, workspace_id, admin=True)
     return workspace_members(workspace_id)
 
 
 @router.post("/workspaces/{workspace_id}/members/invite")
-def invite(workspace_id: str, request: InviteMemberRequest):
+def invite(
+    workspace_id: str,
+    request: InviteMemberRequest,
+    authorization: str | None = Header(default=None),
+):
+    _authorize_workspace(authorization, workspace_id, admin=True)
     try:
         return invite_member(workspace_id, request.email, request.role)
+    except Exception as exc:
+        fail(exc)
+
+
+@router.get("/workspaces/{workspace_id}/teams")
+def list_workspace_teams(workspace_id: str, authorization: str | None = Header(default=None)):
+    _authorize_workspace(authorization, workspace_id)
+    return scopes.list_teams(workspace_id)
+
+
+@router.post("/workspaces/{workspace_id}/teams")
+def create_workspace_team(
+    workspace_id: str,
+    request: TeamCreateRequest,
+    authorization: str | None = Header(default=None),
+):
+    _authorize_workspace(authorization, workspace_id, admin=True)
+    try:
+        team = scopes.create_team(workspace_id, request.name, request.parent_team_id)
+        graph.upsert_node("Team", team)
+        return team
+    except Exception as exc:
+        fail(exc)
+
+
+@router.post("/teams/{team_id}/members")
+def add_team_member(
+    team_id: str,
+    request: TeamMemberRequest,
+    authorization: str | None = Header(default=None),
+):
+    team = row("SELECT * FROM teams WHERE id=?", (team_id,))
+    if not team:
+        raise HTTPException(404, "Team not found")
+    _authorize_workspace(authorization, team["workspace_id"], admin=True)
+    try:
+        return scopes.add_member(team_id, request.user_id, request.role)
+    except Exception as exc:
+        fail(exc)
+
+
+@router.post("/projects/{project_id}/teams")
+def assign_project_team(
+    project_id: str,
+    request: ProjectTeamRequest,
+    authorization: str | None = Header(default=None),
+):
+    principal = _authorize_project(project_id, authorization, write=True)
+    if principal["role"] not in {"owner", "admin"}:
+        raise HTTPException(403, "Owner or admin session required")
+    team = row("SELECT workspace_id FROM teams WHERE id=?", (request.team_id,))
+    if not team or team["workspace_id"] != principal["active_workspace_id"]:
+        raise HTTPException(404, "Team not found")
+    try:
+        return scopes.assign_project(project_id, request.team_id, request.access_level)
     except Exception as exc:
         fail(exc)
 
@@ -177,35 +631,75 @@ def graph_health():
 
 
 @router.get("/projects/{project_id}/graph/summary")
-def project_graph_summary(project_id: str):
+def project_graph_summary(project_id: str, authorization: str | None = Header(default=None)):
+    principal = _authorize_project(project_id, authorization)
     try:
-        return graph.graph_summary(project_id)
+        return _security_trim_graph_summary(project_id, principal)
     except Exception as exc:
         fail(exc)
 
 
 @router.get("/projects/{project_id}/graph/nodes")
 def project_graph_nodes(
-    project_id: str, node_type: str | None = None, limit: int = Query(200, ge=1, le=1000)
+    project_id: str,
+    node_type: str | None = None,
+    limit: int = Query(200, ge=1, le=1000),
+    authorization: str | None = Header(default=None),
 ):
+    principal = _authorize_project(project_id, authorization)
     try:
-        return graph.list_nodes(project_id, node_type, limit)
+        return _security_trim_graph_nodes(
+            project_id, graph.list_nodes(project_id, node_type, limit), principal
+        )
     except Exception as exc:
         fail(exc)
 
 
 @router.get("/projects/{project_id}/graph/edges")
 def project_graph_edges(
-    project_id: str, edge_type: str | None = None, limit: int = Query(200, ge=1, le=1000)
+    project_id: str,
+    edge_type: str | None = None,
+    limit: int = Query(200, ge=1, le=1000),
+    authorization: str | None = Header(default=None),
 ):
+    principal = _authorize_project(project_id, authorization)
     try:
-        return graph.list_edges(project_id, edge_type, limit)
+        return _security_trim_graph_edges(
+            project_id, graph.list_edges(project_id, edge_type, limit), principal
+        )
+    except Exception as exc:
+        fail(exc)
+
+
+@router.get("/projects/{project_id}/graph/view")
+def project_graph_view(
+    project_id: str,
+    limit: int = Query(300, ge=1, le=1000),
+    authorization: str | None = Header(default=None),
+):
+    """Return one consistent ArcadeDB snapshot for the visual explorer."""
+    principal = _authorize_project(project_id, authorization)
+    try:
+        nodes = _security_trim_graph_nodes(
+            project_id, graph.list_nodes(project_id, limit=limit), principal
+        )
+        edges = _security_trim_graph_edges(
+            project_id, graph.list_edges(project_id, limit=limit), principal
+        )
+        return {
+            "summary": _security_trim_graph_summary(project_id, principal),
+            "nodes": nodes,
+            "edges": edges,
+        }
     except Exception as exc:
         fail(exc)
 
 
 @router.get("/projects/{project_id}/graph/service/{service_name}")
-def project_service_graph(project_id: str, service_name: str):
+def project_service_graph(
+    project_id: str, service_name: str, authorization: str | None = Header(default=None)
+):
+    _authorize_project(project_id, authorization)
     try:
         return graph.service_graph(project_id, service_name)
     except Exception as exc:
@@ -213,7 +707,10 @@ def project_service_graph(project_id: str, service_name: str):
 
 
 @router.get("/projects/{project_id}/graph/file")
-def project_file_graph(project_id: str, path: str):
+def project_file_graph(
+    project_id: str, path: str, authorization: str | None = Header(default=None)
+):
+    _authorize_project(project_id, authorization)
     try:
         return graph.file_graph(project_id, path)
     except Exception as exc:
@@ -221,7 +718,12 @@ def project_file_graph(project_id: str, path: str):
 
 
 @router.get("/projects/{project_id}/graph/trace")
-def project_graph_trace(project_id: str, chunk_ids: str = ""):
+def project_graph_trace(
+    project_id: str,
+    chunk_ids: str = "",
+    authorization: str | None = Header(default=None),
+):
+    _authorize_project(project_id, authorization)
     try:
         return graph.get_retrieval_trace(
             project_id, [value for value in chunk_ids.split(",") if value]
@@ -231,22 +733,59 @@ def project_graph_trace(project_id: str, chunk_ids: str = ""):
 
 
 @router.get("/overview")
-def overview():
+def overview(authorization: str | None = Header(default=None)):
+    principal = _authorize_workspace(authorization)
+    visible = _visible_project_ids(principal)
+    project_ids = sorted(visible or set())
+    placeholders = ",".join("?" for _ in project_ids) or "''"
+    project_filter = f"project_id IN ({placeholders})"
     counts = {
-        "projects": row("SELECT COUNT(*) value FROM projects")["value"],
-        "knowledge_items": row("SELECT COUNT(*) value FROM knowledge_items")["value"],
-        "runbooks": row("SELECT COUNT(*) value FROM runbooks")["value"],
-        "pending_approvals": row("SELECT COUNT(*) value FROM actions WHERE status='pending'")[
-            "value"
-        ],
+        "projects": len(project_ids),
+        "knowledge_items": row(
+            f"SELECT COUNT(*) value FROM knowledge_items WHERE {project_filter}",
+            tuple(project_ids),
+        )["value"],
+        "runbooks": row(
+            f"SELECT COUNT(*) value FROM runbooks WHERE {project_filter}",
+            tuple(project_ids),
+        )["value"],
+        "pending_approvals": row(
+            f"SELECT COUNT(*) value FROM actions WHERE status='pending' AND {project_filter}",
+            tuple(project_ids),
+        )["value"],
         "recent_queries": row(
-            "SELECT COUNT(*) value FROM audit_events WHERE event_type='query.answered'"
+            f"SELECT COUNT(*) value FROM audit_events WHERE event_type='query.answered' AND {project_filter}",
+            tuple(project_ids),
         )["value"],
         "connected_sources": row(
-            "SELECT COUNT(*) value FROM connector_accounts WHERE status='connected'"
+            "SELECT COUNT(*) value FROM workspace_connector_accounts WHERE workspace_id=? AND status='connected'",
+            (principal["active_workspace_id"],),
+        )["value"],
+        "memory_units": row(
+            f"SELECT COUNT(*) value FROM memory_units WHERE is_latest=1 AND {project_filter}",
+            tuple(project_ids),
+        )["value"],
+        "decisions": row(
+            f"SELECT COUNT(*) value FROM memory_units WHERE is_latest=1 AND type='decision' AND {project_filter}",
+            tuple(project_ids),
+        )["value"],
+        "policies": row(
+            f"SELECT COUNT(*) value FROM memory_units WHERE is_latest=1 AND type='policy' AND {project_filter}",
+            tuple(project_ids),
+        )["value"],
+        "memory_conflicts": row(
+            f"SELECT COUNT(*) value FROM memory_relationships WHERE relationship='CONTRADICTS' AND {project_filter}",
+            tuple(project_ids),
+        )["value"],
+        "memory_changes": row(
+            f"SELECT COUNT(*) value FROM memory_change_sets WHERE {project_filter}",
+            tuple(project_ids),
         )["value"],
     }
-    return {**counts, "graph": graph_health(), "recent_activity": audit.list(limit=8)}
+    activity = [
+        item for item in audit.list(limit=100) if item.get("project_id") in set(project_ids)
+    ][:8]
+    return {**counts, "graph": graph_health(), "recent_activity": activity}
 
 
 @router.get("/settings/runtime")
@@ -260,29 +799,449 @@ def runtime_settings():
         "arcadedb_database": settings.arcadedb_database,
         "hcag_enabled": True,
         "agentgate_enabled": True,
+        "embedding_provider": settings.runbook_embedding_provider,
+        "embedding_model": (
+            settings.runbook_embedding_model
+            if settings.runbook_embedding_provider == "fastembed"
+            else settings.runbook_openai_embedding_model
+        ),
+        "semantic_retrieval": settings.runbook_embedding_provider in {"fastembed", "openai"},
+        "reranker": (
+            settings.runbook_reranker_model
+            if settings.runbook_reranker_provider == "fastembed"
+            else "disabled"
+        ),
+        "vector_store": "arcadedb_exact_cosine",
         "github_oauth_configured": bool(
             settings.github_client_id and settings.github_client_secret
         ),
         "slack_oauth_configured": bool(settings.slack_client_id and settings.slack_client_secret),
+        "github_live_updates": bool(settings.github_webhook_secret),
+        "slack_live_updates": bool(settings.slack_signing_secret),
+        "google_oauth_configured": bool(
+            settings.google_client_id and settings.google_client_secret
+        ),
+        "email_auth_configured": bool(
+            settings.email_auth_enabled
+            and (settings.auth_dev_mode or settings.smtp_host and settings.email_from)
+        ),
+        "models_configured": sum(1 for item in model_catalog() if item["configured"]),
     }
 
 
 @router.get("/projects")
-def list_projects():
-    return rows(
+def list_projects(authorization: str | None = Header(default=None)):
+    principal = _authenticate(authorization)
+    visible = _visible_project_ids(principal)
+    records = rows(
         "SELECT p.*, (SELECT COUNT(*) FROM knowledge_items k WHERE k.project_id=p.id) knowledge_items, (SELECT COUNT(*) FROM runbooks r WHERE r.project_id=p.id) runbooks FROM projects p ORDER BY created_at DESC"
     )
+    return records if visible is None else [item for item in records if item["id"] in visible]
+
+
+@router.post("/projects")
+def create_memory_project(
+    request: ProjectCreateRequest, authorization: str | None = Header(default=None)
+):
+    principal = _authorize_workspace(authorization)
+    if principal["role"] == "viewer":
+        raise HTTPException(403, "Viewer role cannot create a project")
+    team_ids = _validate_team_scope(principal, request.team_ids)
+    project_id = ingestion.create_project(request.name)
+    with connect() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO workspace_projects VALUES (?,?)",
+            (principal["active_workspace_id"], project_id),
+        )
+    for team_id in team_ids:
+        scopes.assign_project(project_id, team_id, "write")
+    return {"id": project_id, "name": request.name, "status": "ready"}
+
+
+@router.get("/projects/{project_id}/context")
+def project_context(project_id: str, authorization: str | None = Header(default=None)):
+    _authorize_project(project_id, authorization)
+    try:
+        return company_context.briefing(project_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except Exception as exc:
+        fail(exc)
+
+
+@router.post("/projects/{project_id}/memory/repair")
+def repair_project_memory(
+    project_id: str,
+    request: MemoryRepairRequest,
+    authorization: str | None = Header(default=None),
+):
+    principal = _authorize_project(project_id, authorization, write=True)
+    if principal["role"] not in {"owner", "admin"}:
+        raise HTTPException(403, "Owner or admin session required")
+    project = row("SELECT * FROM projects WHERE id=?", (project_id,)) or {}
+    try:
+        cleanup = reset_project_derived_memory(
+            graph,
+            project_id,
+            repository_only=request.repository_only,
+            clear_work_history=request.clear_work_history,
+        )
+        reingestion = {}
+        if project.get("repository"):
+            connector = GitHubConnector(
+                ConnectorSecrets(
+                    principal["active_workspace_id"],
+                    principal["id"],
+                )
+            )
+            reingestion = RepositoryIngestor(ingestion, graph, connector).ingest(
+                project["repository"],
+                project["name"],
+            )
+        retained_memories = rebuild_atomic_memories_from_index(
+            graph,
+            project_id,
+            source_types={
+                "doc",
+                "document",
+                "incident",
+                "log",
+                "report",
+                "slack",
+                "slack_export",
+                "text",
+                "upload",
+            },
+        )
+        service_count = rebuild_services_from_index(graph, project_id)
+        audit.record(
+            "memory.repaired",
+            f"Rebuilt current memory for {project.get('name') or project_id}",
+            project_id,
+            principal.get("display_name") or principal["id"],
+            {
+                **cleanup,
+                "repository_only": request.repository_only,
+                "services": service_count,
+            },
+        )
+        return {
+            "status": "repaired",
+            "project_id": project_id,
+            "cleanup": cleanup,
+            "reingestion": reingestion,
+            "retained_memories": retained_memories,
+            "current_memories": len(company_memory.list(project_id, latest=True, limit=10_000)),
+            "services": service_count,
+        }
+    except Exception as exc:
+        fail(exc)
+
+
+def _github_webhook_project(repository: str) -> dict:
+    for project in rows(
+        """SELECT p.*,wp.workspace_id FROM projects p
+        LEFT JOIN workspace_projects wp ON wp.project_id=p.id"""
+    ):
+        if GitHubConnector.slug(str(project.get("repository") or "")) == repository:
+            return project
+    raise HTTPException(404, "No OrgMemory project is connected to this GitHub repository")
+
+
+def _process_github_webhook_event(event_id: str, payload: dict, workspace_id: str) -> None:
+    try:
+        connector = GitHubConnector(ConnectorSecrets(workspace_id))
+        repository = str((payload.get("repository") or {}).get("full_name") or "")
+        project = _github_webhook_project(repository)
+        # A webhook is a source revision signal, not just a notification.
+        # Reconcile the repository corpus first so HCAG can answer against the
+        # new commit immediately after this background task completes.
+        RepositoryIngestor(ingestion, graph, connector).ingest(
+            str(project.get("repository") or ""),
+            str(project.get("name") or repository),
+        )
+        diff, metadata = github_diff(payload, connector)
+        change_intelligence.process(
+            event_id,
+            diff,
+            {
+                "event": payload.get("action") or "push",
+                "commit_sha": metadata["commit_sha"],
+                "scope": {"repo": metadata["repository"]},
+            },
+        )
+    except Exception as exc:
+        change_intelligence.fail(event_id, str(exc))
+
+
+def _process_slack_memory_event(event: dict) -> None:
+    channel_id = str(event.get("channel") or "")
+    subtype = str(event.get("subtype") or "")
+    message = event.get("message") if subtype == "message_changed" else event
+    previous = event.get("previous_message") or {}
+    timestamp = str(
+        (message or {}).get("ts")
+        or previous.get("ts")
+        or event.get("deleted_ts")
+        or event.get("ts")
+        or ""
+    )
+    if not channel_id or not timestamp:
+        return
+    projects = rows(
+        """SELECT DISTINCT project_id FROM knowledge_items
+        WHERE source_type IN ('slack','slack_export')
+        AND json_extract(metadata_json,'$.channel_id')=?""",
+        (channel_id,),
+    )
+    for project in projects:
+        project_id = project["project_id"]
+        existing = row(
+            """SELECT * FROM knowledge_items WHERE project_id=?
+            AND source_type IN ('slack','slack_export')
+            AND json_extract(metadata_json,'$.channel_id')=?
+            AND json_extract(metadata_json,'$.timestamp')=? LIMIT 1""",
+            (project_id, channel_id, timestamp),
+        )
+        if subtype == "message_deleted":
+            if existing:
+                company_memory.retire_source_memories(project_id, existing["source_id"])
+                graph.delete_source_knowledge(
+                    project_id, existing["source_id"], existing["source_type"]
+                )
+                with connect() as conn:
+                    conn.execute("DELETE FROM knowledge_items WHERE id=?", (existing["id"],))
+            continue
+        text = str((message or {}).get("text") or "").strip()
+        if not text or ((message or {}).get("bot_id") and subtype != "message_changed"):
+            continue
+        source_id = (
+            existing["source_id"]
+            if existing
+            else f"slack-message:{project_id}:{channel_id}:{timestamp}"
+        )
+        if existing and existing["content"] == text:
+            continue
+        if existing:
+            company_memory.retire_source_memories(project_id, source_id)
+            graph.delete_source_knowledge(project_id, source_id, existing["source_type"])
+            with connect() as conn:
+                conn.execute("DELETE FROM knowledge_items WHERE id=?", (existing["id"],))
+        ingestion.ingest_item(
+            project_id,
+            "slack",
+            f"Slack #{channel_id} at {timestamp}",
+            text,
+            source_id=source_id,
+            metadata={
+                "channel_id": channel_id,
+                "channel_name": channel_id,
+                "user": (message or {}).get("user", ""),
+                "timestamp": timestamp,
+                "source_updated_at": event.get("event_ts") or timestamp,
+                "actor": "slack_event",
+            },
+        )
+
+
+@router.post("/webhooks/{provider}/{workspace_id}", status_code=202)
+async def connector_webhook(
+    provider: str,
+    workspace_id: str,
+    request: Request,
+):
+    """Signed, workspace-bound webhook entry point for every connector package."""
+    try:
+        return connector_sync.receive_webhook(
+            provider,
+            workspace_id,
+            WebhookRequest(
+                headers={key.casefold(): value for key, value in request.headers.items()},
+                body=await request.body(),
+            ),
+        )
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        message = str(exc)
+        status = 401 if any(word in message.casefold() for word in ("signature", "stale")) else 400
+        raise HTTPException(status, message) from exc
+
+
+@router.post("/webhooks/github", status_code=202)
+async def github_change_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_hub_signature_256: str = Header(default=""),
+    x_github_delivery: str = Header(default=""),
+    x_github_event: str = Header(default="push"),
+):
+    if not settings.github_webhook_secret:
+        raise HTTPException(503, "GitHub webhook verification is not configured")
+    body = await request.body()
+    expected = (
+        "sha256="
+        + hmac.new(settings.github_webhook_secret.encode(), body, hashlib.sha256).hexdigest()
+    )
+    if not x_hub_signature_256 or not hmac.compare_digest(expected, x_hub_signature_256):
+        raise HTTPException(401, "Invalid GitHub webhook signature")
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(400, "GitHub webhook body is not valid JSON") from exc
+    repository = str((payload.get("repository") or {}).get("full_name") or "")
+    project = _github_webhook_project(repository)
+    delivery_id = x_github_delivery or hashlib.sha256(body).hexdigest()
+    pull_request = payload.get("pull_request") or {}
+    commit_sha = str(((pull_request.get("head") or {}).get("sha")) or payload.get("after") or "")
+    source_url = str(
+        pull_request.get("html_url")
+        or (payload.get("head_commit") or {}).get("url")
+        or (payload.get("repository") or {}).get("html_url")
+        or ""
+    )
+    event, created = change_intelligence.observe(
+        project["id"],
+        delivery_id,
+        f"github_{x_github_event}",
+        repository,
+        commit_sha,
+        source_url,
+        payload,
+    )
+    if created:
+        background_tasks.add_task(
+            _process_github_webhook_event,
+            event["id"],
+            payload,
+            str(project.get("workspace_id") or ""),
+        )
+    return {**event, "accepted": created, "replayed": not created}
+
+
+@router.post("/webhooks/slack")
+async def slack_memory_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_slack_request_timestamp: str = Header(default=""),
+    x_slack_signature: str = Header(default=""),
+):
+    if not settings.slack_signing_secret:
+        raise HTTPException(503, "Slack webhook verification is not configured")
+    body = await request.body()
+    try:
+        timestamp = int(x_slack_request_timestamp)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(401, "Invalid Slack request timestamp") from exc
+    if abs(int(time.time()) - timestamp) > 300:
+        raise HTTPException(401, "Stale Slack webhook request")
+    expected = (
+        "v0="
+        + hmac.new(
+            settings.slack_signing_secret.encode(),
+            f"v0:{x_slack_request_timestamp}:".encode() + body,
+            hashlib.sha256,
+        ).hexdigest()
+    )
+    if not x_slack_signature or not hmac.compare_digest(expected, x_slack_signature):
+        raise HTTPException(401, "Invalid Slack webhook signature")
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(400, "Slack webhook body is not valid JSON") from exc
+    if payload.get("type") == "url_verification":
+        return {"challenge": payload.get("challenge", "")}
+    event = payload.get("event") or {}
+    if event.get("type") == "message":
+        background_tasks.add_task(_process_slack_memory_event, event)
+    return {"accepted": True}
+
+
+@router.post("/memory/semantic-changes/interpret")
+def interpret_semantic_change(
+    request: SemanticChangeInterpretRequest,
+    authorization: str | None = Header(default=None),
+):
+    _authorize_project(request.project_id, authorization, write=True)
+    project = row("SELECT * FROM projects WHERE id=?", (request.project_id,)) or {}
+    repository = request.repository or GitHubConnector.slug(project.get("repository", "")) or ""
+    delivery_id = (
+        request.delivery_id
+        or hashlib.sha256(
+            f"{request.project_id}:{request.commit_sha}:{request.diff}".encode()
+        ).hexdigest()
+    )
+    event, created = change_intelligence.observe(
+        request.project_id,
+        delivery_id,
+        "github_commit",
+        repository,
+        request.commit_sha,
+        request.source_url,
+        {"manual": True, "context": request.context},
+    )
+    if created:
+        return change_intelligence.process(
+            event["id"],
+            request.diff,
+            {
+                **request.context,
+                "scope": {"repo": repository, **request.context.get("scope", {})},
+            },
+        )
+    return change_intelligence.detail(event["id"])
+
+
+@router.get("/memory/semantic-changes")
+def semantic_changes(
+    project_id: str,
+    limit: int = Query(100, ge=1, le=500),
+    authorization: str | None = Header(default=None),
+):
+    _authorize_project(project_id, authorization)
+    return change_intelligence.list(project_id, limit)
+
+
+@router.get("/memory/semantic-changes/{event_id}")
+def semantic_change_detail(event_id: str, authorization: str | None = Header(default=None)):
+    event = change_intelligence.get(event_id)
+    if not event:
+        raise HTTPException(404, "Semantic change event not found")
+    _authorize_project(event["project_id"], authorization)
+    return change_intelligence.detail(event_id)
 
 
 @router.post("/ingest/github")
-def ingest_github(request: GitHubIngestRequest):
+def ingest_github(request: GitHubIngestRequest, authorization: str | None = Header(default=None)):
+    principal = _authorize_workspace(authorization, request.workspace_id or "")
+    team_ids = _validate_team_scope(principal, request.team_ids)
+    connector = GitHubConnector(ConnectorSecrets(principal["active_workspace_id"], principal["id"]))
     job_id = _create_job(
         source="github",
         source_ref=request.repo_url_or_path,
-        workspace_id=request.workspace_id,
+        workspace_id=principal["active_workspace_id"],
     )
     try:
-        result = repository_ingestor.ingest(request.repo_url_or_path, request.project_name)
+        result = RepositoryIngestor(ingestion, graph, connector).ingest(
+            request.repo_url_or_path, request.project_name
+        )
+        with connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO workspace_projects VALUES (?,?)",
+                (principal["active_workspace_id"], result["project_id"]),
+            )
+        for team_id in team_ids:
+            scopes.assign_project(result["project_id"], team_id, "write")
+        repository_resource = GitHubConnector.slug(request.repo_url_or_path) or request.repo_url_or_path
+        connector_sync.enqueue(
+            "github",
+            principal["active_workspace_id"],
+            principal["id"],
+            repository_resource,
+            project_id=result["project_id"],
+            cursor={"repository": repository_resource},
+            idempotency_key=f"initial:{result['project_id']}:{repository_resource}",
+        )
         if result.get("change", {}).get("changed_files"):
             result["change_impact"] = change_impacts.analyze(result["project_id"], result["change"])
         _finish_job(job_id, "succeeded", result)
@@ -292,8 +1251,99 @@ def ingest_github(request: GitHubIngestRequest):
         fail(exc)
 
 
+@router.post("/ingest/github/all")
+def ingest_all_github(
+    request: GitHubBulkIngestRequest,
+    background_tasks: BackgroundTasks,
+    authorization: str | None = Header(default=None),
+):
+    """Index every repository visible to this workspace's GitHub grant."""
+    principal = _authorize_workspace(authorization, request.workspace_id or "", admin=True)
+    workspace_id = principal["active_workspace_id"]
+    queued = _queue_github_inventory(
+        workspace_id,
+        principal["id"],
+        background_tasks,
+        include_archived=request.include_archived,
+        max_repositories=request.max_repositories,
+        owner=request.owner or "",
+    )
+    return {"status": "queued" if queued else "nothing_to_index", "repositories_queued": queued}
+
+
+def _queue_github_inventory(
+    workspace_id: str,
+    user_id: str,
+    background_tasks: BackgroundTasks | None,
+    *,
+    include_archived: bool = False,
+    max_repositories: int = 500,
+    owner: str = "",
+) -> int:
+    """Queue every visible repository for ingestion. Returns how many were queued.
+
+    Best-effort by design: this runs inside an OAuth redirect, where raising
+    would strand the user on an error page after their account connected fine.
+    """
+    try:
+        connector = GitHubConnector(ConnectorSecrets(workspace_id, user_id))
+        repositories = connector.list_repositories()
+    except Exception:
+        return 0
+    wanted = owner.casefold()
+    selected = [
+        item
+        for item in repositories
+        if (include_archived or not item.get("archived"))
+        and (not wanted or str((item.get("owner") or {}).get("login", "")).casefold() == wanted)
+    ][:max_repositories]
+    queued: list[dict[str, str]] = []
+    for repository in selected:
+        source = repository.get("clone_url") or repository.get("html_url")
+        full_name = repository.get("full_name") or repository.get("name") or source
+        job_id = _create_job("github", source, workspace_id=workspace_id)
+        queued.append({"job_id": job_id, "repository": full_name, "source": source})
+    if not queued:
+        return 0
+    if background_tasks is not None:
+        background_tasks.add_task(_run_github_inventory, queued, connector, workspace_id)
+    else:
+        Thread(
+            target=_run_github_inventory,
+            args=(queued, connector, workspace_id),
+            daemon=True,
+        ).start()
+    return len(queued)
+
+
+def _run_github_inventory(
+    queued: list[dict[str, str]],
+    connector: GitHubConnector,
+    workspace_id: str = "",
+) -> None:
+    """Complete a GitHub inventory outside the request/response timeout."""
+    ingestor = RepositoryIngestor(ingestion, graph, connector)
+    for item in queued:
+        try:
+            result = ingestor.ingest(item["source"], item["repository"])
+            # Without this link the repository is ingested but invisible: it never
+            # appears in the workspace, and asking about it fails authorization.
+            # The single-repository route has always done this; bulk did not.
+            if workspace_id:
+                with connect() as conn:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO workspace_projects VALUES (?,?)",
+                        (workspace_id, result["project_id"]),
+                    )
+            _finish_job(item["job_id"], "succeeded", result)
+        except Exception as exc:
+            _fail_job(item["job_id"], exc)
+
+
 @router.post("/ingest/upload")
-def ingest_upload(request: UploadRequest):
+def ingest_upload(request: UploadRequest, authorization: str | None = Header(default=None)):
+    principal = _authorize_project(request.project_id, authorization, write=True)
+    team_ids = _validate_team_scope(principal, request.team_ids)
     job_id = _create_job("upload", request.title, project_id=request.project_id)
     try:
         result = ingestion.ingest_item(
@@ -302,6 +1352,13 @@ def ingest_upload(request: UploadRequest):
             request.title,
             request.content,
             request.source_url,
+            request.source_id,
+            {
+                "team_ids": team_ids,
+                "artifact_type": request.artifact_type,
+                "artifact_name": request.artifact_name or request.title,
+                "actor": principal["id"],
+            },
         )
         payload = {"project_id": request.project_id, **result, "status": "success"}
         _finish_job(job_id, "succeeded", payload)
@@ -313,8 +1370,12 @@ def ingest_upload(request: UploadRequest):
 
 @router.post("/ingest/file")
 async def ingest_file(
-    project_id: str = Form(...), source_type: str = Form("doc"), file: UploadFile = File(...)
+    project_id: str = Form(...),
+    source_type: str = Form("doc"),
+    file: UploadFile = File(...),
+    authorization: str | None = Header(default=None),
 ):
+    _authorize_project(project_id, authorization, write=True)
     suffix = Path(file.filename or "upload.txt").suffix.lower()
     if suffix not in {".md", ".txt", ".json", ".csv", ".log", ".yaml", ".yml"}:
         raise HTTPException(415, "Unsupported file type")
@@ -323,11 +1384,25 @@ async def ingest_file(
 
 
 @router.post("/ingest/slack")
-def ingest_slack(request: SlackIngestRequest):
+def ingest_slack(request: SlackIngestRequest, authorization: str | None = Header(default=None)):
+    principal = _authorize_project(request.project_id, authorization, write=True)
+    team_ids = _validate_team_scope(principal, request.team_ids)
     job_id = _create_job("slack", request.channel_id, project_id=request.project_id)
     try:
-        result = slack_ingestor.ingest_channel(
-            request.project_id, request.channel_id, request.limit
+        connector = SlackConnector(
+            ConnectorSecrets(principal["active_workspace_id"], principal["id"])
+        )
+        result = SlackIngestor(ingestion, graph, connector).ingest_channel(
+            request.project_id, request.channel_id, request.limit, team_ids
+        )
+        connector_sync.enqueue(
+            "slack",
+            principal["active_workspace_id"],
+            principal["id"],
+            request.channel_id,
+            project_id=request.project_id,
+            cursor={"channel_id": request.channel_id, "limit": request.limit},
+            idempotency_key=f"initial:{request.project_id}:{request.channel_id}",
         )
         _finish_job(job_id, "succeeded", result)
         return {"job_id": job_id, **result}
@@ -337,8 +1412,10 @@ def ingest_slack(request: SlackIngestRequest):
 
 
 @router.get("/ingest/jobs")
-def ingest_jobs(project_id: str | None = None):
+def ingest_jobs(project_id: str | None = None, authorization: str | None = Header(default=None)):
+    principal = _authorize_workspace(authorization)
     if project_id:
+        _authorize_project(project_id, authorization)
         return [
             decode(item)
             for item in rows(
@@ -348,38 +1425,610 @@ def ingest_jobs(project_id: str | None = None):
         ]
     return [
         decode(item)
-        for item in rows("SELECT * FROM ingestion_jobs ORDER BY created_at DESC LIMIT 200")
+        for item in rows(
+            """SELECT DISTINCT j.* FROM ingestion_jobs j
+            LEFT JOIN workspace_projects wp ON wp.project_id=j.project_id
+            WHERE j.workspace_id=? OR wp.workspace_id=?
+            ORDER BY j.created_at DESC LIMIT 200""",
+            (principal["active_workspace_id"], principal["active_workspace_id"]),
+        )
     ]
 
 
 @router.get("/ingest/jobs/{job_id}")
-def ingest_job(job_id: str):
+def ingest_job(job_id: str, authorization: str | None = Header(default=None)):
+    principal = _authorize_workspace(authorization)
     item = row("SELECT * FROM ingestion_jobs WHERE id=?", (job_id,))
     if not item:
         raise HTTPException(404, "Ingestion job not found")
+    if item.get("workspace_id") != principal["active_workspace_id"]:
+        if not item.get("project_id"):
+            raise HTTPException(404, "Ingestion job not found")
+        _authorize_project(item["project_id"], authorization)
     return decode(item)
 
 
 @router.post("/ask")
-def ask(request: AskRequest):
-    return retrieval.ask(request.project_id, request.query)
+def ask(request: AskRequest, authorization: str | None = Header(default=None)):
+    principal = _authorize_project(request.project_id, authorization)
+    visible = _visible_project_ids(principal)
+    return retrieval.ask(
+        request.project_id,
+        request.query,
+        sorted(visible or []),
+        principal=principal,
+        allowed_team_ids=_principal_team_ids(principal),
+        token_budget=request.token_budget,
+        model_provider=request.model,
+        surface=request.surface,
+        scope=request.scope,
+    )
+
+
+@router.post("/execute")
+def execute_handoff(
+    request: ExecuteRequest,
+    background: BackgroundTasks,
+    authorization: str | None = Header(default=None),
+):
+    """Apply a handoff to the repository with a headless coding agent.
+
+    Returns as soon as the run is queued — the agent takes minutes, so the
+    client polls `/execute/{run_id}` rather than holding a request open.
+    """
+    # The handoff names the repository its files actually came from, which is not
+    # necessarily the project selected in the UI — retrieval searches the whole
+    # workspace. Editing the wrong checkout is the failure this prevents.
+    target_project = str(request.handoff.get("project_id") or "") or request.project_id
+    principal = _authorize_project(target_project, authorization, write=True)
+    project = row("SELECT repository FROM projects WHERE id=?", (target_project,))
+    try:
+        run = start_execution_run(
+            project_id=target_project,
+            handoff=request.handoff,
+            repository=str((project or {}).get("repository") or ""),
+            workspace_id=principal["active_workspace_id"],
+            context_event_id=request.context_event_id,
+            executor=request.executor or "",
+            requested_by=str(principal.get("display_name") or principal["id"]),
+            push=request.push,
+        )
+    except ExecutionError as exc:
+        raise HTTPException(422, str(exc)) from None
+    background.add_task(execute_run, run["id"], push=request.push)
+    return run
+
+
+@router.get("/execute/{run_id}")
+def execution_run(run_id: str, authorization: str | None = Header(default=None)):
+    principal = _authorize_workspace(authorization)
+    run = get_execution_run(run_id)
+    if not run or run.get("workspace_id") != principal["active_workspace_id"]:
+        raise HTTPException(404, "Execution run not found")
+    return run
+
+
+@router.get("/execute")
+def execution_runs(
+    project_id: str = "",
+    limit: int = Query(50, ge=1, le=200),
+    authorization: str | None = Header(default=None),
+):
+    principal = _authorize_workspace(authorization)
+    if project_id:
+        _authorize_project(project_id, authorization)
+    return {
+        "runs": list_execution_runs(principal["active_workspace_id"], project_id, limit),
+        "executors": available_executors(),
+    }
+
+
+@router.get("/skills/learned")
+def learned_skills(
+    project_id: str = "",
+    status: str = "",
+    limit: int = Query(100, ge=1, le=500),
+    authorization: str | None = Header(default=None),
+):
+    """Skills distilled from work that verifiably worked in this workspace."""
+    principal = _authorize_workspace(authorization)
+    if project_id:
+        _authorize_project(project_id, authorization)
+    items = list_learned_skills(
+        principal["active_workspace_id"], project_id=project_id, status=status, limit=limit
+    )
+    return {
+        "skills": items,
+        "active": sum(1 for item in items if item["status"] == "active"),
+        "proposed": sum(1 for item in items if item["status"] == "proposed"),
+        "retired": sum(1 for item in items if item["status"] == "retired"),
+    }
+
+
+@router.post("/skills/learned/{skill_id}/retire")
+def retire_learned_skill(
+    skill_id: str,
+    reason: str = "",
+    authorization: str | None = Header(default=None),
+):
+    """Prune a skill by hand. A library nobody curates becomes a confident mess."""
+    principal = _authorize_workspace(authorization)
+    skill = get_learned_skill(skill_id)
+    if not skill or skill.get("workspace_id") != principal["active_workspace_id"]:
+        raise HTTPException(404, "Skill not found")
+    return retire_learned_skill_record(skill_id, reason or "Retired by a reviewer.")
+
+
+@router.post("/outcomes/actions")
+def record_context_action(
+    request: ActionRecordRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Log what was done with a served context — the second leg of the loop."""
+    principal = _authorize_workspace(authorization)
+    try:
+        return record_action(
+            context_event_id=request.context_event_id,
+            action_type=request.action_type,
+            workspace_id=principal["active_workspace_id"],
+            actor=str(principal.get("display_name") or principal["id"]),
+            surface=request.surface,
+            target=request.target,
+            detail=request.detail,
+        )
+    except LookupError:
+        raise HTTPException(404, "Unknown context event") from None
+
+
+@router.post("/outcomes/outcomes")
+def record_context_outcome(
+    request: OutcomeRecordRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Log whether the action worked — the leg that turns the log into a label."""
+    principal = _authorize_workspace(authorization)
+    try:
+        return record_outcome(
+            context_event_id=request.context_event_id,
+            outcome=request.outcome,
+            workspace_id=principal["active_workspace_id"],
+            action_event_id=request.action_event_id,
+            signal=request.signal,
+            reason=request.reason,
+            detail=request.detail,
+        )
+    except LookupError:
+        raise HTTPException(404, "Unknown context event") from None
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+
+
+@router.get("/outcomes/stats")
+def outcome_loop_stats(
+    project_id: str = "",
+    authorization: str | None = Header(default=None),
+):
+    principal = _authorize_workspace(authorization)
+    if project_id:
+        _authorize_project(project_id, authorization)
+    return outcome_stats(principal["active_workspace_id"], project_id)
+
+
+@router.get("/outcomes/export")
+def outcome_training_export(
+    project_id: str = "",
+    labelled_only: bool = True,
+    limit: int = Query(1000, ge=1, le=10000),
+    authorization: str | None = Header(default=None),
+):
+    """The labelled corpus this workspace has accumulated.
+
+    Scoped to the caller's workspace: an outcome record is the most
+    company-specific data OrgMemory holds and never crosses that boundary.
+    """
+    principal = _authorize_workspace(authorization)
+    if project_id:
+        _authorize_project(project_id, authorization)
+    records = export_training_records(
+        principal["active_workspace_id"],
+        project_id=project_id,
+        labelled_only=labelled_only,
+        limit=limit,
+    )
+    return {"records": records, "count": len(records)}
+
+
+@router.post("/work")
+def create_memory_work(
+    request: MemoryWorkCreateRequest,
+    authorization: str | None = Header(default=None),
+):
+    principal = _authorize_project(request.project_id, authorization, write=True)
+    visible = _visible_project_ids(principal)
+    try:
+        return memory_work.create(
+            request.project_id,
+            request.objective,
+            workspace_id=principal["active_workspace_id"],
+            requested_by=principal.get("display_name") or principal["id"],
+            workspace_project_ids=sorted(visible or []),
+            principal=principal,
+            allowed_team_ids=_principal_team_ids(principal),
+        )
+    except Exception as exc:
+        fail(exc)
+
+
+@router.get("/work")
+def list_memory_work(
+    project_id: str = "",
+    limit: int = Query(100, ge=1, le=500),
+    authorization: str | None = Header(default=None),
+):
+    if project_id:
+        _authorize_project(project_id, authorization)
+        return memory_work.list(project_id, limit)
+    principal = _authorize_workspace(authorization)
+    visible = _visible_project_ids(principal) or set()
+    return [
+        item
+        for item in memory_work.list(limit=limit)
+        if item.get("project_id") in visible
+        and item.get("workspace_id") == principal["active_workspace_id"]
+    ]
+
+
+def _authorize_memory_work(work_id: str, authorization: str | None, *, write: bool = False):
+    item = row("SELECT project_id FROM memory_work WHERE id=?", (work_id,))
+    if not item:
+        raise HTTPException(404, "Memory Work not found")
+    principal = _authorize_project(item["project_id"], authorization, write=write)
+    return item, principal
+
+
+@router.get("/work/{work_id}")
+def get_memory_work(work_id: str, authorization: str | None = Header(default=None)):
+    _authorize_memory_work(work_id, authorization)
+    return memory_work.get(work_id)
+
+
+@router.post("/work/{work_id}/steps/{step_id}/resolve")
+def resolve_memory_work_step(
+    work_id: str,
+    step_id: str,
+    request: MemoryWorkResolveRequest,
+    authorization: str | None = Header(default=None),
+):
+    _, principal = _authorize_memory_work(work_id, authorization, write=True)
+    try:
+        step = row(
+            "SELECT connector FROM memory_work_steps WHERE id=? AND work_id=?",
+            (step_id, work_id),
+        )
+        if not step:
+            raise ValueError("Work step not found")
+        if request.approved and step["connector"] == "slack":
+            return memory_work.approve_and_post_slack(
+                work_id,
+                step_id,
+                request.channel_id,
+                request.message,
+                SlackConnector(_connector_secrets(principal)),
+                principal.get("display_name") or principal["id"],
+            )
+        return memory_work.resolve_step(
+            work_id,
+            step_id,
+            request.approved,
+            principal.get("display_name") or principal["id"],
+        )
+    except ValueError as exc:
+        fail(exc)
+
+
+@router.post("/work/{work_id}/steps/{step_id}/complete")
+def complete_memory_work_step(
+    work_id: str,
+    step_id: str,
+    request: MemoryWorkCompleteRequest,
+    authorization: str | None = Header(default=None),
+):
+    _, principal = _authorize_memory_work(work_id, authorization, write=True)
+    try:
+        return memory_work.complete_step(
+            work_id,
+            step_id,
+            request.output,
+            principal.get("display_name") or principal["id"],
+        )
+    except ValueError as exc:
+        fail(exc)
+
+
+@router.get("/memory/graph/summary")
+def memory_graph_summary(project_id: str, authorization: str | None = Header(default=None)):
+    principal = _authorize_project(project_id, authorization)
+    team_ids = _principal_team_ids(principal)
+    summary = _security_trim_graph_summary(project_id, principal)
+    return {
+        **summary,
+        "memory_units": len(company_memory.list(project_id, allowed_team_ids=team_ids)),
+        "updates": len(company_memory.relationships(project_id, "UPDATES", team_ids)),
+        "conflicts": len(company_memory.relationships(project_id, "CONTRADICTS", team_ids)),
+    }
+
+
+@router.get("/memory/graph/nodes")
+def memory_graph_nodes(
+    project_id: str,
+    node_type: str | None = None,
+    limit: int = 500,
+    authorization: str | None = Header(default=None),
+):
+    principal = _authorize_project(project_id, authorization)
+    return _security_trim_graph_nodes(
+        project_id, graph.list_nodes(project_id, node_type, min(limit, 2000)), principal
+    )
+
+
+@router.get("/memory/graph/edges")
+def memory_graph_edges(
+    project_id: str,
+    relationship: str | None = None,
+    limit: int = 500,
+    authorization: str | None = Header(default=None),
+):
+    principal = _authorize_project(project_id, authorization)
+    return _security_trim_graph_edges(
+        project_id,
+        graph.list_edges(project_id, relationship, min(limit, 2000)),
+        principal,
+    )
+
+
+@router.get("/memory/units")
+def memory_units(
+    project_id: str,
+    type: str = "",
+    latest: bool | None = None,
+    authorization: str | None = Header(default=None),
+):
+    principal = _authorize_project(project_id, authorization)
+    return company_memory.list(
+        project_id,
+        latest=latest,
+        kind=type,
+        allowed_team_ids=_principal_team_ids(principal),
+    )
+
+
+@router.get("/memory/units/{memory_id}")
+def memory_unit(memory_id: str, authorization: str | None = Header(default=None)):
+    item = company_memory.get(memory_id)
+    if not item:
+        raise HTTPException(404, "Memory unit not found")
+    principal = _authorize_project(item["project_id"], authorization)
+    visible = scopes.visible_memory_ids(item["project_id"], _principal_team_ids(principal))
+    if visible is not None and memory_id not in visible:
+        raise HTTPException(404, "Memory unit not found")
+    return {
+        **item,
+        "relationships": [
+            rel
+            for rel in company_memory.relationships(item["project_id"])
+            if memory_id in (rel["from_memory_id"], rel["to_memory_id"])
+        ],
+    }
+
+
+@router.get("/memory/conflicts")
+def memory_conflicts(project_id: str, authorization: str | None = Header(default=None)):
+    principal = _authorize_project(project_id, authorization)
+    return company_memory.relationships(project_id, "CONTRADICTS", _principal_team_ids(principal))
+
+
+@router.get("/memory/updates")
+def memory_updates(project_id: str, authorization: str | None = Header(default=None)):
+    principal = _authorize_project(project_id, authorization)
+    return company_memory.relationships(project_id, "UPDATES", _principal_team_ids(principal))
+
+
+@router.get("/memory/profiles/company")
+def company_profile(project_id: str, authorization: str | None = Header(default=None)):
+    principal = _authorize_project(project_id, authorization)
+    return company_memory.profile(
+        project_id, "company", allowed_team_ids=_principal_team_ids(principal)
+    )
+
+
+@router.get("/memory/profiles/project/{project_id}")
+def project_memory_profile(project_id: str, authorization: str | None = Header(default=None)):
+    principal = _authorize_project(project_id, authorization)
+    return company_memory.profile(
+        project_id, "project", allowed_team_ids=_principal_team_ids(principal)
+    )
+
+
+@router.get("/memory/profiles/repo/{repo_id}")
+def repo_memory_profile(
+    repo_id: str, project_id: str, authorization: str | None = Header(default=None)
+):
+    principal = _authorize_project(project_id, authorization)
+    return company_memory.profile(project_id, "repo", repo_id, _principal_team_ids(principal))
+
+
+@router.get("/memory/profiles/service/{service_name}")
+def service_memory_profile(
+    service_name: str, project_id: str, authorization: str | None = Header(default=None)
+):
+    principal = _authorize_project(project_id, authorization)
+    return company_memory.profile(
+        project_id, "service", service_name, _principal_team_ids(principal)
+    )
+
+
+@router.get("/memory/source-revisions")
+def memory_source_revisions(
+    project_id: str,
+    source_id: str = "",
+    authorization: str | None = Header(default=None),
+):
+    principal = _authorize_project(project_id, authorization)
+    if source_id:
+        visible = scopes.visible_source_ids(project_id, {source_id}, _principal_team_ids(principal))
+        if source_id not in visible:
+            raise HTTPException(404, "Source not found")
+    return company_brain.list_revisions(project_id, source_id)
+
+
+@router.get("/memory/change-sets")
+def memory_change_sets(
+    project_id: str,
+    limit: int = Query(100, ge=1, le=500),
+    authorization: str | None = Header(default=None),
+):
+    principal = _authorize_project(project_id, authorization)
+    records = company_brain.list_change_sets(project_id, limit)
+    team_ids = _principal_team_ids(principal)
+    if team_ids is None:
+        return records
+    source_ids = {item["source_id"] for item in records}
+    visible = scopes.visible_source_ids(project_id, source_ids, team_ids)
+    return [item for item in records if item["source_id"] in visible]
+
+
+@router.post("/memory/artifacts")
+def save_memory_artifact(
+    request: ArtifactSaveRequest, authorization: str | None = Header(default=None)
+):
+    principal = _authorize_project(request.project_id, authorization, write=True)
+    team_ids = _principal_team_ids(principal)
+    visible_memories = scopes.visible_memory_ids(request.project_id, team_ids)
+    if visible_memories is not None and not set(request.memory_ids).issubset(visible_memories):
+        raise HTTPException(403, "Artifact references memory outside the authorized scope")
+    visible_sources = scopes.visible_source_ids(
+        request.project_id, set(request.source_ids), team_ids
+    )
+    if not set(request.source_ids).issubset(visible_sources):
+        raise HTTPException(403, "Artifact references a source outside the authorized scope")
+    return company_brain.save_artifact(
+        request.project_id,
+        request.name,
+        request.artifact_type,
+        request.content,
+        request.source_ids,
+        request.memory_ids,
+        request.context_envelope_id,
+    )
+
+
+@router.get("/memory/artifacts")
+def list_memory_artifacts(project_id: str, authorization: str | None = Header(default=None)):
+    principal = _authorize_project(project_id, authorization)
+    records = company_brain.list_artifacts(project_id)
+    team_ids = _principal_team_ids(principal)
+    if team_ids is None:
+        return records
+    output = []
+    for artifact in records:
+        current = next(
+            (
+                revision
+                for revision in artifact.get("revisions", [])
+                if revision["id"] == artifact.get("current_revision_id")
+            ),
+            {},
+        )
+        source_ids = set(current.get("source_ids", []))
+        if source_ids.issubset(scopes.visible_source_ids(project_id, source_ids, team_ids)):
+            output.append(artifact)
+    return output
+
+
+@router.post("/memory/skills/compile")
+def compile_memory_skill(
+    request: SkillCompileRequest, authorization: str | None = Header(default=None)
+):
+    principal = _authorize_project(request.project_id, authorization, write=True)
+    team_ids = _principal_team_ids(principal)
+    if request.team_id and team_ids is not None and request.team_id not in team_ids:
+        raise HTTPException(403, "Skill scope is outside the caller's teams")
+    current = company_memory.list(
+        request.project_id, latest=True, limit=1000, allowed_team_ids=team_ids
+    )
+    try:
+        return company_brain.compile_skill(
+            request.project_id, request.name, current, request.team_id
+        )
+    except Exception as exc:
+        fail(exc)
+
+
+@router.get("/memory/skills")
+def list_memory_skills(
+    project_id: str,
+    status: str = "",
+    authorization: str | None = Header(default=None),
+):
+    principal = _authorize_project(project_id, authorization)
+    team_ids = _principal_team_ids(principal)
+    records = company_brain.list_skills(project_id, status)
+    if team_ids is None:
+        return records
+    return [item for item in records if not item.get("team_id") or item["team_id"] in team_ids]
+
+
+@router.get("/memory/context/{envelope_id}")
+def get_context_envelope(envelope_id: str, authorization: str | None = Header(default=None)):
+    item = row("SELECT * FROM context_envelopes WHERE id=?", (envelope_id,))
+    if not item:
+        raise HTTPException(404, "Context envelope not found")
+    principal = _authorize_project(item["project_id"], authorization)
+    if principal["role"] not in {"owner", "admin"} and item["principal_id"] != principal["id"]:
+        raise HTTPException(403, "Context envelope belongs to another principal")
+    return decode(item)
+
+
+@router.get("/memory/swarm/{run_id}")
+def get_context_activation_run(run_id: str, authorization: str | None = Header(default=None)):
+    item = row("SELECT * FROM context_activation_runs WHERE id=?", (run_id,))
+    if not item:
+        raise HTTPException(404, "Context activation run not found")
+    principal = _authorize_project(item["project_id"], authorization)
+    if principal["role"] not in {"owner", "admin"} and item["principal_id"] != principal["id"]:
+        raise HTTPException(403, "Context activation run belongs to another principal")
+    return decode(item)
 
 
 @router.post("/runbooks/extract")
-def extract_runbooks(request: ExtractRequest):
+def extract_runbooks(request: ExtractRequest, authorization: str | None = Header(default=None)):
+    _authorize_project(request.project_id, authorization, write=True)
     return runbooks.extract(request.project_id, request.query)
 
 
 @router.get("/runbooks")
-def list_runbooks(project_id: str | None = None):
-    return runbooks.list(project_id)
+def list_runbooks(project_id: str | None = None, authorization: str | None = Header(default=None)):
+    principal = _authenticate(authorization)
+    if project_id:
+        _authorize_project(project_id, authorization)
+        return runbooks.list(project_id)
+    visible = _visible_project_ids(principal)
+    records = runbooks.list()
+    return (
+        records if visible is None else [item for item in records if item["project_id"] in visible]
+    )
 
 
 @router.get("/runbooks/{runbook_id}")
-def get_runbook(runbook_id: str, project_id: str | None = None):
+def get_runbook(
+    runbook_id: str,
+    project_id: str | None = None,
+    authorization: str | None = Header(default=None),
+):
     result = runbooks.get(runbook_id, project_id)
     if not result:
         raise HTTPException(404, "Runbook not found")
+    _authorize_project(result["project_id"], authorization)
     return result
 
 
@@ -413,10 +2062,38 @@ def analyze_change_impact(
 
 @router.get("/projects/{project_id}/assertions")
 def list_assertions(
-    project_id: str, status: str | None = None, authorization: str | None = Header(default=None)
+    project_id: str,
+    status: str | None = None,
+    authorization: str | None = Header(default=None),
 ):
     _authorize_project(project_id, authorization)
     return assertions.list(project_id, status)
+
+
+@router.post("/projects/{project_id}/assertions/suggest-owners")
+def suggest_assertion_owners(project_id: str, authorization: str | None = Header(default=None)):
+    _authorize_project(project_id, authorization, write=True)
+    return assertions.assign_suggested_owners(project_id)
+
+
+@router.post("/projects/{project_id}/assertions/bulk-review")
+def bulk_review_assertions(
+    project_id: str,
+    request: BulkAssertionReviewRequest,
+    authorization: str | None = Header(default=None),
+):
+    principal = _authorize_project(project_id, authorization, write=True)
+    try:
+        return assertions.bulk_review(
+            project_id,
+            request.assertion_ids,
+            request.action,
+            principal.get("display_name") or request.actor,
+            request.reason,
+            request.owner,
+        )
+    except Exception as exc:
+        fail(exc)
 
 
 @router.get("/assertions/{assertion_id}")
@@ -429,7 +2106,10 @@ def get_assertion(assertion_id: str, authorization: str | None = Header(default=
 
 
 def _assertion_decision(
-    assertion_id: str, action: str, request: AssertionDecisionRequest, authorization: str | None
+    assertion_id: str,
+    action: str,
+    request: AssertionDecisionRequest,
+    authorization: str | None,
 ):
     assertion = assertions.get(assertion_id)
     if not assertion:
@@ -485,7 +2165,8 @@ def dismiss_assertion(
 
 
 @router.post("/actions/propose")
-def propose_action(request: ProposeRequest):
+def propose_action(request: ProposeRequest, authorization: str | None = Header(default=None)):
+    _authorize_project(request.project_id, authorization, write=True)
     try:
         return approvals.propose(
             request.project_id, request.runbook_id, request.action_id, request.params
@@ -494,44 +2175,85 @@ def propose_action(request: ProposeRequest):
         fail(exc)
 
 
-@router.post("/actions/approve")
-def approve_action(request: ResolveRequest):
+def _resolve_action(request: ResolveRequest, approved: bool, authorization: str | None) -> dict:
+    action = row("SELECT project_id FROM actions WHERE id=?", (request.action_id,))
+    if not action:
+        raise HTTPException(404, "Action not found")
+    _authorize_project(action["project_id"], authorization, write=True)
+    principal = _authorize_workspace(authorization, admin=True)
     try:
-        return approvals.resolve(request.action_id, True, request.resolved_by)
+        return approvals.resolve(request.action_id, approved, principal["display_name"])
     except Exception as exc:
         fail(exc)
+
+
+@router.post("/actions/approve")
+def approve_action(request: ResolveRequest, authorization: str | None = Header(default=None)):
+    return _resolve_action(request, True, authorization)
 
 
 @router.post("/actions/deny")
-def deny_action(request: ResolveRequest):
-    try:
-        return approvals.resolve(request.action_id, False, request.resolved_by)
-    except Exception as exc:
-        fail(exc)
+def deny_action(request: ResolveRequest, authorization: str | None = Header(default=None)):
+    return _resolve_action(request, False, authorization)
 
 
 @router.get("/actions/pending")
-def pending_actions(project_id: str | None = None):
-    return approvals.list("pending", project_id)
+def pending_actions(
+    project_id: str | None = None, authorization: str | None = Header(default=None)
+):
+    principal = _authenticate(authorization)
+    if project_id:
+        _authorize_project(project_id, authorization)
+        return approvals.list("pending", project_id)
+    visible = _visible_project_ids(principal)
+    records = approvals.list("pending")
+    return (
+        records if visible is None else [item for item in records if item["project_id"] in visible]
+    )
 
 
 @router.get("/actions")
-def all_actions(project_id: str | None = None):
-    return approvals.list(None, project_id)
+def all_actions(project_id: str | None = None, authorization: str | None = Header(default=None)):
+    principal = _authenticate(authorization)
+    if project_id:
+        _authorize_project(project_id, authorization)
+        return approvals.list(None, project_id)
+    visible = _visible_project_ids(principal)
+    records = approvals.list()
+    return (
+        records if visible is None else [item for item in records if item["project_id"] in visible]
+    )
 
 
 @router.get("/audit/actions")
-def action_audit(project_id: str | None = None):
-    return approvals.list(None, project_id)
+def action_audit(project_id: str | None = None, authorization: str | None = Header(default=None)):
+    return all_actions(project_id, authorization)
 
 
 @router.get("/audit")
-def audit_log(project_id: str | None = None, limit: int = Query(200, ge=1, le=1000)):
-    return audit.list(project_id, limit)
+def audit_log(
+    project_id: str | None = None,
+    limit: int = Query(200, ge=1, le=1000),
+    authorization: str | None = Header(default=None),
+):
+    principal = _authenticate(authorization)
+    if project_id:
+        _authorize_project(project_id, authorization)
+        return audit.list(project_id, limit)
+    visible = _visible_project_ids(principal)
+    records = audit.list(None, limit)
+    return (
+        records
+        if visible is None
+        else [item for item in records if item.get("project_id") in visible]
+    )
 
 
 @router.get("/projects/{project_id}/graph/blast-radius/{service_name}")
-def project_blast_radius(project_id: str, service_name: str):
+def project_blast_radius(
+    project_id: str, service_name: str, authorization: str | None = Header(default=None)
+):
+    _authorize_project(project_id, authorization)
     try:
         return blast_radius(graph, project_id, service_name)
     except Exception as exc:
@@ -539,7 +2261,8 @@ def project_blast_radius(project_id: str, service_name: str):
 
 
 @router.post("/simulate")
-def simulate(request: SimulateRequest):
+def simulate(request: SimulateRequest, authorization: str | None = Header(default=None)):
+    _authorize_project(request.project_id, authorization)
     try:
         return simulation.simulate(
             request.project_id,
@@ -553,7 +2276,8 @@ def simulate(request: SimulateRequest):
 
 
 @router.post("/correlate")
-def correlate(request: CorrelateRequest):
+def correlate(request: CorrelateRequest, authorization: str | None = Header(default=None)):
+    _authorize_project(request.project_id, authorization)
     try:
         route = hcag.route_query(request.project_id, request.query or request.service_name or "")
         evidence = hcag.retrieve_context(
@@ -569,9 +2293,15 @@ def correlate(request: CorrelateRequest):
 
 
 @router.get("/runbooks/{runbook_id}/drift")
-def runbook_drift(runbook_id: str, project_id: str | None = None):
+def runbook_drift(
+    runbook_id: str,
+    project_id: str | None = None,
+    authorization: str | None = Header(default=None),
+):
     try:
-        return drift.check_runbook(runbook_id, project_id)
+        result = drift.check_runbook(runbook_id, project_id)
+        _authorize_project(result["project_id"], authorization)
+        return result
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
     except Exception as exc:
@@ -579,7 +2309,8 @@ def runbook_drift(runbook_id: str, project_id: str | None = None):
 
 
 @router.get("/projects/{project_id}/drift")
-def project_drift(project_id: str):
+def project_drift(project_id: str, authorization: str | None = Header(default=None)):
+    _authorize_project(project_id, authorization)
     try:
         return drift.check_project(project_id)
     except Exception as exc:
@@ -587,32 +2318,56 @@ def project_drift(project_id: str):
 
 
 @router.get("/projects/{project_id}/memories")
-def list_memories(project_id: str, status: str | None = None):
+def list_memories(
+    project_id: str,
+    status: str | None = None,
+    authorization: str | None = Header(default=None),
+):
+    _authorize_project(project_id, authorization)
     return memories.list(project_id, status)
 
 
 @router.post("/projects/{project_id}/memories/derive")
-def derive_memories(project_id: str):
+def derive_memories(project_id: str, authorization: str | None = Header(default=None)):
+    _authorize_project(project_id, authorization, write=True)
     try:
         return memories.derive(project_id)
     except Exception as exc:
         fail(exc)
 
 
-@router.post("/memories/{memory_id}/approve")
-def approve_memory(memory_id: str, request: MemoryResolveRequest):
+def _resolve_memory(
+    memory_id: str,
+    request: MemoryResolveRequest,
+    approved: bool,
+    authorization: str | None,
+) -> dict:
+    memory = memories.get(memory_id)
+    if not memory:
+        raise HTTPException(404, "Memory not found")
+    _authorize_project(memory["project_id"], authorization, write=True)
     try:
-        return memories.resolve(memory_id, True, request.resolved_by)
+        return memories.resolve(memory_id, approved, request.resolved_by)
     except Exception as exc:
         fail(exc)
+
+
+@router.post("/memories/{memory_id}/approve")
+def approve_memory(
+    memory_id: str,
+    request: MemoryResolveRequest,
+    authorization: str | None = Header(default=None),
+):
+    return _resolve_memory(memory_id, request, True, authorization)
 
 
 @router.post("/memories/{memory_id}/reject")
-def reject_memory(memory_id: str, request: MemoryResolveRequest):
-    try:
-        return memories.resolve(memory_id, False, request.resolved_by)
-    except Exception as exc:
-        fail(exc)
+def reject_memory(
+    memory_id: str,
+    request: MemoryResolveRequest,
+    authorization: str | None = Header(default=None),
+):
+    return _resolve_memory(memory_id, request, False, authorization)
 
 
 @router.get("/importers")
@@ -621,7 +2376,12 @@ def importers():
 
 
 @router.post("/importers/{name}/import")
-def run_importer(name: str, request: ImporterRunRequest):
+def run_importer(
+    name: str,
+    request: ImporterRunRequest,
+    authorization: str | None = Header(default=None),
+):
+    _authorize_project(request.project_id, authorization, write=True)
     try:
         importer = get_importer(name)
     except ValueError as exc:
@@ -646,25 +2406,43 @@ def run_importer(name: str, request: ImporterRunRequest):
 
 
 @router.get("/keys")
-def api_keys(workspace_id: str = ""):
-    return list_api_keys(workspace_id)
+def api_keys(workspace_id: str = "", authorization: str | None = Header(default=None)):
+    principal = _authorize_workspace(authorization, workspace_id, admin=True)
+    return list_api_keys(principal["active_workspace_id"])
 
 
 @router.post("/keys")
-def create_key(request: ApiKeyCreateRequest):
+def create_key(request: ApiKeyCreateRequest, authorization: str | None = Header(default=None)):
+    principal = _authorize_workspace(authorization, request.workspace_id, admin=True)
     try:
-        result = create_api_key(request.name, request.workspace_id)
-        audit.record("api_key.created", f"Created API key {request.name}")
+        result = create_api_key(
+            request.name,
+            principal["active_workspace_id"],
+            created_by=principal["id"],
+        )
+        audit.record(
+            "api_key.created",
+            f"Created API key {request.name}",
+            actor=principal["id"],
+            payload={"key_id": result["id"], "workspace_id": result["workspace_id"]},
+        )
         return result
     except Exception as exc:
         fail(exc)
 
 
 @router.delete("/keys/{key_id}")
-def revoke_key(key_id: str):
+def revoke_key(key_id: str, authorization: str | None = Header(default=None)):
+    principal = _authorize_workspace(authorization, admin=True)
+    key = next(
+        (item for item in list_api_keys(principal["active_workspace_id"]) if item["id"] == key_id),
+        None,
+    )
+    if not key:
+        raise HTTPException(404, "API key not found")
     try:
         result = revoke_api_key(key_id)
-        audit.record("api_key.revoked", f"Revoked API key {key_id}")
+        audit.record("api_key.revoked", f"Revoked API key {key_id}", actor=principal["id"])
         return result
     except Exception as exc:
         fail(exc)
@@ -698,142 +2476,356 @@ def benchmark_reports():
     }
 
 
+def _connector_secrets(principal: dict) -> ConnectorSecrets:
+    return ConnectorSecrets(principal["active_workspace_id"], principal["id"])
+
+
 @router.get("/connectors")
-def connectors():
-    return [github.status().__dict__, slack.status().__dict__, *planned_connectors()]
+def connectors(authorization: str | None = Header(default=None)):
+    principal = _authorize_workspace(authorization)
+    return connector_runtime.list_connectors(principal)
 
 
-@router.get("/connectors/github/status")
-def github_status():
-    return github.status().__dict__
+@router.get("/connectors/catalog")
+def connectors_catalog(authorization: str | None = Header(default=None)):
+    principal = _authorize_workspace(authorization)
+    return connector_runtime.catalog(principal)
 
 
-@router.post("/connectors/github/token")
-def github_token(request: TokenRequest):
+@router.get("/connectors/coverage")
+def connector_coverage(authorization: str | None = Header(default=None)):
+    principal = _authorize_workspace(authorization)
+    project_ids = sorted(_visible_project_ids(principal) or set())
+    counts: dict[str, int] = {}
+    if project_ids:
+        placeholders = ",".join("?" for _ in project_ids)
+        counts = {
+            item["source_type"]: int(item["count"])
+            for item in rows(
+                f"SELECT source_type,COUNT(*) count FROM knowledge_items WHERE project_id IN ({placeholders}) GROUP BY source_type",
+                tuple(project_ids),
+            )
+        }
+    statuses = {
+        item["provider"]: item for item in connector_runtime.list_connectors(principal)
+    }
+    return {
+        "scope": {
+            "workspace_id": principal["active_workspace_id"],
+            "projects_indexed": len(project_ids),
+            "access_boundary": "currently authorized accounts only",
+        },
+        "sources": [
+            {
+                "provider": manifest.id,
+                "connected": bool(statuses.get(manifest.id, {}).get("connected")),
+                "indexed": {manifest.id: counts.get(manifest.id, 0)},
+                "resources": [resource.type for resource in manifest.resources],
+                "not_indexed": [
+                    "resources outside the delegated user's grant",
+                    "secret values and credentials",
+                ],
+                "refresh_mode": "durable incremental cursor plus signed webhooks",
+                "data_policy": manifest.public_dict()["data_policy"],
+            }
+            for manifest in connector_runtime.registry.manifests()
+        ],
+        "safety": {
+            "secret_values": "excluded before storage and embedding",
+            "environment_variables": "names and documented purpose only",
+            "credentials_in_ui_or_logs": False,
+        },
+    }
+
+
+@router.get("/connectors/{provider}/status")
+def connector_status(provider: str, authorization: str | None = Header(default=None)):
+    principal = _authorize_workspace(authorization)
     try:
-        GitHubConnector()._api("GET", "/user", token=request.token)
-        user = GitHubConnector()._api("GET", "/user", token=request.token)
-        ConnectorSecrets().save("github", str(user["id"]), user["login"], request.token)
-        audit.record(
-            "connector.connected",
-            f"Connected GitHub as {user['login']}",
-            payload={"provider": "github"},
+        return connector_runtime.connector(provider, principal).status().__dict__
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.get("/connectors/{provider}/resources")
+def connector_resources(provider: str, authorization: str | None = Header(default=None)):
+    principal = _authorize_workspace(authorization)
+    try:
+        return connector_runtime.discover(provider, principal)
+    except Exception as exc:
+        fail(exc)
+
+
+@router.post("/connectors/{provider}/tools/{tool_name}")
+def invoke_connector_tool(
+    provider: str,
+    tool_name: str,
+    request: ConnectorToolInvokeRequest,
+    authorization: str | None = Header(default=None),
+):
+    principal = _authorize_workspace(authorization)
+    try:
+        return connector_runtime.invoke(
+            provider,
+            tool_name,
+            request.arguments,
+            principal,
+            idempotency_key=request.idempotency_key,
         )
-        return {"connected": True, "display_name": user["login"]}
     except Exception as exc:
         fail(exc)
 
 
-@router.get("/connectors/github/repos")
-def github_repos():
+@router.get("/connector-tool-calls")
+def connector_tool_calls(
+    status: str = "", authorization: str | None = Header(default=None)
+):
+    principal = _authorize_workspace(authorization)
+    return connector_runtime.list_tool_calls(principal, status)
+
+
+@router.post("/connector-tool-calls/{call_id}/resolve")
+def resolve_connector_tool_call(
+    call_id: str,
+    request: ConnectorToolResolveRequest,
+    authorization: str | None = Header(default=None),
+):
+    principal = _authorize_workspace(authorization)
     try:
-        return github.list_repositories()
+        return connector_runtime.resolve_write(call_id, request.approved, principal)
     except Exception as exc:
         fail(exc)
+
+
+@router.post("/connectors/{provider}/sync")
+def enqueue_connector_sync(
+    provider: str,
+    request: ConnectorSyncRequest,
+    authorization: str | None = Header(default=None),
+):
+    principal = _authorize_workspace(authorization)
+    if request.project_id:
+        _authorize_project(request.project_id, authorization, write=True)
+    try:
+        return connector_sync.enqueue(
+            provider,
+            principal["active_workspace_id"],
+            principal["id"],
+            request.resource_id,
+            project_id=request.project_id,
+            cursor=request.cursor,
+            idempotency_key=request.idempotency_key,
+        )
+    except Exception as exc:
+        fail(exc)
+
+
+@router.get("/connector-sync-jobs")
+def connector_sync_jobs(
+    status: str = "", authorization: str | None = Header(default=None)
+):
+    principal = _authorize_workspace(authorization)
+    return connector_sync.list(principal["active_workspace_id"], status)
+
+
+@router.get("/connectors/custom/registrations")
+def custom_connector_registrations(authorization: str | None = Header(default=None)):
+    principal = _authorize_workspace(authorization)
+    return connector_runtime.list_custom(principal)
+
+
+@router.post("/connectors/custom/registrations")
+def register_custom_connector(
+    request: CustomConnectorCreateRequest,
+    authorization: str | None = Header(default=None),
+):
+    principal = _authorize_workspace(authorization, admin=True)
+    if not settings.connector_custom_mcp_enabled:
+        raise HTTPException(403, "Custom MCP registration is disabled")
+    try:
+        return connector_runtime.register_custom(
+            principal,
+            name=request.name,
+            server_url=request.server_url,
+            version=request.version,
+            oauth=request.oauth,
+            manifest_payload=request.manifest,
+            signing_key_id=request.signing_key_id,
+        )
+    except Exception as exc:
+        fail(exc)
+
+
+@router.delete("/connectors/custom/registrations/{provider}")
+def revoke_custom_connector_registration(
+    provider: str,
+    authorization: str | None = Header(default=None),
+):
+    principal = _authorize_workspace(authorization, admin=True)
+    try:
+        return connector_runtime.revoke_custom(provider, principal)
+    except Exception as exc:
+        fail(exc)
+
+
+@router.post("/mcp/oauth/clients")
+def create_mcp_oauth_client(
+    request: MCPOAuthClientCreateRequest,
+    authorization: str | None = Header(default=None),
+):
+    principal = _authorize_workspace(authorization, admin=True)
+    try:
+        result = register_mcp_client(
+            request.name,
+            request.redirect_uris,
+            request.scopes,
+            created_by=principal["id"],
+        )
+    except ValueError as exc:
+        fail(exc)
+    audit.record(
+        "mcp.oauth_client.created",
+        f"Registered MCP OAuth client {request.name}",
+        actor=principal["id"],
+        payload={
+            "workspace_id": principal["active_workspace_id"],
+            "client_id": result["client_id"],
+            "scopes": request.scopes,
+        },
+    )
+    return result
 
 
 @router.get("/auth/github/start")
 def github_auth_start():
     try:
-        return RedirectResponse(github.oauth_url(OAuthStateStore()))
+        flow = OAuthStateStore().create("github", intent="login", use_pkce=True)
+        return RedirectResponse(GitHubConnector().oauth_url(flow, scopes="read:user user:email"))
     except Exception as exc:
         fail(exc)
 
 
-@router.get("/connectors/github/auth/start")
-def github_connector_auth_start():
-    return github_auth_start()
+@router.get("/auth/google/start")
+def google_auth_start():
+    try:
+        flow = OAuthStateStore().create("google", intent="login", use_pkce=True)
+        return RedirectResponse(google_oauth_url(flow))
+    except Exception as exc:
+        fail(exc)
+
+
+@router.get("/auth/google/callback")
+def google_auth_callback(code: str, state: str):
+    try:
+        flow = OAuthStateStore().consume("google", state)
+        identity = complete_google_oauth(code, flow)
+        session = create_oauth_session(
+            "google",
+            identity["external_id"],
+            identity["email"],
+            identity["display_name"],
+            f"{identity['email'].split('@')[-1]}'s workspace",
+        )
+        response = RedirectResponse(f"{settings.frontend_url.rstrip('/')}/workspace")
+        _set_session_cookie(response, session["token"])
+        return response
+    except Exception as exc:
+        query = urlencode({"error": str(exc)})
+        return RedirectResponse(f"{settings.frontend_url}/login?{query}")
+
+
+@router.get("/connectors/{provider}/auth/start")
+def connector_auth_start(
+    provider: str,
+    scopes: str = "",
+    authorization: str | None = Header(default=None),
+):
+    principal = _authorize_workspace(authorization)
+    try:
+        flow = OAuthStateStore().create(
+            provider,
+            intent="connect",
+            workspace_id=principal["active_workspace_id"],
+            user_id=principal["id"],
+            use_pkce=True,
+        )
+        requested = [item for item in scopes.replace(",", " ").split() if item]
+        return RedirectResponse(
+            connector_runtime.authorize(provider, principal, flow, requested or None)
+        )
+    except Exception as exc:
+        fail(exc)
 
 
 @router.get("/auth/github/callback")
-def github_auth_callback(code: str, state: str):
+def github_auth_callback(code: str, state: str, background_tasks: BackgroundTasks = None):
+    flow = None
     try:
-        github.complete_oauth(code, state, OAuthStateStore())
+        flow = OAuthStateStore().consume("github", state)
+        identity = GitHubConnector().complete_oauth(code, flow)
+        if flow["intent"] == "login":
+            session = create_oauth_session(
+                "github",
+                identity["external_id"],
+                identity["email"],
+                identity["display_name"],
+                f"{identity['login']}'s workspace",
+            )
+            response = RedirectResponse(f"{settings.frontend_url.rstrip('/')}/workspace")
+            _set_session_cookie(response, session["token"])
+            return response
+        connector_runtime.complete_authorization("github", flow, code)
         return RedirectResponse(f"{settings.frontend_url}/connectors?connected=github")
     except Exception as exc:
-        return RedirectResponse(f"{settings.frontend_url}/connectors?error={str(exc)}")
+        query = urlencode({"error": str(exc)})
+        destination = "connectors" if flow and flow.get("intent") == "connect" else "login"
+        return RedirectResponse(f"{settings.frontend_url}/{destination}?{query}")
 
 
-@router.get("/connectors/github/auth/callback")
-def github_connector_auth_callback(code: str, state: str):
-    return github_auth_callback(code, state)
-
-
-@router.get("/connectors/slack/status")
-def slack_status():
-    return slack.status().__dict__
-
-
-@router.post("/connectors/slack/token")
-def slack_token(request: TokenRequest):
+@router.get("/connectors/{provider}/auth/callback")
+def connector_auth_callback(provider: str, code: str, state: str):
     try:
-        data = (
-            SlackConnector()._api("auth.test", {})
-            if request.token == slack.token()
-            else _verify_slack(request.token)
-        )
-        ConnectorSecrets().save(
-            "slack",
-            data.get("team_id", "local"),
-            data.get("team", request.display_name),
-            request.token,
-        )
-        audit.record(
-            "connector.connected",
-            f"Connected Slack workspace {data.get('team', '')}",
-            payload={"provider": "slack"},
-        )
-        return {"connected": True, "display_name": data.get("team", request.display_name)}
+        flow = OAuthStateStore().consume(provider, state)
+        connector_runtime.complete_authorization(provider, flow, code)
+        return RedirectResponse(f"{settings.frontend_url}/connectors?connected={provider}")
     except Exception as exc:
-        fail(exc)
-
-
-def _verify_slack(token: str):
-    import httpx
-
-    response = httpx.post(
-        "https://slack.com/api/auth.test", headers={"Authorization": f"Bearer {token}"}, timeout=30
-    )
-    response.raise_for_status()
-    payload = response.json()
-    if not payload.get("ok"):
-        raise ValueError(f"Slack token rejected: {payload.get('error')}")
-    return payload
-
-
-@router.get("/connectors/slack/channels")
-def slack_channels():
-    try:
-        return slack.list_channels()
-    except Exception as exc:
-        fail(exc)
-
-
-@router.get("/auth/slack/start")
-def slack_auth_start():
-    try:
-        return RedirectResponse(slack.oauth_url(OAuthStateStore()))
-    except Exception as exc:
-        fail(exc)
-
-
-@router.get("/connectors/slack/auth/start")
-def slack_connector_auth_start():
-    return slack_auth_start()
+        query = urlencode({"error": str(exc)})
+        return RedirectResponse(f"{settings.frontend_url}/connectors?{query}")
 
 
 @router.get("/auth/slack/callback")
+@router.get("/connectors/slack/auth/callback")
 def slack_auth_callback(code: str, state: str):
     try:
-        slack.complete_oauth(code, state, OAuthStateStore())
+        flow = OAuthStateStore().consume("slack", state)
+        connector_runtime.complete_authorization("slack", flow, code)
         return RedirectResponse(f"{settings.frontend_url}/connectors?connected=slack")
     except Exception as exc:
-        return RedirectResponse(f"{settings.frontend_url}/connectors?error={str(exc)}")
+        query = urlencode({"error": str(exc)})
+        return RedirectResponse(f"{settings.frontend_url}/connectors?{query}")
 
 
-@router.get("/connectors/slack/auth/callback")
-def slack_connector_auth_callback(code: str, state: str):
-    return slack_auth_callback(code, state)
+@router.delete("/connectors/{provider}")
+def disconnect_connector(provider: str, authorization: str | None = Header(default=None)):
+    principal = _authorize_workspace(authorization)
+    try:
+        connector = connector_runtime.connector(provider, principal)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    account = connector_runtime.vault(principal).account(provider)
+    if not account:
+        return {"disconnected": False}
+    connector.revoke(account)
+    audit.record(
+        "connector.disconnected",
+        f"Disconnected {provider}",
+        actor=principal["id"],
+        payload={
+            "provider": provider,
+            "workspace_id": principal["active_workspace_id"],
+        },
+    )
+    return {"disconnected": True}
 
 
 def _create_job(
@@ -910,17 +2902,26 @@ def _finish_job(job_id: str, status: str, result: dict) -> None:
 
 
 def _fail_job(job_id: str, exc: Exception) -> None:
+    """Record why a job failed without ever replacing the failure itself.
+
+    This runs inside an ``except`` block, so anything it raises would become the
+    error the caller sees and the real cause would be lost. Recording the
+    failure is best-effort; reporting it accurately is not.
+    """
     now = utcnow()
-    with connect() as conn:
-        conn.execute(
-            """
-            UPDATE ingestion_jobs SET status='failed', progress=100, error=?,
-              updated_at=?, completed_at=? WHERE id=?
-            """,
-            (str(exc), now, now, job_id),
+    try:
+        with connect() as conn:
+            conn.execute(
+                """
+                UPDATE ingestion_jobs SET status='failed', progress=100, error=?,
+                  updated_at=?, completed_at=? WHERE id=?
+                """,
+                (str(exc), now, now, job_id),
+            )
+        audit.record(
+            "ingestion.job_failed",
+            f"Ingestion job {job_id} failed",
+            payload={"job_id": job_id, "error": str(exc)},
         )
-    audit.record(
-        "ingestion.job_failed",
-        f"Ingestion job {job_id} failed",
-        payload={"job_id": job_id, "error": str(exc)},
-    )
+    except Exception:
+        logger.exception("Could not record failure for ingestion job %s", job_id)

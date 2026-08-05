@@ -71,6 +71,17 @@ class GraphStore(ABC):
     def clear_repository_knowledge(self, project_id: str) -> None: ...
 
     @abstractmethod
+    def delete_source_knowledge(
+        self, project_id: str, source_id: str, source_type: str = ""
+    ) -> int: ...
+
+    @abstractmethod
+    def delete_project_nodes(self, project_id: str, node_types: list[str]) -> int: ...
+
+    @abstractmethod
+    def delete_project(self, project_id: str) -> int: ...
+
+    @abstractmethod
     def upsert_knowledge_item(self, item: dict[str, Any]) -> None: ...
 
     @abstractmethod
@@ -99,6 +110,18 @@ class GraphStore(ABC):
     def retrieve_context(
         self, project_id: str, query: str, service_name: str | None = None, limit: int = 12
     ) -> list[GraphEvidence]: ...
+
+    @abstractmethod
+    def traverse_context(
+        self,
+        project_id: str,
+        query: str,
+        *,
+        max_hops: int = 3,
+        limit: int = 12,
+    ) -> list[GraphEvidence]:
+        """Retrieve evidence reached through bounded, query-seeded graph traversal."""
+        ...
 
     @abstractmethod
     def get_retrieval_trace(

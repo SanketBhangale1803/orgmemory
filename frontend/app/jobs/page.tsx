@@ -46,8 +46,9 @@ export default function IngestionJobs() {
                   </td>
                   <td>{job.progress}%</td>
                   <td>
-                    {job.files_scanned} files · {job.issues_scanned} issues ·{" "}
-                    {job.pull_requests_scanned} PRs
+                    {job.source === "slack"
+                      ? `${job.knowledge_items_created} messages · ${job.knowledge_chunks_created} chunks`
+                      : `${job.files_scanned} files · ${job.issues_scanned} issues · ${job.pull_requests_scanned} PRs`}
                   </td>
                   <td>
                     {job.graph_nodes_created} nodes · {job.graph_edges_created} edges

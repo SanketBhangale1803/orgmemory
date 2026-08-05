@@ -1,16 +1,23 @@
 export const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export async function api<T = any>(path: string, options?: RequestInit): Promise<T> {
-  const token = typeof window !== "undefined" ? localStorage.getItem("runbook_token") : "";
-  const response = await fetch(`${API}${path}`, {
-    cache: "no-store",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(options?.headers || {}),
-    },
-    ...options,
-  });
+  const headers = new Headers(options?.headers);
+  if (options?.body && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  let response: Response;
+  try {
+    response = await fetch(`${API}${path}`, {
+      ...options,
+      cache: "no-store",
+      credentials: "include",
+      headers,
+    });
+  } catch {
+    throw new Error(
+      `Cannot reach the OrgMemory API at ${API}. Check that the backend is running and refresh the page.`,
+    );
+  }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.detail || `Request failed (${response.status})`);
   return payload;

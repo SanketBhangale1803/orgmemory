@@ -2,24 +2,42 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import RunbookLogo from "@/components/RunbookLogo";
 
-const groups = [
-  ["Workspace", [["Login", "/login", "◉"], ["Overview", "/", "▦"], ["Projects", "/projects", "◇"], ["Repo Graph", "/graph", "◎"], ["Ask Runbook", "/ask", "⌕"], ["Runbooks", "/runbooks", "≡"]]],
-  ["Knowledge", [["Connectors", "/connectors", "⊕"], ["Ingest", "/ingest", "↥"], ["Ingestion Jobs", "/jobs", "↻"], ["Runbook Reliability", "/reliability", "◈"], ["Runbook Drift", "/drift", "≉"], ["Simulation", "/simulation", "▷"]]],
-  ["Control", [["Approvals", "/approvals", "✓"], ["Audit log", "/audit", "◷"], ["Admin & security", "/admin", "▣"]]],
-  ["Platform", [["MCP & integrations", "/integrations", "⌘"], ["API keys", "/keys", "⚿"], ["Benchmark Reports", "/benchmarks", "∿"], ["Settings", "/settings", "⚙"]]],
+const domains = [
+  { id: "home", label: "Home", href: "/workspace", paths: ["/workspace"] },
+  { id: "add", label: "Add knowledge", href: "/ingest", paths: ["/connectors", "/ingest", "/jobs"] },
+  { id: "ask", label: "Ask OrgMemory", href: "/ask", paths: ["/ask"] },
+  { id: "work", label: "Memory Work", href: "/work", paths: ["/work"] },
+  { id: "explore", label: "Explore", href: "/memories", paths: ["/memories", "/graph", "/profiles", "/projects", "/updates", "/conflicts"] },
+  { id: "settings", label: "Settings", href: "/settings", paths: ["/settings", "/integrations", "/keys", "/account"] },
 ] as const;
 
-export default function Nav() {
+const tabs: Record<string, { label: string; href: string }[]> = {
+  add: [{label:"Add knowledge",href:"/ingest"},{label:"Connections",href:"/connectors"},{label:"Ingestion jobs",href:"/jobs"}],
+  explore: [{label:"Memories",href:"/memories"},{label:"Memory Graph",href:"/graph"},{label:"Profiles",href:"/profiles"},{label:"Change Intelligence",href:"/updates"},{label:"Conflicts",href:"/conflicts"},{label:"Projects",href:"/projects"}],
+  settings: [{label:"Settings",href:"/settings"},{label:"MCP & integrations",href:"/integrations"},{label:"API keys",href:"/keys"}],
+};
+
+function matches(pathname: string, href: string) {
+  return href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
+}
+
+export default function Nav({ user }: { user: any }) {
   const pathname = usePathname();
-  return <aside className="sidebar">
-    <div className="brand"><span className="mark">R</span><span>Runbook</span></div>
-    {groups.map(([label, links]) => <div key={label}>
-      <div className="nav-label">{label}</div>
-      {links.map(([name, href, icon]) => <Link key={href} href={href} className={`nav-link ${pathname === href || (href !== "/" && pathname.startsWith(href)) ? "active" : ""}`}>
-        <span className="nav-icon">{icon}</span><span>{name}</span>
-      </Link>)}
-    </div>)}
-    <div className="sidebar-footer">Evidence-grounded memory<br/>Approval-gated execution</div>
-  </aside>;
+  const activeDomain = domains.find(domain => domain.paths.some(path => matches(pathname, path)));
+  const activeTabs = activeDomain ? tabs[activeDomain.id] || [] : [];
+  const workspace = user.workspaces?.find((item:any) => item.id === user.active_workspace_id);
+  const initials = (user.display_name || user.email || "RB").split(/\s+/).map((part:string) => part[0]).join("").slice(0,2).toUpperCase();
+
+  return <header className="app-header">
+    <div className="primary-bar">
+      <Link href="/workspace" className="brand" aria-label="OrgMemory workspace"><RunbookLogo inverted /></Link>
+      <nav className="primary-nav" aria-label="Primary navigation">
+        {domains.map(domain => <Link key={domain.id} href={domain.href} className={activeDomain?.id === domain.id ? "active" : ""}>{domain.label}</Link>)}
+      </nav>
+      <Link className="account-control" href="/account" title="Account and workspace"><span><small>{workspace?.name || "Workspace"}</small><strong>{user.display_name}</strong></span><i>{initials}</i></Link>
+    </div>
+    {activeTabs.length > 0 && <div className="context-bar"><div><span className="context-title">{activeDomain?.label}</span><nav aria-label={`${activeDomain?.label} sections`}>{activeTabs.map(tab => <Link key={tab.href} href={tab.href} className={matches(pathname, tab.href) ? "active" : ""}>{tab.label}</Link>)}</nav><span className="context-status"><span className="status-dot"/> Source-backed memory</span></div></div>}
+  </header>;
 }

@@ -1,340 +1,274 @@
-# Runbook
+# OrgMemory
 
-> CI/CD for production runbooks: detect when code, configuration, or deployment changes make an operational procedure unsafe or stale.
+> The source-backed operating brain for your company.
 
-Runbook is verified operational knowledge for production systems. It preserves cited answers, extraction, drift, simulation, approvals, audit, and MCP while adding graph-backed OperationalAssertions and change-impact review for repository and GitHub evidence. AgentGate evaluates every proposed action before anything crosses a read-only boundary.
+OrgMemory learns how a company works from code, conversations, documents, tickets,
+decisions, and uploaded knowledge. It turns that evidence into a living company
+memory graph that employees and internal AI agents can query without asking people
+to re-explain the company, repository, service, or prior decision.
 
-This is not a chatbot over documents, and it is not another PagerDuty/Rootly/incident.io — those coordinate humans around incidents; Runbook models how the company's systems actually work and lets AI agents act on that knowledge safely (see `docs/COMPETITIVE_DIFFERENTIATION.md`). The durable output is an evidence-linked, machine-readable runbook with typed steps, source provenance, confidence, trust score, drift status, and approval rules.
+## What OrgMemory is
 
-Beyond ingestion, ask, and extraction, the platform includes:
+OrgMemory is a company memory graph, not an incident tool, runbook generator, or generic chatbot over documents. It preserves distinct layers for raw sources, chunks, atomic `MemoryUnit` records, entities, profiles, and answer context. Every promoted memory cites a source; uncertain material remains a searchable chunk.
 
-- **Trust scoring** — every answer and runbook carries a trust score computed from source quality, ingestion recency, support breadth, and detected contradictions, with the reasoning shown.
-- **Change-to-incident correlation** — incident questions automatically rank recently ingested PRs/issues by shared services, env vars, files, and error terms.
-- **Runbook drift detection** — runbooks are re-checked against current knowledge (`fresh`, `possibly_stale`, `stale`, `conflicting_evidence`, `needs_human_review`) with per-signal detail.
-- **Simulation mode** — dry-run any runbook (or a scenario like "Simulate Kafka outage for reddit_service") through the real AgentGate policy: per-step decisions, required approvals, dangerous steps, missing context. Nothing executes.
-- **Blast radius** — dependency traversal over real graph edges: dependents, second-hop dependents, env vars, applicable runbooks.
-- **Operational memory** — durable company rules derived only from ingested evidence, approval-gated, with graph provenance.
-- **Incident-tool importers** — PagerDuty (live REST importer) plus scaffolded Rootly/incident.io/Opsgenie/Statuspage/JSM/ServiceNow interfaces that honestly report `Not connected`.
-- **API keys** — hashed-at-rest keys for MCP clients and automation.
-- **Benchmark reports** — HCAG's honest benchmark harness surfaced in-product (`/benchmarks`).
+The primary workflow is:
 
-## Start the product
+```text
+Raw company sources → ingestion → chunks → atomic memories → entity graph
+→ company/project/repo/service profiles → HCAG context assembly → cited answer
+```
 
-Prerequisites: Docker Desktop with at least 4 GB available, Docker Compose v2, and ports 3000, 8000, 2424, and 2480 free.
+The Company Brain loop is continuous rather than a one-time index:
+
+```text
+source revision → memory change set → current truth reconciliation
+→ affected profiles/reports/skills → governed context envelope → agent
+```
+
+## Memory Work: from context to outcomes
+
+OrgMemory now turns remembered company context into portable work packages for AI workers. The user describes an outcome once; HCAG selects the authorized scope, current memories, related entities, conflicts, and exact source evidence. OrgMemory then saves a revisioned brief and produces an `agent_packet` with an approval-aware execution plan.
+
+```text
+Outcome → authorized HCAG context → source-backed work package
+→ human approval for consequential actions → connected worker
+→ result evidence returned to company memory
+```
+
+This is complementary to broad AI coworker runtimes such as [OpenWorker](https://github.com/andrewyng/openworker): the worker owns the tool-execution loop, while OrgMemory owns organizational context, current truth, permissions, evidence, and durable outcome memory. OrgMemory does not copy OpenWorker and does not require it; the packet is portable through the API and MCP to any compatible worker.
+
+## Why this is different from RAG
+
+RAG retrieves passages. OrgMemory also extracts typed, scoped, temporally valid memories; connects them to entities and sources; tracks which memory updates or contradicts another; and assembles current profiles from atomic facts. Retrieval still uses the original evidence, so the graph does not become an unsupported summary layer.
+
+## Product boundary
+
+OrgMemory is organization-specific rather than a generic memory API: company,
+project, repository, service, and person profiles; temporal validity; conflicts;
+permission-aware retrieval; an inspectable company graph; and approval-aware work.
+The web app is the starting point. Channels, IDEs, SDKs, CLI, and MCP are delivery
+surfaces for the same governed brain.
+
+## HCAG company memory engine
+
+The HCAG adapter routes questions to company-memory domains such as project, policy, decision, ownership, temporal, deployment, and incident memory. It compiles context using this invariant:
+
+```text
+authorized team scope ∩ task relevance ∩ current truth
+∩ entity graph neighborhood ∩ token budget
+```
+
+Each query activates a concurrent specialist swarm: hybrid sensory retrieval,
+bounded graph traversal, and a current-truth historian. An immune-system critic
+deduplicates their authorized evidence and records contradictions; one context
+compiler creates the final token-bounded context. Domain specialists join for
+API contracts, repository briefings, change history, and procedure validity.
+
+Each answer persists both a `context_activation_runs` record and a
+`ContextEnvelope` containing the principal, authorized teams, task, selected
+memory/evidence, exact compiled context, active skill specs, source version
+vector, token budget, expiry, and retrieval trace. This makes the dynamic
+context given to an LLM or agent inspectable and reproducible. See
+[`docs/CONTEXT_ACTIVATION_SWARM.md`](docs/CONTEXT_ACTIVATION_SWARM.md).
+
+## Governed organizational scope
+
+Workspaces can define hierarchical teams, team membership, and project grants. Sources may be shared with one or more teams; extracted memory inherits the source visibility boundary. Existing unscoped data remains workspace-visible for migration compatibility. Owners and admins can inspect the whole workspace, while member retrieval is security-trimmed before ranking and answer generation.
+
+The invariant is strict: derived memory, context, briefs, and skills cannot be broader than their supporting source.
+
+## Source-backed memory extraction
+
+All ingestion paths—GitHub repositories, issues, pull requests, Slack, pasted knowledge, and uploaded files—store the raw item, chunk it, index the chunks, conservatively extract atomic memories, link each memory to its exact source/chunks in ArcadeDB, and reconcile current-memory relationships. Repository code is interpreted structurally: manifests, documented service tables, routes, configuration schemas, and docstrings can become memory, while CSS, JSX fragments, validation errors, and incomplete expressions remain evidence chunks and are never promoted as company policy.
+
+Source provenance is enforced at ingestion. Repository evidence must match the selected project's GitHub repository; uploaded documents and Slack messages are explicitly assigned to one project and inherit its team scope. OrgMemory does not silently mix records from another repository or project.
+
+`MemoryUnit` records contain workspace/project scope, type, subject, content, company/project/repo/service/person scope, source IDs, confidence, validity dates, and current status. Relationships include `UPDATES`, `EXTENDS`, `DERIVES`, `CONTRADICTS`, `SUPPORTS`, `MENTIONS`, `BELONGS_TO`, `OWNED_BY`, `DEPENDS_ON`, `DECIDED_BY`, `VALID_FOR`, and `INVALIDATED_BY`.
+
+## Revisions, updates, and conflicts
+
+Every stable source has immutable `SourceRevision` records. A changed revision produces a `MemoryChangeSet` that lists added, updated, invalidated, and conflicting memories. When new evidence changes a prior memory with the same subject, OrgMemory preserves both records, closes the prior validity window when appropriate, and adds an `UPDATES` or `CONTRADICTS` relationship. Removed claims are invalidated instead of silently disappearing.
+
+Reports and briefs are versioned `Artifact` records linked to the exact source revisions, memories, and context envelope used to create them. A supporting change marks the artifact stale and creates a reviewable impact. Current policies and procedures can also be compiled into versioned `SkillSpec` files for agents; a relevant memory change marks the skill stale.
+
+## Run locally
+
+Start Docker Desktop first and wait until it reports that the engine is running.
 
 ```bash
-cd ~/Desktop/startup/runbook
+cd ~/Desktop/startup/orgmemory
 cp .env.example .env
 make runbook
 ```
 
-`make runbook` runs in the foreground so service logs remain visible. Open [http://localhost:3000](http://localhost:3000). API documentation is at [http://localhost:8000/docs](http://localhost:8000/docs).
+Open [http://localhost:3000](http://localhost:3000). API documentation is at [http://localhost:8000/docs](http://localhost:8000/docs).
 
-In another terminal, load the demonstration corpus:
+If `docker.sock` is missing, Docker Desktop is not running yet; start it and rerun `make runbook`.
 
-```bash
-cd ~/Desktop/startup/runbook
-make demo
-```
+Connect GitHub or Slack from **Sources**, or upload a document. Ingestion returns `memory_units_created` and the new memory IDs. Use **Memory Graph**, **Memories**, **Profiles**, **Updates**, **Conflicts**, and **Ask OrgMemory** to inspect and query the result.
 
-If Docker reports that it cannot connect to `docker.sock`, start Docker Desktop first. This is a Docker daemon error, not a Runbook application error.
+Open **Memory Work**, select a project, and describe the desired outcome. Safe knowledge work produces a source-backed brief immediately. Slack work shows the exact editable message and destination at the top of the page; **Approve & post** sends it through Slack and stores the resulting permalink as evidence. Slack connections created before this feature must be reconnected once to grant `chat:write`.
 
-## Demo flow
+Verified GitHub webhooks trigger an incremental repository reconciliation, including chunks, atomic memories, updates, conflicts, profiles, and HCAG retrieval state. After a Slack channel has been connected once, verified Slack message events add, update, or retire the corresponding project memories. Set `GITHUB_WEBHOOK_SECRET` and `SLACK_SIGNING_SECRET` and point the providers to `/api/webhooks/github` and `/api/webhooks/slack`.
 
-1. Run `make runbook`, then `make demo` from a second terminal.
-2. Open Login and use dev login, then open Overview and confirm Graph memory is connected.
-3. Open Ask Runbook and select **Runbook Operations Demo**.
-4. Ask `@runbook why is reddit_service failing?`.
-5. Inspect the source evidence, HCAG retrieval trace, and Repo Graph.
-6. Select **Extract runbook**, then open it from Runbooks.
-7. Propose its restart step in the production environment.
-8. Open Approvals and approve or deny it.
-9. The audit event records the decision and the command preview. Commands are not executed in demo mode.
-10. Open **Runbook Reliability**. Re-ingest the demo repository after changing a config file, inspect the resulting impact, and verify or mark the linked assertion stale with a rationale.
+Owners can use **Settings → Memory health** or `POST /api/projects/{project_id}/memory/repair` to re-run retained sources through the current extraction rules without altering the original evidence.
 
-Demo files are not special-cased. `backend/scripts/load_demo.py` submits them to the same `IngestionService` used by uploads and external connectors. The grounding test ingests contradictory causes into separate projects, asks the same question, and verifies the cited answer changes.
+## API
 
-## Architecture
+Core memory endpoints:
 
 ```text
-GitHub / Slack / uploads / logs / CI
-                  │
-                  ▼
-        normalized ingestion + chunking
-                  │
-          ┌───────┴────────┐
-          ▼                ▼
-   HCAG context route   ArcadeDB graph memory
-          └───────┬────────┘
-                  ▼
-       hybrid evidence ranking
-                  │
-       evidence-only reasoning
-                  │
-      structured cited runbooks
-                  │
-       AgentGate policy decision
-                  │
-        approval + audit history
+GET /api/memory/graph/summary
+GET /api/memory/graph/nodes
+GET /api/memory/graph/edges
+GET /api/memory/units
+GET /api/memory/units/{memory_id}
+GET /api/memory/profiles/company
+GET /api/memory/profiles/project/{project_id}
+GET /api/memory/profiles/repo/{repo_id}
+GET /api/memory/profiles/service/{service_name}
+GET /api/memory/updates
+GET /api/memory/conflicts
+GET /api/memory/source-revisions
+GET /api/memory/change-sets
+GET /api/memory/artifacts
+POST /api/memory/artifacts
+GET /api/memory/skills
+POST /api/memory/skills/compile
+GET /api/memory/context/{envelope_id}
+GET /api/memory/swarm/{run_id}
+GET /api/models
+GET /api/connectors/catalog
+GET /api/workspaces/{workspace_id}/teams
+POST /api/workspaces/{workspace_id}/teams
+POST /api/teams/{team_id}/members
+POST /api/projects/{project_id}/teams
+POST /api/projects/{project_id}/memory/repair
+POST /api/ask
+POST /api/work
+GET  /api/work
+GET  /api/work/{work_id}
+POST /api/work/{work_id}/steps/{step_id}/resolve
+POST /api/work/{work_id}/steps/{step_id}/complete
 ```
 
-- **ArcadeDB** is the source of truth for knowledge relationships: projects, repositories, directories, files, languages, packages, dependencies, services, environment variables, config keys, workflows, commands, endpoints, functions/classes, issues, PRs, Slack messages, chunks, runbooks, steps, and actions. The app talks to its HTTP API through `app/graph/arcade_client.py` and the `GraphStore` interface.
-- **SQLite** stores local application state such as encrypted connector accounts, raw source content, generated runbook paths, approval status, and audit events. It does not replace graph retrieval.
-- **HCAG** supplies query classification and context-window routing through a non-invasive adapter. Its routing logic is retained while persistence is implemented by Runbook's ArcadeDB graph store. A deterministic local planner keeps the product available if optional HCAG imports cannot load.
-- **AgentGate** is loaded through an adapter and combined with Runbook's explicit action taxonomy. Read/analysis/draft operations are allowed; mutations, sends, deployments, production changes, and exports require approval; credential access fails closed.
-- **Reasoning** uses an OpenAI-compatible model only when `OPENAI_API_KEY` is configured. The prompt is restricted to retrieved evidence. Without a key, the extractive reasoner ranks sentences and procedures from the same evidence. Both paths return the explicit insufficient-evidence response rather than inventing a cause.
+Ask responses contain `answer`, `memory_profile_used`, `confidence`, `memory_units`, `evidence`, `related_entities`, `updates`, `conflicts`, `retrieval_trace`, and the persisted `context_envelope`. Answers are derived from authorized retrieved evidence. If evidence is insufficient, OrgMemory abstains.
 
-## ArcadeDB
+## Python SDK and CLI
 
-Docker Compose starts ArcadeDB and persists its databases in a named volume. Initialize or repair the schema independently with:
+Install the typed SDK and its `orgmemory` command from this checkout:
 
 ```bash
-make arcade-init
-make graph-check
-curl http://localhost:8000/api/health/graph
+make sdk-install
 ```
 
-Expected result:
+The client reads `ORGMEMORY_API_URL` and `ORGMEMORY_API_KEY`, or accepts them
+explicitly:
 
-```json
-{"backend":"arcadedb","connected":true,"database":"runbook","node_counts":{},"edge_counts":{}}
+```python
+from orgmemory import OrgMemory
+
+memory = OrgMemory(
+    base_url="http://localhost:8000",
+    api_key="om_live_...",
+)
+context = memory.ask(
+    "prj_platform",
+    "What changed in checkout, and why?",
+    model="claude",
+)
+
+print(context.answer)
+print(context.compiled_context)
 ```
 
-Vertex/edge types and indexes are idempotently created from `backend/app/graph/migrations.py`.
-
-Open ArcadeDB Studio at [http://localhost:2480](http://localhost:2480). Use:
-
-- Server: `localhost`
-- Port: `2480`
-- User: `root`
-- Password: `runbook_dev_password` unless changed in `.env`
-- Database: `runbook`
-
-The Runbook UI also exposes a Repo Graph page with real graph counts, service map, file references, edge table, and graph node table from `/api/projects/{project_id}/graph/*`.
-
-## Application auth and workspaces
-
-Runbook separates application login from source connector authorization. Local development supports dev login:
+The same package includes an operational CLI:
 
 ```bash
-curl -X POST http://localhost:8000/api/auth/dev-login \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"demo@runbook.local","display_name":"Demo User"}'
+orgmemory health
+orgmemory projects
+orgmemory ask prj_platform "What changed in checkout, and why?" --model claude
+orgmemory memories prj_platform
+orgmemory graph prj_platform
+orgmemory swarm swarm_01J... --json
 ```
 
-This creates a real `User`, `Workspace`, `WorkspaceMember`, and `Session` record. Workspace endpoints are:
+Use `AsyncOrgMemory` for async applications. The public developer guide is
+served at [http://localhost:3000/docs](http://localhost:3000/docs).
 
-- `GET /api/auth/me`
-- `POST /api/auth/logout`
-- `GET /api/workspaces`
-- `POST /api/workspaces`
-- `GET /api/workspaces/{workspace_id}/members`
-- `POST /api/workspaces/{workspace_id}/members/invite`
+## MCP
 
-Roles are `owner`, `admin`, `member`, and `viewer`. Dev mode is controlled by `AUTH_DEV_MODE=true`. Google, GitHub, and Microsoft/Entra ID environment variables are present so provider-backed sessions can issue the same backend session model.
-
-## GitHub authentication and ingestion
-
-### OAuth connection
-
-Create a GitHub OAuth App with callback URL:
+Run `make mcp`. The preferred tools are:
 
 ```text
-http://localhost:8000/api/auth/github/callback
+orgmemory_ingest_github_repo
+orgmemory_ingest_slack_channel
+orgmemory_upload_source
+orgmemory_ask
+orgmemory_search_memories
+orgmemory_get_company_profile
+orgmemory_get_project_profile
+orgmemory_get_service_profile
+orgmemory_get_memory_graph
+orgmemory_list_memory_conflicts
+orgmemory_list_memory_updates
+orgmemory_list_source_revisions
+orgmemory_list_change_sets
+orgmemory_compile_skill
+orgmemory_list_skills
+orgmemory_create_work
+orgmemory_list_work
+orgmemory_get_work
+orgmemory_resolve_work_step
+orgmemory_complete_work_step
 ```
 
-Set `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` in `.env`, restart the backend, then select **Connect with GitHub** on Connectors. The requested `repo read:org` scopes allow private repository discovery for the authenticated user. Organizations with SAML SSO or third-party application restrictions may require the user or an organization owner to authorize the OAuth application. Runbook only sees repositories the authenticated identity is allowed to access.
+Legacy `runbook_*` MCP tools remain temporarily available for compatibility, but action policies, approvals, simulations, procedure extraction, and reliability review are advanced features and are not part of the default v1 navigation.
 
-For local development, select **Use token** and enter a fine-grained personal access token, or set `GITHUB_TOKEN`. The token is verified before encrypted storage.
-
-Ingest from the UI or API:
-
-```bash
-curl -X POST http://localhost:8000/api/ingest/github \
-  -H 'Content-Type: application/json' \
-  -d '{"repo_url_or_path":"https://github.com/org/repo","project_name":"Service platform"}'
-```
-
-The scanner covers documentation, CI workflows, compose files, Jenkinsfiles, package manifests, configuration, source files, endpoints, imports, functions/classes, env vars, commands, errors, and operational text/log formats. Authenticated GitHub repositories also include issues and pull requests with original URLs. Secrets are passed to Git using a temporary askpass helper and are not embedded in clone URLs or process arguments. Docker Compose mounts `~/Desktop/startup` read-only at `/workspace/local_repos`, and the path adapter maps inputs such as `~/Desktop/startup/hcag` into that mount; local development opens the original path directly.
-
-Repository ingestion is job-recorded. Use:
-
-```bash
-curl http://localhost:8000/api/ingest/jobs
-curl http://localhost:8000/api/ingest/jobs/job_...
-```
-
-The UI exposes the same data on **Ingestion Jobs**, including status, progress, files/issues/PRs scanned, graph nodes/edges written, warnings, and errors.
-
-## Slack authentication and ingestion
-
-Create a Slack app with redirect URL:
-
-```text
-http://localhost:8000/api/auth/slack/callback
-```
-
-Configure `SLACK_CLIENT_ID` and `SLACK_CLIENT_SECRET`, restart, and use **Connect with Slack**. The OAuth flow requests channel discovery and public/private history scopes. The app must be invited to private channels. A bot token can be verified and stored through the UI or `SLACK_BOT_TOKEN`.
-
-After connection, list channels at `GET /api/connectors/slack/channels` and ingest one:
-
-```bash
-curl -X POST http://localhost:8000/api/ingest/slack \
-  -H 'Content-Type: application/json' \
-  -d '{"project_id":"prj_...","channel_id":"C012345","limit":200}'
-```
-
-Pasted Slack exports work without OAuth through Ingest or `POST /api/ingest/upload`. Gmail, ClickUp, Jira, Linear, Notion, Google Drive, and Zendesk have connector registry entries and planned UI states without pretending live access exists.
-
-## Asking and retrieval
-
-```bash
-curl -X POST http://localhost:8000/api/ask \
-  -H 'Content-Type: application/json' \
-  -d '{"project_id":"prj_...","query":"@runbook why is reddit_service failing?"}'
-```
-
-The response contains the likely cause, confidence, related services, related files, related issues, related pull requests, evidence snippets and URLs, suggested runbooks, safe and approval-required actions, and a retrieval trace with HCAG route, context window, chunk IDs, graph paths, and routing engine. Related files, issues, and pull requests are derived only from the ranked evidence the retrieval pass actually surfaced. Every supported answer includes at least one citation. Unsupported answers return:
-
-```text
-I do not have enough evidence to answer this confidently.
-```
-
-## Runbook extraction and approvals
-
-`POST /api/runbooks/extract` retrieves current evidence, extracts source procedures and commands, classifies each action, and writes YAML and JSON to `generated_runbooks/{project_id}/`. Extraction returns zero runbooks when sources contain no executable procedure.
-
-`POST /api/actions/propose` resolves a real runbook step, renders its command preview, evaluates AgentGate, and creates an audit record. Use `/api/actions/approve` or `/api/actions/deny` for pending requests. With the safe defaults below, approved commands remain previews:
+## Configuration
 
 ```env
-RUNBOOK_DEMO_MODE=true
-ALLOW_LOCAL_COMMAND_EXECUTION=false
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+GOOGLE_API_KEY=
+XAI_API_KEY=
+KIMI_API_KEY=
+ORG_MEMORY_DEFAULT_MODEL_PROVIDER=gpt
+ORG_MEMORY_ENABLE_ACTIONS=false
+ORG_MEMORY_ENABLE_PROCEDURES=false
+ORG_MEMORY_ENABLE_ADVANCED_RELIABILITY=false
+GITHUB_WEBHOOK_SECRET=
+SLACK_SIGNING_SECRET=
 ```
 
-The current release deliberately does not implement a shell executor. Enabling the environment flag does not silently broaden execution; a future isolated executor must be added explicitly.
+Google, GitHub, passwordless email, and Slack configuration are documented in
+`docs/OAUTH_SETUP.md`. Secrets are encrypted at rest, source access is
+workspace-scoped, and API keys are workspace-bound.
 
-## MCP server
-
-Install and run for an MCP client:
-
-```bash
-make mcp
-```
-
-An MCP stdio process is supposed to remain silent and wait for its client. It is not hung. To verify dependencies and backend connectivity without waiting:
-
-```bash
-source mcp_server/.venv/bin/activate
-python mcp_server/server.py --health
-```
-
-The server exposes:
-
-- `runbook_ingest_github_repo`
-- `runbook_ingest_slack_channel`
-- `runbook_upload_knowledge`
-- `runbook_ask`
-- `runbook_extract_runbooks`
-- `runbook_list_runbooks`
-- `runbook_get_runbook`
-- `runbook_get_graph_summary`
-- `runbook_get_service_graph`
-- `runbook_get_blast_radius`
-- `runbook_simulate_incident`
-- `runbook_check_runbook_drift`
-- `runbook_propose_action`
-- `runbook_list_pending_approvals`
-- `runbook_get_audit_log`
-
-See `mcp_server/README.md` and `docs/MCP.md` for client configuration. The boundary is suitable for Cursor, Claude Desktop, ChatGPT tools/connectors, Slack bots, Gmail assistants, GitHub Apps, and workflow automation.
-
-## Local development
-
-```bash
-# Terminal 1: graph
-docker compose up -d arcadedb
-make arcade-init
-
-# Terminal 2: API (creates backend/.venv on first run)
-make backend
-
-# Terminal 3: UI (installs dependencies on first run)
-make frontend
-```
-
-Quality commands:
+## Tests
 
 ```bash
 make test
-make lint
-make ci        # test, lint/type-check, and production frontend build
-make format
-make reset
-make docker-down
-make benchmark    # runs the HCAG benchmark harness in ../hcag
+make sdk-test
+npm --prefix frontend test
 ```
 
-## Repository automation
-
-GitHub Actions runs `make ci` for every push and pull request. Dependabot opens
-weekly updates for Python packages, npm packages, and GitHub Actions. Local
-state, generated runbooks, dependency directories, and `.env` stay out of the
-repository through `.gitignore`; use `.env.example` as the safe configuration
-template.
-
-## Drift, simulation, correlation, and blast radius
-
-```bash
-# drift for one runbook or a whole project
-curl http://localhost:8000/api/runbooks/rb_.../drift
-curl http://localhost:8000/api/projects/prj_.../drift
-
-# dry-run a runbook through the real policy engine
-curl -X POST http://localhost:8000/api/simulate \
-  -H 'Content-Type: application/json' \
-  -d '{"project_id":"prj_...","scenario":"Simulate Kafka outage for reddit_service"}'
-
-# rank recent changes against the current failure evidence
-curl -X POST http://localhost:8000/api/correlate \
-  -H 'Content-Type: application/json' \
-  -d '{"project_id":"prj_...","service_name":"reddit_service"}'
-
-# dependency blast radius from real graph edges
-curl http://localhost:8000/api/projects/prj_.../graph/blast-radius/reddit_service
-```
-
-Operational memories are managed at `GET/POST /api/projects/{id}/memories`
-(`/derive`, then `/api/memories/{id}/approve|reject`), importers at
-`GET /api/importers` and `POST /api/importers/{name}/import`, and API keys
-at `GET/POST/DELETE /api/keys`. Documentation lives in `docs/`
-(`ARCHITECTURE.md`, `GRAPH_MODEL.md`, `SECURITY.md`, `CONNECTORS.md`,
-`RUNBOOK_EXTRACTION.md`, `APPROVALS.md`, `MCP.md`, `BENCHMARKS.md`,
-`COMPETITIVE_DIFFERENTIATION.md`, `HCAG_BENCHMARK_PLAN.md`).
-
-## Environment reference
-
-Copy `.env.example`. The required local graph values are:
-
-```env
-ARCADEDB_HOST=arcadedb
-ARCADEDB_PORT=2480
-ARCADEDB_USER=root
-ARCADEDB_PASSWORD=runbook_dev_password
-ARCADEDB_DATABASE=runbook
-GRAPH_BACKEND=arcadedb
-```
-
-Connector tokens stored through the UI are encrypted with Fernet. Set `INTEGRATION_ENCRYPTION_KEY` to a stable generated key outside local demos; otherwise a permission-restricted key file is generated beside the SQLite database.
+Grounding tests verify that the same question over different sources produces different answers, confident answers require evidence, insufficient evidence abstains, and no service-specific canned response exists.
 
 ## Known limitations
 
-- Repository scanning is capped by file count and file size and intentionally excludes binaries, dependency folders, and build artifacts.
-- GitHub pagination currently covers the first 100 issues and 50 pull requests per repository.
-- Slack ingestion resolves message text and permalinks but does not yet enrich user IDs to profile names.
-- Retrieval is lexical plus graph/service weighting. Embeddings can be added behind the retrieval interface without changing response contracts.
-- Connector secrets are appropriate for a single-machine deployment; production should use a cloud KMS and managed relational database.
-- No command executor ships in this release. All action commands are policy-evaluated previews.
+- Extraction is deliberately conservative and primarily deterministic; GPT,
+  Claude, Gemini, Grok, or Kimi may synthesize answers but cannot promote
+  unsupported memory.
+- GitHub, Slack, uploads, API, Python, CLI, and MCP are live. Google Workspace,
+  Gmail, Microsoft 365, Teams, Outlook, and Atlassian remain adapter work.
+- Conflict matching currently relies on normalized subjects; entity-assisted and model-assisted reconciliation can improve this.
+- Profiles are assembled on read from current memories rather than materialized incrementally.
+- Team grants are project/source scoped; field-level classification and external identity-group sync are not implemented yet.
+- Legacy advanced routes remain in the codebase for backward compatibility.
 
-## Roadmap
+## Migration note
 
-Near-term work is GitHub App installation for organization-wide repository selection, incremental webhook ingestion, managed secret storage, embedding-backed hybrid ranking, Slack event subscriptions, and isolated executor workers with short-lived credentials. The connector, graph, retrieval, and action interfaces are already separated for those additions.
+Runbook was the previous product direction. OrgMemory is now focused on the
+company brain rather than operational runbooks. Legacy database table names and
+environment variables remain temporarily for migration compatibility.

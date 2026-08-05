@@ -1,3 +1,3 @@
-from .registry import planned_connectors
+from .registry import connector_catalog, planned_connectors
 
-__all__ = ["planned_connectors"]
+__all__ = ["connector_catalog", "planned_connectors"]
