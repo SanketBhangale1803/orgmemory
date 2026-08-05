@@ -38,3 +38,22 @@ def test_production_configuration_accepts_explicit_safe_boundaries():
     )
 
     config.assert_safe_for_environment()
+
+
+def test_production_configuration_accepts_oci_kms():
+    config = Settings(
+        environment="production",
+        auth_dev_mode=False,
+        jwt_secret="a-production-secret-that-is-longer-than-32-characters",
+        frontend_url="https://orgmemory.example.com",
+        github_client_id="production-client-id",
+        github_client_secret="production-client-secret",
+        runbook_embedding_provider="fastembed",
+        connector_vault_provider="oci-kms",
+        connector_kms_key_id="ocid1.key.oc1.example",
+        connector_oci_kms_crypto_endpoint="https://vault-crypto.kms.example.com",
+        mcp_public_url="https://mcp.orgmemory.example.com",
+        mcp_oauth_issuer_url="https://api.orgmemory.example.com",
+    )
+
+    config.assert_safe_for_environment()

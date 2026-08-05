@@ -1,0 +1,18 @@
+{
+	email {$TLS_EMAIL}
+}
+
+app.{$PUBLIC_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy frontend:3000
+}
+
+api.{$PUBLIC_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy backend:8000
+}
+
+mcp.{$PUBLIC_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy mcp:8001
+}

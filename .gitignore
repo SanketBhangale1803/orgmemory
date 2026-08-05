@@ -1,6 +1,8 @@
 .env
+.env.production
 .env.*
 !.env.example
+!.env.production.example
 .DS_Store
 **/.venv/
 **/node_modules/

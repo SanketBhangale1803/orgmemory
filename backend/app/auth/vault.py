@@ -121,10 +121,119 @@ class AWSKMSCipher:
         return plaintext.decode()
 
 
+class OCIKMSCipher:
+    """OCI Vault envelope encryption using a delegated instance identity.
+
+    The VM never stores a master key. OCI Vault wraps a random AES-256 data key
+    and enforces the workspace/user/provider tuple as authenticated associated
+    data. The data key then encrypts the OAuth grant locally, keeping large
+    approved-action payloads below OCI KMS direct-encryption limits.
+    """
+
+    provider = "oci-kms"
+
+    def __init__(
+        self,
+        key_id: str,
+        crypto_endpoint: str,
+        auth: str = "instance-principal",
+        config_profile: str = "DEFAULT",
+    ):
+        if not key_id:
+            raise RuntimeError("CONNECTOR_KMS_KEY_ID is required for the OCI KMS vault")
+        if not crypto_endpoint.startswith("https://"):
+            raise RuntimeError(
+                "CONNECTOR_OCI_KMS_CRYPTO_ENDPOINT must be the HTTPS crypto endpoint"
+            )
+        try:
+            import oci
+        except ImportError as exc:  # pragma: no cover - depends on production image
+            raise RuntimeError("Install oci to use CONNECTOR_VAULT_PROVIDER=oci-kms") from exc
+
+        self.oci = oci
+        self.key_id = key_id
+        auth_mode = auth.casefold()
+        if auth_mode == "instance-principal":
+            signer = oci.auth.signers.InstancePrincipalsSecurityTokenSigner()
+            self.client = oci.key_management.KmsCryptoClient(
+                config={},
+                service_endpoint=crypto_endpoint,
+                signer=signer,
+                retry_strategy=oci.retry.DEFAULT_RETRY_STRATEGY,
+            )
+        elif auth_mode == "config-file":
+            config = oci.config.from_file(profile_name=config_profile)
+            self.client = oci.key_management.KmsCryptoClient(
+                config=config,
+                service_endpoint=crypto_endpoint,
+                retry_strategy=oci.retry.DEFAULT_RETRY_STRATEGY,
+            )
+        else:
+            raise RuntimeError(
+                "CONNECTOR_OCI_KMS_AUTH must be instance-principal or config-file"
+            )
+
+    @staticmethod
+    def _aad(context: dict[str, str]) -> bytes:
+        return json.dumps(context, sort_keys=True, separators=(",", ":")).encode()
+
+    def encrypt(self, value: str, context: dict[str, str]) -> str:
+        data_key = os.urandom(32)
+        wrapped = self.client.encrypt(
+            self.oci.key_management.models.EncryptDataDetails(
+                key_id=self.key_id,
+                plaintext=base64.b64encode(data_key).decode(),
+                associated_data=context,
+                encryption_algorithm="AES_256_GCM",
+                logging_context=context,
+            )
+        ).data
+        nonce = os.urandom(12)
+        ciphertext = AESGCM(data_key).encrypt(nonce, value.encode(), self._aad(context))
+        return json.dumps(
+            {
+                "v": 2,
+                "provider": self.provider,
+                "key_id": self.key_id,
+                "key_version_id": wrapped.key_version_id,
+                "encrypted_data_key": wrapped.ciphertext,
+                "nonce": base64.b64encode(nonce).decode(),
+                "ciphertext": base64.b64encode(ciphertext).decode(),
+            }
+        )
+
+    def decrypt(self, value: str, context: dict[str, str]) -> str:
+        envelope = json.loads(value)
+        response = self.client.decrypt(
+            self.oci.key_management.models.DecryptDataDetails(
+                key_id=envelope.get("key_id") or self.key_id,
+                key_version_id=envelope.get("key_version_id"),
+                ciphertext=envelope["encrypted_data_key"],
+                associated_data=context,
+                encryption_algorithm="AES_256_GCM",
+                logging_context=context,
+            )
+        ).data
+        data_key = base64.b64decode(response.plaintext)
+        plaintext = AESGCM(data_key).decrypt(
+            base64.b64decode(envelope["nonce"]),
+            base64.b64decode(envelope["ciphertext"]),
+            self._aad(context),
+        )
+        return plaintext.decode()
+
+
 def configured_cipher() -> VaultCipher:
     provider = settings.connector_vault_provider.casefold()
     if provider == "aws-kms":
         return AWSKMSCipher(settings.connector_kms_key_id, settings.connector_kms_region)
+    if provider == "oci-kms":
+        return OCIKMSCipher(
+            settings.connector_kms_key_id,
+            settings.connector_oci_kms_crypto_endpoint,
+            settings.connector_oci_kms_auth,
+            settings.connector_oci_config_profile,
+        )
     if provider != "local":
         raise RuntimeError(f"Unsupported connector vault provider {provider!r}")
     return LocalFernetCipher()

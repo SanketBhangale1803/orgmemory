@@ -17,9 +17,6 @@ services:
   backend:
     build:
       context: backend
-      additional_contexts:
-        hcag: ../hcag
-        agentgate: ../agentgate
     env_file: .env
     environment:
       ARCADEDB_HOST: arcadedb

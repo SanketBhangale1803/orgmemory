@@ -84,6 +84,9 @@ class Settings(BaseSettings):
     connector_vault_provider: str = "local"
     connector_kms_key_id: str = ""
     connector_kms_region: str = ""
+    connector_oci_kms_crypto_endpoint: str = ""
+    connector_oci_kms_auth: str = "instance-principal"
+    connector_oci_config_profile: str = "DEFAULT"
     connector_manifest_public_keys_json: str = "{}"
     connector_sync_worker_enabled: bool = True
     connector_sync_poll_seconds: int = 2
@@ -165,11 +168,16 @@ class Settings(BaseSettings):
             )
         if self.runbook_embedding_provider.casefold() == "deterministic":
             faults.append("RUNBOOK_EMBEDDING_PROVIDER must use fastembed or openai")
-        if self.connector_vault_provider.casefold() != "aws-kms" or not self.connector_kms_key_id:
+        vault_provider = self.connector_vault_provider.casefold()
+        if vault_provider not in {"aws-kms", "oci-kms"} or not self.connector_kms_key_id:
             faults.append(
                 "Production connector grants require CONNECTOR_VAULT_PROVIDER=aws-kms "
-                "and CONNECTOR_KMS_KEY_ID"
+                "or oci-kms and CONNECTOR_KMS_KEY_ID"
             )
+        if vault_provider == "oci-kms" and not self.connector_oci_kms_crypto_endpoint.startswith(
+            "https://"
+        ):
+            faults.append("CONNECTOR_OCI_KMS_CRYPTO_ENDPOINT must use HTTPS")
         if not self.mcp_public_url.startswith("https://"):
             faults.append("MCP_PUBLIC_URL must use HTTPS")
         if not self.mcp_oauth_issuer_url.startswith("https://"):

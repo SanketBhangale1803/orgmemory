@@ -1,0 +1,99 @@
+name: orgmemory
+
+services:
+  arcadedb:
+    image: arcadedata/arcadedb:26.5.1
+    restart: unless-stopped
+    environment:
+      JAVA_OPTS: >-
+        -Xms512m -Xmx2g
+        -Darcadedb.server.rootPassword=${ARCADEDB_PASSWORD:?set ARCADEDB_PASSWORD}
+    volumes:
+      - arcadedb_data:/home/arcadedb/databases
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:2480/api/v1/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  backend:
+    build:
+      context: backend
+    restart: unless-stopped
+    env_file: ${ORGMEMORY_ENV_FILE:-.env.production}
+    environment:
+      ENVIRONMENT: production
+      API_URL: https://api.${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN}
+      FRONTEND_URL: https://app.${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN}
+      APP_BASE_URL: https://app.${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN}
+      GITHUB_REDIRECT_URI: https://api.${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN}/api/auth/github/callback
+      SLACK_REDIRECT_URI: https://api.${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN}/api/auth/slack/callback
+      GOOGLE_REDIRECT_URI: https://api.${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN}/api/auth/google/callback
+      MCP_PUBLIC_URL: https://mcp.${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN}
+      MCP_OAUTH_ISSUER_URL: https://api.${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN}
+      SESSION_COOKIE_DOMAIN: .${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN}
+      ARCADEDB_HOST: arcadedb
+      SQLITE_PATH: /workspace/runbook/data/runbook.db
+      GENERATED_RUNBOOKS_DIR: /workspace/runbook/generated_runbooks
+      REPO_CACHE_DIR: /workspace/runbook/data/repos
+      RUNBOOK_EMBEDDING_CACHE_DIR: /opt/runbook-models
+    volumes:
+      - orgmemory_data:/workspace/runbook/data
+      - generated_runbooks:/workspace/runbook/generated_runbooks
+    depends_on:
+      arcadedb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  frontend:
+    build:
+      context: frontend
+      args:
+        NEXT_PUBLIC_API_URL: https://api.${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  mcp:
+    build:
+      context: mcp_server
+    restart: unless-stopped
+    environment:
+      RUNBOOK_API_URL: http://backend:8000
+      MCP_PUBLIC_URL: https://mcp.${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN}
+      MCP_OAUTH_ISSUER_URL: https://api.${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN}
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN}
+      TLS_EMAIL: ${TLS_EMAIL:?set TLS_EMAIL}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/oci/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+      - mcp
+
+volumes:
+  arcadedb_data:
+  orgmemory_data:
+  generated_runbooks:
+  caddy_data:
+  caddy_config:
