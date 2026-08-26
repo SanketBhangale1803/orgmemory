@@ -92,6 +92,11 @@ test("pending approvals surface inline in the workspace with a real decision pat
   );
   assert.match(chat, /Approve &amp; refresh/);
   assert.match(chat, /Mirror the agent's decision into the same state the human inbox reads\./);
+  // The inbox is discoverable before the first request exists: admins always
+  // see it, with an empty state that says what belongs here.
+  assert.match(chat, /isAdmin \|\| requests\.length > 0/);
+  assert.match(chat, /Nothing is waiting on you/);
+  assert.match(chat, /Add person/);
 });
 
 test("WebMCP validates project access before calling scoped backend endpoints", () => {

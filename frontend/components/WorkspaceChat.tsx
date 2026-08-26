@@ -555,52 +555,63 @@ export default function WorkspaceChat({ user }: { user: any }) {
         <div className="ws-thread-inner">
           {loadError && <div className="ws-alert">{loadError}</div>}
 
-          {pendingApprovals.length > 0 && (
-            <section className="ws-inbox" aria-label="Pending approvals">
+          {Boolean(user?.active_workspace_id) && (isAdmin || requests.length > 0) && (
+            <section className="ws-inbox" aria-label="Approvals">
               <header>
                 <strong>
-                  {pendingApprovals.length} approval request
-                  {pendingApprovals.length === 1 ? "" : "s"} waiting on you
+                  {pendingApprovals.length
+                    ? `${pendingApprovals.length} approval request${pendingApprovals.length === 1 ? "" : "s"} waiting on you`
+                    : "Approvals"}
                 </strong>
-                <Link href="/approvals">All approvals →</Link>
+                <span className="ws-inbox-links">
+                  {isAdmin && <Link href="/account">Add person</Link>}
+                  <Link href="/approvals">All approvals →</Link>
+                </span>
               </header>
               {inboxNote && <div className="ws-inbox-note">{inboxNote}</div>}
               {inboxError && <div className="ws-alert">{inboxError}</div>}
-              {pendingApprovals.map((request) => {
-                const canResolve = isAdmin || request.requested_by_id === user?.id;
-                return (
-                  <div className="ws-approval" key={request.id}>
-                    <div className="ws-approval-body">
-                      <p>
-                        <strong>{request.requested_by_name || "A teammate"}</strong>
-                        {(request.requested_by_email ? ` (${request.requested_by_email})` : "")} asked
-                        to refresh{" "}
-                        <strong>{request.project_name || request.repository}</strong>
-                      </p>
-                      {request.reason && <small>&ldquo;{request.reason}&rdquo;</small>}
-                    </div>
-                    {canResolve ? (
-                      <div className="ws-approval-actions">
-                        <button
-                          disabled={decidingId === request.id}
-                          onClick={() => void decide(request, true)}
-                        >
-                          Approve &amp; refresh
-                        </button>
-                        <button
-                          className="danger"
-                          disabled={decidingId === request.id}
-                          onClick={() => void decide(request, false)}
-                        >
-                          Deny
-                        </button>
+              {pendingApprovals.length ? (
+                pendingApprovals.map((request) => {
+                  const canResolve = isAdmin || request.requested_by_id === user?.id;
+                  return (
+                    <div className="ws-approval" key={request.id}>
+                      <div className="ws-approval-body">
+                        <p>
+                          <strong>{request.requested_by_name || "A teammate"}</strong>
+                          {(request.requested_by_email ? ` (${request.requested_by_email})` : "")} asked
+                          to refresh{" "}
+                          <strong>{request.project_name || request.repository}</strong>
+                        </p>
+                        {request.reason && <small>&ldquo;{request.reason}&rdquo;</small>}
                       </div>
-                    ) : (
-                      <span className="ws-approval-status">Waiting for an admin</span>
-                    )}
-                  </div>
-                );
-              })}
+                      {canResolve ? (
+                        <div className="ws-approval-actions">
+                          <button
+                            disabled={decidingId === request.id}
+                            onClick={() => void decide(request, true)}
+                          >
+                            Approve &amp; refresh
+                          </button>
+                          <button
+                            className="danger"
+                            disabled={decidingId === request.id}
+                            onClick={() => void decide(request, false)}
+                          >
+                            Deny
+                          </button>
+                        </div>
+                      ) : (
+                        <span className="ws-approval-status">Waiting for an admin</span>
+                      )}
+                    </div>
+                  );
+                })
+              ) : (
+                <p className="ws-inbox-empty">
+                  Nothing is waiting on you. When a teammate — or an agent acting for one —
+                  requests a repository refresh, it lands here for a decision.
+                </p>
+              )}
             </section>
           )}
 

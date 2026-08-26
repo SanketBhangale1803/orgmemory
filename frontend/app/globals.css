@@ -2548,6 +2548,9 @@ input:focus, textarea:focus, select:focus { border-color: #4d9188; box-shadow: 0
 .ws-inbox header a { color:var(--maroon); font-size:12px; font-weight:600; white-space:nowrap; }
 .ws-inbox-note { padding:8px 12px; border-radius:9px; background:var(--paper-warm); color:var(--maroon); font-size:12.5px; line-height:1.55; }
 .ws-inbox .ws-alert { padding:8px 12px; border-radius:9px; font-size:12.5px; }
+.ws-inbox-links { display:inline-flex; align-items:center; gap:12px; }
+.ws-inbox-links a { color:var(--maroon); font-size:12px; font-weight:600; white-space:nowrap; }
+.ws-inbox-empty { margin:0; padding:2px 0 0; color:var(--ink-faint); font-size:12.5px; line-height:1.6; }
 
 .ws-approval { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; padding-top:11px; border-top:1px solid var(--line); }
 .ws-approval-body { display:flex; flex-direction:column; gap:4px; min-width:0; }

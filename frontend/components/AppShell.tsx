@@ -9,6 +9,43 @@ import { api } from "@/lib/api";
 
 const SECURING_MIN_MS = 450;
 
+/* One navigation model: the chat is home, and every other page is its satellite
+   carrying the same slim bar. The legacy multi-domain header only survives as a
+   fallback for routes that have not been given a title yet. */
+const chatSatellites: Record<string, string> = {
+  "/ingest": "Add knowledge",
+  "/connectors": "Connections",
+  "/jobs": "Ingestion jobs",
+  "/ask": "Ask OrgMemory",
+  "/work": "Memory work",
+  "/approvals": "Approvals",
+  "/memories": "Memories",
+  "/graph": "Memory graph",
+  "/profiles": "Profiles",
+  "/projects": "Memory spaces",
+  "/updates": "Change intelligence",
+  "/conflicts": "Conflicts",
+  "/settings": "Settings",
+  "/integrations": "MCP & integrations",
+  "/keys": "API keys",
+  "/account": "Account",
+  "/audit": "Audit log",
+  "/benchmarks": "Benchmarks",
+  "/drift": "Drift checks",
+  "/simulation": "Simulation",
+  "/runbooks": "Runbooks",
+  "/reliability": "Reliability",
+  "/admin": "Platform admin",
+};
+
+function satelliteTitle(pathname: string): string {
+  if (chatSatellites[pathname]) return chatSatellites[pathname];
+  if (pathname.startsWith("/runbooks/")) return "Runbook";
+  if (pathname.startsWith("/reliability/")) return "Reliability";
+  if (pathname.startsWith("/updates/")) return "Change intelligence";
+  return "";
+}
+
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -17,12 +54,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const isPublic = isLanding || isDocs || pathname === "/login";
   const isLogin = pathname === "/login";
   const isChat = pathname === "/workspace";
-  // Pages the chat links to directly. They keep the chat's slim chrome so the
-  // "add a source" round trip never drops anyone into the older navigation.
-  // Approvals joins them: deciding a request should feel like answering a turn,
-  // not visiting a separate governance product.
-  const chatSatellites: Record<string, string> = { "/ingest": "Add knowledge", "/approvals": "Approvals" };
-  const satelliteTitle = chatSatellites[pathname];
+  const title = isChat ? "" : satelliteTitle(pathname);
   const [user, setUser] = useState<any>();
   const [ready, setReady] = useState(false);
 
@@ -64,6 +96,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // The chat carries its own minimal chrome. Wrapping it in the multi-domain
   // header would put the mechanics back on screen it was built to remove.
   if (isChat) return <>{children}</>;
-  if (satelliteTitle) return <div className="om-home ws-satellite"><ChatBackBar user={user} title={satelliteTitle} /><main>{children}</main></div>;
+  if (title) return <div className="om-home ws-satellite"><ChatBackBar user={user} title={title} /><main>{children}</main></div>;
   return <div className="shell"><Nav user={user}/><main className="main">{children}</main></div>;
 }
