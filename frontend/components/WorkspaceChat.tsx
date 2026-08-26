@@ -4,7 +4,9 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import MarkdownAnswer from "@/components/MarkdownAnswer";
 import { RunbookMark } from "@/components/RunbookLogo";
+import { useOrgMemoryWebMCP } from "@/hooks/useOrgMemoryWebMCP";
 import { api } from "@/lib/api";
+import type { OrgMemoryChangeSet } from "@/lib/webmcp";
 
 type Model = { id: string; label: string; company: string; model: string; configured: boolean; default: boolean };
 type Project = { id: string; name: string; repository?: string };
@@ -222,10 +224,16 @@ export default function WorkspaceChat({ user }: { user: any }) {
   }, [projects, filter]);
 
   const ask = useCallback(
-    async (prompt: string, overrideProject?: string) => {
+    async (
+      prompt: string,
+      overrideProject?: string,
+      surface: "web" | "webmcp" = "web",
+      requestedScope?: "workspace" | "project",
+    ): Promise<Answer> => {
       const question = prompt.trim();
       const target = overrideProject || project;
-      if (!question || !target || busy) return;
+      if (!question || !target) throw new Error("Choose a memory space and enter a question.");
+      if (busy) throw new Error("OrgMemory is already answering another question.");
       setDraft("");
       setBusy(true);
       setStage(0);
@@ -244,20 +252,22 @@ export default function WorkspaceChat({ user }: { user: any }) {
             project_id: target,
             query: question,
             model: model || undefined,
-            surface: "web",
+            surface,
             // Choosing a repository from a clarification answers the question it
             // asked, so that turn is scoped to it rather than searched workspace-wide.
-            scope: overrideProject ? "project" : scope,
+            scope: requestedScope || (overrideProject ? "project" : scope),
             history,
           }),
         });
         setTurns((current) =>
           current.map((turn, index) => (index === current.length - 1 ? { ...turn, answer: response } : turn)),
         );
+        return response;
       } catch (error: any) {
         setTurns((current) =>
           current.map((turn, index) => (index === current.length - 1 ? { ...turn, error: error.message } : turn)),
         );
+        throw error;
       } finally {
         window.clearInterval(stageTimer.current);
         setBusy(false);
@@ -265,6 +275,34 @@ export default function WorkspaceChat({ user }: { user: any }) {
     },
     [busy, model, project, scope, turns],
   );
+
+  const inspectChanges = useCallback(
+    (projectId: string, limit: number) =>
+      api<OrgMemoryChangeSet[]>(
+        `/api/memory/change-sets?project_id=${encodeURIComponent(projectId)}&limit=${limit}`,
+      ),
+    [],
+  );
+
+  const webMCP = useOrgMemoryWebMCP({
+    enabled: projects.length > 0 && Boolean(project),
+    spaces: projects,
+    activeProjectId: project,
+    ask: async (question, projectId, requestedScope) => {
+      setProject(projectId);
+      setScope(requestedScope);
+      return ask(question, projectId, "webmcp", requestedScope);
+    },
+    inspectChanges,
+  });
+
+  const webMCPLabel = (() => {
+    if (webMCP.status !== "ready") return "";
+    if (webMCP.activity?.state === "running") return "Agent is reading company memory";
+    if (webMCP.activity?.state === "complete") return "Agent used company memory";
+    if (webMCP.activity?.state === "error") return "Agent call needs attention";
+    return "Agent ready";
+  })();
 
   async function copyHandoff(handoff: Handoff, key: string, contextEventId?: string) {
     try {
@@ -289,7 +327,7 @@ export default function WorkspaceChat({ user }: { user: any }) {
   const noProjects = !projects.length && !loadError;
 
   return (
-    <div className="om-home ws-app">
+    <div className="om-home ws-app" data-webmcp-status={webMCP.status}>
       <header className="ws-bar">
         <Link href="/workspace" className="ws-id" aria-label="OrgMemory">
           <RunbookMark />
@@ -439,7 +477,7 @@ export default function WorkspaceChat({ user }: { user: any }) {
               <p>Ask about your company, or about anything else. I&rsquo;ll tell you which one I answered from.</p>
               <div className="ws-starters">
                 {starters.map((item) => (
-                  <button key={item} onClick={() => ask(item)}>
+                  <button key={item} onClick={() => void ask(item).catch(() => undefined)}>
                     {item}
                   </button>
                 ))}
@@ -455,7 +493,7 @@ export default function WorkspaceChat({ user }: { user: any }) {
 
               {turn.error && <div className="ws-alert">{turn.error}</div>}
 
-              {turn.answer && <AnswerBlock answer={turn.answer} onCopy={copyHandoff} copied={copied} turnKey={String(index)} project={project} onPick={(projectId) => ask(turn.question, projectId)} />}
+              {turn.answer && <AnswerBlock answer={turn.answer} onCopy={copyHandoff} copied={copied} turnKey={String(index)} project={project} onPick={(projectId) => void ask(turn.question, projectId).catch(() => undefined)} />}
 
               {!turn.answer && !turn.error && busy && index === turns.length - 1 && (
                 <div className="ws-working">
@@ -483,16 +521,17 @@ export default function WorkspaceChat({ user }: { user: any }) {
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
-                ask(draft);
+                void ask(draft).catch(() => undefined);
               }
             }}
             aria-label="Ask OrgMemory"
           />
-          <button className="ws-send" onClick={() => ask(draft)} disabled={busy || noProjects || !draft.trim()} aria-label="Send">
+          <button className="ws-send" onClick={() => void ask(draft).catch(() => undefined)} disabled={busy || noProjects || !draft.trim()} aria-label="Send">
             ↑
           </button>
         </div>
         <p className="ws-foot">
+          {webMCPLabel && <span className="ws-agent-ready" title="Three browser-native WebMCP tools are available"><i />{webMCPLabel}</span>}
           Answers cite the company sources behind them.
           <Link href="/memories">Browse memory</Link>
         </p>

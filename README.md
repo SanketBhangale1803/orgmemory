@@ -1,5 +1,11 @@
 # OrgMemory
 
+> **WebMCP Challenge 2026:** the authenticated workspace now exposes
+> browser-native, read-only company-memory tools through
+> `document.modelContext.registerTool()`. See the dated
+> [implementation record](docs/webmcp-challenge.md) for the pre-challenge
+> baseline, new work, security boundary, and judge walkthrough.
+
 > The source-backed operating brain for your company.
 
 OrgMemory learns how a company works from code, conversations, documents, tickets,

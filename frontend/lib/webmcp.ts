@@ -1,0 +1,316 @@
+export const ORGMEMORY_WEBMCP_TOOLS = [
+  "list_orgmemory_spaces",
+  "ask_orgmemory",
+  "inspect_orgmemory_changes",
+] as const;
+
+export type OrgMemorySpace = {
+  id: string;
+  name: string;
+  repository?: string;
+};
+
+export type OrgMemoryEvidence = {
+  source_title: string;
+  source_type: string;
+  source_url?: string;
+};
+
+export type OrgMemoryWebMCPAnswer = {
+  answer: string;
+  answer_sufficient: boolean;
+  answer_scope: string;
+  resolved_subject?: string;
+  searched_sources?: number;
+  evidence: OrgMemoryEvidence[];
+};
+
+export type OrgMemoryChangeSet = {
+  id: string;
+  source_id: string;
+  actor?: string;
+  review_status?: string;
+  created_at: string;
+  added?: unknown[];
+  updated?: unknown[];
+  invalidated?: unknown[];
+  conflicts?: unknown[];
+  affected_artifacts?: unknown[];
+  affected_skills?: unknown[];
+};
+
+export type WebMCPActivity = {
+  tool: (typeof ORGMEMORY_WEBMCP_TOOLS)[number];
+  state: "running" | "complete" | "error";
+  message?: string;
+};
+
+type RegistrationOptions = {
+  spaces: OrgMemorySpace[];
+  getActiveProjectId: () => string;
+  ask: (
+    question: string,
+    projectId: string,
+    scope: "workspace" | "project",
+  ) => Promise<OrgMemoryWebMCPAnswer>;
+  inspectChanges: (projectId: string, limit: number) => Promise<OrgMemoryChangeSet[]>;
+  onActivity?: (activity: WebMCPActivity) => void;
+};
+
+export type WebMCPRegistration = {
+  supported: boolean;
+  toolCount: number;
+  dispose: () => void;
+};
+
+const READ_ONLY = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+} as const;
+
+function toolResult(summary: string, structuredContent: unknown): WebMCPToolResult {
+  return {
+    content: [
+      { type: "text", text: summary },
+      { type: "text", text: JSON.stringify(structuredContent) },
+    ],
+    structuredContent,
+  };
+}
+
+function stringInput(input: Record<string, unknown>, key: string): string {
+  return typeof input[key] === "string" ? input[key].trim() : "";
+}
+
+function projectFor(
+  input: Record<string, unknown>,
+  spaces: OrgMemorySpace[],
+  activeProjectId: string,
+): OrgMemorySpace {
+  const requested = stringInput(input, "project_id") || activeProjectId;
+  const project = spaces.find((space) => space.id === requested);
+  if (!project) {
+    throw new Error(
+      "Choose a project_id returned by list_orgmemory_spaces before using this tool.",
+    );
+  }
+  return project;
+}
+
+function count(value: unknown[] | undefined): number {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+async function tracked<T>(
+  tool: WebMCPActivity["tool"],
+  onActivity: RegistrationOptions["onActivity"],
+  run: () => Promise<T> | T,
+): Promise<T> {
+  onActivity?.({ tool, state: "running" });
+  try {
+    const value = await run();
+    onActivity?.({ tool, state: "complete" });
+    return value;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Tool execution failed";
+    onActivity?.({ tool, state: "error", message });
+    throw error;
+  }
+}
+
+/**
+ * Register the authenticated workspace as a browser-native Model Context
+ * Provider. The page owns execution, so every call reuses its secure session
+ * cookie and the same authorization checks as a human action in the UI.
+ */
+export async function registerOrgMemoryWebMCP(
+  options: RegistrationOptions,
+): Promise<WebMCPRegistration> {
+  if (typeof document === "undefined" || !document.modelContext) {
+    return { supported: false, toolCount: 0, dispose: () => undefined };
+  }
+
+  const controller = new AbortController();
+  const modelContext = document.modelContext;
+  const registration = { signal: controller.signal };
+
+  const registrations = [
+    modelContext.registerTool(
+      {
+        name: "list_orgmemory_spaces",
+        title: "List OrgMemory spaces",
+        description:
+          "List the company-memory projects the signed-in person can access. Call this before choosing a project for another OrgMemory tool.",
+        inputSchema: {
+          type: "object",
+          properties: {},
+          additionalProperties: false,
+        },
+        annotations: READ_ONLY,
+        execute: () =>
+          tracked("list_orgmemory_spaces", options.onActivity, () => {
+            const activeProjectId = options.getActiveProjectId();
+            const payload = {
+              active_project_id: activeProjectId,
+              spaces: options.spaces.map(({ id, name, repository }) => ({
+                project_id: id,
+                name,
+                repository: repository || undefined,
+              })),
+            };
+            return toolResult(
+              `${payload.spaces.length} authorized OrgMemory space${payload.spaces.length === 1 ? "" : "s"} available.`,
+              payload,
+            );
+          }),
+      },
+      registration,
+    ),
+    modelContext.registerTool(
+      {
+        name: "ask_orgmemory",
+        title: "Ask company memory",
+        description:
+          "Ask a question against current, permission-scoped company memory. The answer is shown in the OrgMemory workspace and returned with its source citations.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            question: {
+              type: "string",
+              minLength: 3,
+              maxLength: 4000,
+              description: "The question to answer from company memory.",
+            },
+            project_id: {
+              type: "string",
+              description:
+                "An authorized project ID from list_orgmemory_spaces. Defaults to the active project.",
+            },
+            scope: {
+              type: "string",
+              enum: ["workspace", "project"],
+              description:
+                "Search all authorized company memory or only the selected project. Defaults to workspace.",
+            },
+          },
+          required: ["question"],
+          additionalProperties: false,
+        },
+        annotations: READ_ONLY,
+        execute: (input) =>
+          tracked("ask_orgmemory", options.onActivity, async () => {
+            const question = stringInput(input, "question");
+            if (question.length < 3) throw new Error("question must contain at least 3 characters");
+            const project = projectFor(
+              input,
+              options.spaces,
+              options.getActiveProjectId(),
+            );
+            const scope = input.scope === "project" ? "project" : "workspace";
+            const answer = await options.ask(question, project.id, scope);
+            const payload = {
+              project_id: project.id,
+              project_name: project.name,
+              scope,
+              answer: answer.answer,
+              answer_sufficient: answer.answer_sufficient,
+              answer_scope: answer.answer_scope,
+              resolved_subject: answer.resolved_subject,
+              searched_sources: answer.searched_sources,
+              evidence: (answer.evidence || []).map(
+                ({ source_title, source_type, source_url }) => ({
+                  title: source_title,
+                  type: source_type,
+                  url: source_url,
+                }),
+              ),
+            };
+            return toolResult(
+              `${answer.answer}\n\nSources: ${payload.evidence.map((source) => source.title).join(", ") || "No source was sufficient."}`,
+              payload,
+            );
+          }),
+      },
+      registration,
+    ),
+    modelContext.registerTool(
+      {
+        name: "inspect_orgmemory_changes",
+        title: "Inspect recent memory changes",
+        description:
+          "Inspect recent source-backed memory changes for an authorized project, including additions, updates, invalidations, conflicts, and downstream artifacts needing review.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            project_id: {
+              type: "string",
+              description:
+                "An authorized project ID from list_orgmemory_spaces. Defaults to the active project.",
+            },
+            limit: {
+              type: "integer",
+              minimum: 1,
+              maximum: 50,
+              default: 10,
+              description: "Maximum number of recent change sets to return.",
+            },
+          },
+          additionalProperties: false,
+        },
+        annotations: READ_ONLY,
+        execute: (input) =>
+          tracked("inspect_orgmemory_changes", options.onActivity, async () => {
+            const project = projectFor(
+              input,
+              options.spaces,
+              options.getActiveProjectId(),
+            );
+            const requestedLimit = typeof input.limit === "number" ? input.limit : 10;
+            const limit = Math.max(1, Math.min(50, Math.trunc(requestedLimit)));
+            const changes = await options.inspectChanges(project.id, limit);
+            const payload = {
+              project_id: project.id,
+              project_name: project.name,
+              change_count: changes.length,
+              changes: changes.map((change) => ({
+                change_set_id: change.id,
+                source_id: change.source_id,
+                created_at: change.created_at,
+                actor: change.actor,
+                review_status: change.review_status,
+                added: count(change.added),
+                updated: count(change.updated),
+                invalidated: count(change.invalidated),
+                conflicts: count(change.conflicts),
+                affected_artifacts: count(change.affected_artifacts),
+                affected_skills: count(change.affected_skills),
+              })),
+            };
+            const reviewCount = payload.changes.filter(
+              (change) => change.review_status === "needs_review",
+            ).length;
+            return toolResult(
+              `${changes.length} recent change set${changes.length === 1 ? "" : "s"} found for ${project.name}; ${reviewCount} need review.`,
+              payload,
+            );
+          }),
+      },
+      registration,
+    ),
+  ];
+
+  try {
+    await Promise.all(registrations);
+  } catch (error) {
+    controller.abort();
+    throw error;
+  }
+
+  return {
+    supported: true,
+    toolCount: ORGMEMORY_WEBMCP_TOOLS.length,
+    dispose: () => controller.abort(),
+  };
+}

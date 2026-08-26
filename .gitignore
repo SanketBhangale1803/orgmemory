@@ -16,6 +16,7 @@ data/
 *.db
 *.sqlite
 *.sqlite3
+:memory:.ses
 .connector_key
 deploy/oci/.keys/
 generated_runbooks/*/
