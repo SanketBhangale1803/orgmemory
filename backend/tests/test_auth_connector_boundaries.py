@@ -120,6 +120,35 @@ def test_github_login_callback_redirects_to_authenticated_workspace(graph, monke
     assert response.cookies.get(settings.session_cookie_name)
 
 
+def test_github_connector_callback_exchanges_code_only_in_runtime(graph, monkeypatch):
+    flow = OAuthStateStore().create(
+        "github", intent="connect", workspace_id="wsp_test", user_id="usr_test"
+    )
+    completed = {}
+
+    def complete(provider, consumed_flow, code):
+        completed.update(provider=provider, flow=consumed_flow, code=code)
+        return {"grant_id": "grant_test"}
+
+    monkeypatch.setattr("app.api.routes.connector_runtime.complete_authorization", complete)
+    monkeypatch.setattr(
+        GitHubConnector,
+        "complete_oauth",
+        lambda *_args: pytest.fail("connector callback must not exchange the code twice"),
+    )
+
+    response = TestClient(app).get(
+        "/api/auth/github/callback",
+        params={"code": "oauth-code", "state": flow["state"]},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {302, 307}
+    assert response.headers["location"] == f"{settings.frontend_url}/connectors?connected=github"
+    assert completed["provider"] == "github"
+    assert completed["code"] == "oauth-code"
+
+
 def test_slack_oauth_requests_and_prefers_personal_user_token(graph, monkeypatch):
     settings.slack_client_id = "slack-client"
     settings.slack_client_secret = "slack-secret"

@@ -2763,8 +2763,8 @@ def github_auth_callback(code: str, state: str, background_tasks: BackgroundTask
     flow = None
     try:
         flow = OAuthStateStore().consume("github", state)
-        identity = GitHubConnector().complete_oauth(code, flow)
         if flow["intent"] == "login":
+            identity = GitHubConnector().complete_oauth(code, flow)
             session = create_oauth_session(
                 "github",
                 identity["external_id"],
@@ -2775,6 +2775,9 @@ def github_auth_callback(code: str, state: str, background_tasks: BackgroundTask
             response = RedirectResponse(f"{settings.frontend_url.rstrip('/')}/workspace")
             _set_session_cookie(response, session["token"])
             return response
+        # The connector runtime performs the OAuth exchange and persists the
+        # resulting token. A GitHub authorization code is single-use, so do
+        # not exchange it here before passing it to the runtime.
         connector_runtime.complete_authorization("github", flow, code)
         return RedirectResponse(f"{settings.frontend_url}/connectors?connected=github")
     except Exception as exc:
