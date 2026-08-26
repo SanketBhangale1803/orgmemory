@@ -149,6 +149,14 @@ export default function WorkspaceChat({ user }: { user: any }) {
   /* Workspace-wide by default: someone asking their company a question is not
      thinking about which repository holds the answer. */
   const [scope, setScope] = useState<"workspace" | "project">("workspace");
+  /* Approvals ride inline with the conversation. A workspace admin should not
+     have to know a queue exists on another page: the request appears here the
+     moment an employee (or a browser agent acting for one) proposes it, and the
+     decision is two buttons in the same place they already work. */
+  const [requests, setRequests] = useState<OrgMemoryRefreshRequest[]>([]);
+  const [decidingId, setDecidingId] = useState("");
+  const [inboxNote, setInboxNote] = useState("");
+  const [inboxError, setInboxError] = useState("");
   const [filter, setFilter] = useState("");
 
   const picker = useRef<HTMLDivElement>(null);
@@ -293,6 +301,45 @@ export default function WorkspaceChat({ user }: { user: any }) {
     [],
   );
 
+  const loadRequests = useCallback(() => {
+    // The backend already limits this list to requests inside projects the
+    // caller can see, so the poll cannot surface anything unauthorized.
+    return api<OrgMemoryRefreshRequest[]>("/api/repository-refresh-requests")
+      .then((items) => {
+        setRequests(items);
+        return items;
+      })
+      .catch(() => undefined);
+  }, []);
+
+  /* Raw API surface shared by the inline buttons and the WebMCP tools: a
+     browser agent resolving an approval uses exactly the same authorized
+     endpoint as a person pressing the button. */
+  const resolveApprovalApi = useCallback(
+    (requestId: string, approved: boolean) =>
+      api<OrgMemoryRefreshRequest>(
+        `/api/repository-refresh-requests/${encodeURIComponent(requestId)}/resolve`,
+        { method: "POST", body: JSON.stringify({ approved }) },
+      ),
+    [],
+  );
+
+  const listApprovals = useCallback(
+    async (projectId: string) => {
+      const items = await api<OrgMemoryRefreshRequest[]>("/api/repository-refresh-requests");
+      setRequests(items);
+      return items.filter((item) => item.project_id === projectId);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!user?.active_workspace_id) return;
+    loadRequests();
+    const timer = window.setInterval(loadRequests, 8000);
+    return () => window.clearInterval(timer);
+  }, [user?.active_workspace_id, loadRequests]);
+
   const webMCP = useOrgMemoryWebMCP({
     enabled: projects.length > 0 && Boolean(project),
     spaces: projects,
@@ -304,6 +351,15 @@ export default function WorkspaceChat({ user }: { user: any }) {
     },
     inspectChanges,
     proposeRepositoryRefresh,
+    listApprovals,
+    resolveApproval: async (requestId, approved) => {
+      const resolved = await resolveApprovalApi(requestId, approved);
+      // Mirror the agent's decision into the same state the human inbox reads.
+      setRequests((current) =>
+        current.map((item) => (item.id === resolved.id ? resolved : item)),
+      );
+      return resolved;
+    },
   });
 
   const webMCPLabel = (() => {
@@ -313,6 +369,37 @@ export default function WorkspaceChat({ user }: { user: any }) {
     if (webMCP.activity?.state === "error") return "Agent call needs attention";
     return "Agent ready";
   })();
+
+  const pendingApprovals = useMemo(
+    () => requests.filter((item) => item.status === "pending_approval"),
+    [requests],
+  );
+  const inFlight = useMemo(
+    () => requests.filter((item) => item.status === "queued" || item.status === "running"),
+    [requests],
+  );
+  const isAdmin = user?.role === "owner" || user?.role === "admin";
+
+  async function decide(request: OrgMemoryRefreshRequest, approved: boolean) {
+    setDecidingId(request.id);
+    setInboxNote("");
+    setInboxError("");
+    try {
+      const resolved = await resolveApprovalApi(request.id, approved);
+      setRequests((current) =>
+        current.map((item) => (item.id === resolved.id ? resolved : item)),
+      );
+      setInboxNote(
+        approved
+          ? `Approved — refreshing ${resolved.repository} now. Memory updates when it lands.`
+          : `Request from ${request.requested_by_name || "the requester"} was denied.`,
+      );
+    } catch (error: any) {
+      setInboxError(error.message);
+    } finally {
+      setDecidingId("");
+    }
+  }
 
   async function copyHandoff(handoff: Handoff, key: string, contextEventId?: string) {
     try {
@@ -447,6 +534,14 @@ export default function WorkspaceChat({ user }: { user: any }) {
               <span>New chat</span>
             </button>
           )}
+          {pendingApprovals.length > 0 && (
+            <Link className="ws-pill attention" href="/approvals" title="Pending approvals">
+              <i className="on" />
+              <span>
+                {pendingApprovals.length} approval{pendingApprovals.length === 1 ? "" : "s"} waiting
+              </span>
+            </Link>
+          )}
           <Link className="ws-pill quiet" href="/ingest">
             <span>＋ Knowledge</span>
           </Link>
@@ -459,6 +554,64 @@ export default function WorkspaceChat({ user }: { user: any }) {
       <main className="ws-thread" ref={thread}>
         <div className="ws-thread-inner">
           {loadError && <div className="ws-alert">{loadError}</div>}
+
+          {pendingApprovals.length > 0 && (
+            <section className="ws-inbox" aria-label="Pending approvals">
+              <header>
+                <strong>
+                  {pendingApprovals.length} approval request
+                  {pendingApprovals.length === 1 ? "" : "s"} waiting on you
+                </strong>
+                <Link href="/approvals">All approvals →</Link>
+              </header>
+              {inboxNote && <div className="ws-inbox-note">{inboxNote}</div>}
+              {inboxError && <div className="ws-alert">{inboxError}</div>}
+              {pendingApprovals.map((request) => {
+                const canResolve = isAdmin || request.requested_by_id === user?.id;
+                return (
+                  <div className="ws-approval" key={request.id}>
+                    <div className="ws-approval-body">
+                      <p>
+                        <strong>{request.requested_by_name || "A teammate"}</strong>
+                        {(request.requested_by_email ? ` (${request.requested_by_email})` : "")} asked
+                        to refresh{" "}
+                        <strong>{request.project_name || request.repository}</strong>
+                      </p>
+                      {request.reason && <small>&ldquo;{request.reason}&rdquo;</small>}
+                    </div>
+                    {canResolve ? (
+                      <div className="ws-approval-actions">
+                        <button
+                          disabled={decidingId === request.id}
+                          onClick={() => void decide(request, true)}
+                        >
+                          Approve &amp; refresh
+                        </button>
+                        <button
+                          className="danger"
+                          disabled={decidingId === request.id}
+                          onClick={() => void decide(request, false)}
+                        >
+                          Deny
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="ws-approval-status">Waiting for an admin</span>
+                    )}
+                  </div>
+                );
+              })}
+            </section>
+          )}
+
+          {inFlight.length > 0 && (
+            <div className="ws-refreshing" aria-label="Refreshes in progress">
+              <span className="ws-working-dots" aria-hidden="true"><i /><i /><i /></span>
+              {inFlight.length === 1
+                ? `Refreshing ${inFlight[0].repository}…`
+                : `Refreshing ${inFlight.length} repositories…`}
+            </div>
+          )}
 
           {noProjects && (
             <section className="ws-onboard">
@@ -541,7 +694,7 @@ export default function WorkspaceChat({ user }: { user: any }) {
           </button>
         </div>
         <p className="ws-foot">
-          {webMCPLabel && <span className="ws-agent-ready" title="Four browser-native WebMCP tools are available"><i />{webMCPLabel}</span>}
+          {webMCPLabel && <span className="ws-agent-ready" title="Six browser-native WebMCP tools are available"><i />{webMCPLabel}</span>}
           Answers cite the company sources behind them.
           <Link href="/memories">Browse memory</Link>
         </p>

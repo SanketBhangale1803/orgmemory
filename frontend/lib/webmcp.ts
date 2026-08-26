@@ -3,6 +3,8 @@ export const ORGMEMORY_WEBMCP_TOOLS = [
   "ask_orgmemory",
   "inspect_orgmemory_changes",
   "propose_repository_refresh",
+  "list_orgmemory_approvals",
+  "resolve_orgmemory_approval",
 ] as const;
 
 export type OrgMemorySpace = {
@@ -40,13 +42,30 @@ export type OrgMemoryChangeSet = {
   affected_skills?: unknown[];
 };
 
+export type OrgMemoryRefreshRequestResult = {
+  files_scanned?: number;
+  incremental?: { sources_changed?: number };
+};
+
 export type OrgMemoryRefreshRequest = {
   id: string;
   project_id: string;
+  project_name?: string;
   repository: string;
   reason: string;
-  status: "pending_approval" | "denied" | "queued" | "running" | "succeeded" | "failed";
+  status:
+    | "pending_approval"
+    | "denied"
+    | "queued"
+    | "running"
+    | "succeeded"
+    | "failed";
   requested_at: string;
+  requested_by_id?: string;
+  requested_by_name?: string;
+  requested_by_email?: string;
+  result?: OrgMemoryRefreshRequestResult;
+  error?: string;
 };
 
 export type WebMCPActivity = {
@@ -67,6 +86,11 @@ type RegistrationOptions = {
   proposeRepositoryRefresh: (
     projectId: string,
     reason: string,
+  ) => Promise<OrgMemoryRefreshRequest>;
+  listApprovals?: (projectId: string) => Promise<OrgMemoryRefreshRequest[]>;
+  resolveApproval?: (
+    requestId: string,
+    approved: boolean,
   ) => Promise<OrgMemoryRefreshRequest>;
   onActivity?: (activity: WebMCPActivity) => void;
 };
@@ -367,6 +391,136 @@ export async function registerOrgMemoryWebMCP(
             };
             return toolResult(
               `Repository refresh request for ${project.name} is ${request.status}. No refresh has run yet; it requires human approval.`,
+              payload,
+            );
+          }),
+      },
+      registration,
+    ),
+    modelContext.registerTool(
+      {
+        name: "list_orgmemory_approvals",
+        title: "List pending approvals",
+        description:
+          "List repository refresh requests that are waiting for a human approval decision in the authorized OrgMemory projects, including who requested each one and why.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            project_id: {
+              type: "string",
+              description:
+                "An authorized project ID from list_orgmemory_spaces. Defaults to showing every authorized project.",
+            },
+          },
+          additionalProperties: false,
+        },
+        annotations: READ_ONLY,
+        execute: (input) =>
+          tracked("list_orgmemory_approvals", options.onActivity, async () => {
+            const requested = stringInput(input, "project_id");
+            if (requested && !options.spaces.some((space) => space.id === requested)) {
+              throw new Error(
+                "Choose a project_id returned by list_orgmemory_spaces before using this tool.",
+              );
+            }
+            if (!options.listApprovals) {
+              throw new Error("Approval tools are not available on this page.");
+            }
+            // The backend already scopes this list to what the signed-in person
+            // may see and resolve; re-checking and re-filtering here keeps
+            // unauthorized or cross-project rows out of the agent's payload.
+            const fetched = requested
+              ? await options.listApprovals(requested)
+              : (
+                  await Promise.all(
+                    options.spaces.map((space) =>
+                      options.listApprovals!(space.id).catch(() => []),
+                    ),
+                  )
+                ).flat();
+            const requests = requested
+              ? fetched.filter((request) => request.project_id === requested)
+              : fetched;
+            const pending = requests.filter((request) => request.status === "pending_approval");
+            const payload = {
+              project_id: requested || undefined,
+              pending_count: pending.length,
+              resolved_recently: requests.length - pending.length,
+              approvals: requests.map((request) => ({
+                refresh_request_id: request.id,
+                project_id: request.project_id,
+                project_name: request.project_name,
+                repository: request.repository,
+                reason: request.reason,
+                status: request.status,
+                requested_by_name: request.requested_by_name,
+                requested_by_email: request.requested_by_email,
+                requested_at: request.requested_at,
+              })),
+            };
+            return toolResult(
+              pending.length
+                ? `${pending.length} approval${pending.length === 1 ? "" : "s"} waiting, including ${pending
+                    .slice(0, 3)
+                    .map((request) => request.repository)
+                    .join(", ")}. Use resolve_orgmemory_approval to decide one.`
+                : "No approvals are waiting for a human decision.",
+              payload,
+            );
+          }),
+      },
+      registration,
+    ),
+    modelContext.registerTool(
+      {
+        name: "resolve_orgmemory_approval",
+        title: "Approve or deny a pending request",
+        description:
+          "Record a human approval decision on a pending OrgMemory repository refresh request. Approving queues the server-side GitHub ingest; denying closes it. This tool must only be used when the signed-in person has actually decided.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            refresh_request_id: {
+              type: "string",
+              description:
+                "The refresh_request_id of a pending approval from list_orgmemory_approvals.",
+            },
+            approved: {
+              type: "boolean",
+              description:
+                "True records an approval and queues the repository refresh; false denies it.",
+            },
+          },
+          required: ["refresh_request_id", "approved"],
+          additionalProperties: false,
+        },
+        annotations: APPROVAL_REQUIRED_WRITE,
+        execute: (input) =>
+          tracked("resolve_orgmemory_approval", options.onActivity, async () => {
+            if (!options.resolveApproval) {
+              throw new Error("Approval decisions are not available on this page.");
+            }
+            const requestId = stringInput(input, "refresh_request_id");
+            if (!requestId) throw new Error("refresh_request_id is required");
+            const approved = input.approved === true;
+            const request = await options.resolveApproval(requestId, approved);
+            const payload = {
+              refresh_request_id: request.id,
+              project_id: request.project_id,
+              project_name: request.project_name,
+              repository: request.repository,
+              reason: request.reason,
+              requested_by_name: request.requested_by_name,
+              status: request.status,
+              next_step:
+                request.status === "queued"
+                  ? "The repository ingest was queued; memory will update when it completes."
+                  : "The request stays pending until a person approves it.",
+            };
+            return toolResult(
+              request.status === "queued"
+                ? `Approved. The refresh of ${request.repository} is queued and will update company memory.`
+                : `Decision recorded: ${request.status.replace(/_/g, " ")}.`,
               payload,
             );
           }),

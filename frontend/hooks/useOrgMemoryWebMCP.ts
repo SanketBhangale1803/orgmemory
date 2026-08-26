@@ -24,6 +24,11 @@ type HookOptions = {
     projectId: string,
     reason: string,
   ) => Promise<OrgMemoryRefreshRequest>;
+  listApprovals?: (projectId: string) => Promise<OrgMemoryRefreshRequest[]>;
+  resolveApproval?: (
+    requestId: string,
+    approved: boolean,
+  ) => Promise<OrgMemoryRefreshRequest>;
 };
 
 export type WebMCPStatus = "idle" | "registering" | "ready" | "unsupported" | "error";
@@ -55,6 +60,12 @@ export function useOrgMemoryWebMCP(options: HookOptions) {
       ask: (...args) => optionsRef.current.ask(...args),
       inspectChanges: (...args) => optionsRef.current.inspectChanges(...args),
       proposeRepositoryRefresh: (...args) => optionsRef.current.proposeRepositoryRefresh(...args),
+      listApprovals: optionsRef.current.listApprovals
+        ? (...args) => optionsRef.current.listApprovals!(...args)
+        : undefined,
+      resolveApproval: optionsRef.current.resolveApproval
+        ? (...args) => optionsRef.current.resolveApproval!(...args)
+        : undefined,
       onActivity: (next) => {
         if (current) setActivity(next);
       },

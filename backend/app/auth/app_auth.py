@@ -25,6 +25,29 @@ class Principal:
     role: str
 
 
+def _pending_invite_workspace(user_id: str) -> str | None:
+    """Claim the most recent outstanding invitation for a user, if one exists.
+
+    An invitation is declared intent to join. Landing an invited person in their
+    own private workspace instead would strand them outside the team they were
+    added to, so sign-in activates the membership.
+    """
+    invitation = row(
+        """SELECT m.id, m.workspace_id FROM workspace_members m
+        WHERE m.user_id=? AND m.status='invited'
+        ORDER BY m.created_at DESC LIMIT 1""",
+        (user_id,),
+    )
+    if not invitation:
+        return None
+    with connect() as conn:
+        conn.execute(
+            "UPDATE workspace_members SET status='active',updated_at=? WHERE id=?",
+            (utcnow(), invitation["id"]),
+        )
+    return invitation["workspace_id"]
+
+
 def create_dev_session(
     email: str = "demo@runbook.local", display_name: str = "Demo User"
 ) -> dict[str, Any]:
@@ -54,10 +77,8 @@ def create_dev_session(
         (user_id, DEFAULT_WORKSPACE_SLUG),
     )
     workspace_id = (
-        membership["workspace_id"]
-        if membership
-        else ensure_workspace("Local workspace", DEFAULT_WORKSPACE_SLUG, user_id, "owner")["id"]
-    )
+        membership["workspace_id"] if membership else _pending_invite_workspace(user_id)
+    ) or ensure_workspace("Local workspace", DEFAULT_WORKSPACE_SLUG, user_id, "owner")["id"]
     return issue_session(user_id, workspace_id)
 
 
@@ -90,9 +111,12 @@ def create_oauth_session(
         "SELECT workspace_id FROM workspace_members WHERE user_id=? AND status='active' ORDER BY created_at LIMIT 1",
         (user_id,),
     )
-    if membership:
-        workspace_id = membership["workspace_id"]
-    else:
+    workspace_id = membership["workspace_id"] if membership else None
+    if not workspace_id:
+        # No active home yet, so an outstanding invitation takes priority over
+        # spinning up a fresh personal workspace.
+        workspace_id = _pending_invite_workspace(user_id)
+    if not workspace_id:
         base_slug = slugify(workspace_name)
         slug = base_slug
         suffix = 2

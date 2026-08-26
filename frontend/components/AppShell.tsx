@@ -19,7 +19,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const isChat = pathname === "/workspace";
   // Pages the chat links to directly. They keep the chat's slim chrome so the
   // "add a source" round trip never drops anyone into the older navigation.
-  const chatSatellites: Record<string, string> = { "/ingest": "Add knowledge" };
+  // Approvals joins them: deciding a request should feel like answering a turn,
+  // not visiting a separate governance product.
+  const chatSatellites: Record<string, string> = { "/ingest": "Add knowledge", "/approvals": "Approvals" };
   const satelliteTitle = chatSatellites[pathname];
   const [user, setUser] = useState<any>();
   const [ready, setReady] = useState(false);

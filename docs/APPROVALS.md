@@ -53,6 +53,23 @@ executor, and `ALLOW_LOCAL_COMMAND_EXECUTION=false` is the default. The
 `execution_mode` field says `would_execute` so nothing implies a command
 ran.
 
+## Inline approvals in the workspace
+
+Decisions do not require a separate page. The workspace polls the approvals
+queue and renders pending repository refresh requests directly beside the
+conversation: who requested it (identity is carried with every request), why,
+and approve/deny buttons for anyone whose role permits resolving it. Employees
+see their own requests' status without buttons. A browser agent acting through
+WebMCP can list pending approvals and record a decision through
+`list_orgmemory_approvals` and `resolve_orgmemory_approval`, using exactly the
+same authorized endpoints as the human buttons — the boundary is role- and
+visibility-checked server-side either way.
+
+The same loop starts at membership: a workspace owner adds people on the
+account page; invited teammates land inside the workspace when they sign in,
+raise refresh requests from their own sessions or agents, and admins decide
+them inline.
+
 ## Operational memory approvals
 
 Operational memories (`/api/projects/{id}/memories`) follow the same

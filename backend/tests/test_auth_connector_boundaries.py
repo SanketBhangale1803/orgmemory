@@ -8,6 +8,7 @@ from app.auth.app_auth import (
     create_dev_session,
     create_oauth_session,
     create_workspace,
+    invite_member,
     me_from_token,
 )
 from app.connectors.github import GitHubConnector
@@ -192,6 +193,57 @@ def test_repository_refresh_requires_approval_before_running(graph, monkeypatch)
     assert approved.status_code == 200
     assert approved.json()["status"] == "queued"
     assert executed == [proposal["id"]]
+
+
+def test_workspace_admin_sees_requester_and_resolves_their_refresh(graph, monkeypatch):
+    """The employee proposes a refresh; the workspace owner approves it inline."""
+    owner = create_dev_session("admin2@example.com", "Workspace Admin")
+    workspace_id = owner["user"]["active_workspace_id"]
+    # Add the employee to the workspace first; their first sign-in then lands
+    # them inside the team rather than in a personal workspace.
+    invite_member(workspace_id, "employee@example.com", "member")
+    requester_session = create_oauth_session(
+        "github", "gh_team_employee", "employee@example.com", "Team Employee", "Personal"
+    )
+    assert requester_session["user"]["active_workspace_id"] == workspace_id
+
+    project_id = new_id("prj")
+    now = utcnow()
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO projects VALUES (?,?,?,?,?,?)",
+            (project_id, "Admin project", "https://github.com/acme/team.git", "ready", now, now),
+        )
+        conn.execute("INSERT INTO workspace_projects VALUES (?,?)", (workspace_id, project_id))
+
+    employee_client = TestClient(app)
+    proposed = employee_client.post(
+        "/api/repository-refresh-requests",
+        json={"project_id": project_id, "reason": "Memory does not cover the new service."},
+        headers={"Authorization": f"Bearer {requester_session['token']}"},
+    )
+    assert proposed.status_code == 200
+    proposal = proposed.json()
+    assert proposal["status"] == "pending_approval"
+    assert proposal["requested_by_email"] == "employee@example.com"
+    assert proposal["requested_by_name"] == "Team Employee"
+
+    listing = TestClient(app).get(
+        "/api/repository-refresh-requests",
+        headers={"Authorization": f"Bearer {owner['token']}"},
+    )
+    assert [
+        item["requested_by_name"] for item in listing.json() if item["id"] == proposal["id"]
+    ] == ["Team Employee"]
+
+    resolved = TestClient(app).post(
+        f"/api/repository-refresh-requests/{proposal['id']}/resolve",
+        json={"approved": False},
+        headers={"Authorization": f"Bearer {owner['token']}"},
+    )
+    assert resolved.status_code == 200
+    assert resolved.json()["status"] == "denied"
+    assert resolved.json()["resolved_by"] == owner["user"]["id"]
 
 
 def test_slack_oauth_requests_and_prefers_personal_user_token(graph, monkeypatch):
