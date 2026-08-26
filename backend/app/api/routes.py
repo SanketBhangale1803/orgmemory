@@ -47,6 +47,7 @@ from app.auth.app_auth import (
     logout,
     me_from_token,
     request_email_login_code,
+    send_invite_email,
     verify_email_login_code,
     workspace_members,
 )
@@ -557,13 +558,34 @@ def members(workspace_id: str, authorization: str | None = Header(default=None))
 def invite(
     workspace_id: str,
     request: InviteMemberRequest,
+    background_tasks: BackgroundTasks,
     authorization: str | None = Header(default=None),
 ):
-    _authorize_workspace(authorization, workspace_id, admin=True)
+    principal = _authorize_workspace(authorization, workspace_id, admin=True)
     try:
-        return invite_member(workspace_id, request.email, request.role)
+        result = invite_member(workspace_id, request.email, request.role)
     except Exception as exc:
         fail(exc)
+    workspace = row("SELECT name FROM workspaces WHERE id=?", (workspace_id,)) or {}
+    background_tasks.add_task(
+        send_invite_email,
+        request.email,
+        str(workspace.get("name") or "your workspace"),
+        request.role,
+        principal.get("display_name") or "",
+    )
+    audit.record(
+        "workspace.member.invited",
+        f"Invited {request.email} to {workspace.get('name') or workspace_id}",
+        actor=str(principal.get("id") or "system"),
+        payload={
+            "workspace_id": workspace_id,
+            "email": request.email,
+            "role": request.role,
+            "invite_delivery": result.get("invite_delivery"),
+        },
+    )
+    return result
 
 
 @router.get("/workspaces/{workspace_id}/teams")

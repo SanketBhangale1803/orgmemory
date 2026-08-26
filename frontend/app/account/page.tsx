@@ -61,13 +61,19 @@ export default function Account() {
     setNote("");
     setPeopleError("");
     try {
-      await api(`/api/workspaces/${user.active_workspace_id}/members/invite`, {
-        method: "POST",
-        body: JSON.stringify({ email: email.trim(), role }),
-      });
+      const result = await api<{ invite_delivery?: string }>(
+        `/api/workspaces/${user.active_workspace_id}/members/invite`,
+        {
+          method: "POST",
+          body: JSON.stringify({ email: email.trim(), role }),
+        },
+      );
+      const invited = email.trim();
       setEmail("");
       setNote(
-        `${role === "viewer" ? "Viewer access" : `${role.charAt(0).toUpperCase()}${role.slice(1)} access`} invited. They join this workspace the next time they sign in.`,
+        result.invite_delivery === "email"
+          ? `Invitation email sent to ${invited}. They join this workspace when they sign in with that address.`
+          : `Added ${invited}. No mail server is configured, so share ${window.location.origin}/login with them — signing in with that email drops them straight into this workspace.`,
       );
       await loadMembers();
     } catch (exc: any) {
@@ -156,9 +162,9 @@ export default function Account() {
                     </button>
                   </div>
                   <p className="invite-hint">
-                    New people land inside this workspace when they sign in — no manual setup. Ask
-                    them to connect a repository afterwards and every refresh request they raise
-                    shows up in your workspace.
+                    New people get an invitation email and land inside this workspace when they
+                    sign in — no manual setup. Ask them to connect a repository afterwards and
+                    every refresh request they raise shows up in your workspace.
                   </p>
                   {note && <div className="notice">{note}</div>}
                   {peopleError && <div className="notice error">{peopleError}</div>}

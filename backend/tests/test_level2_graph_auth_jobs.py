@@ -4,6 +4,7 @@ from app.auth.app_auth import (
     create_oauth_session,
     create_workspace,
     invite_member,
+    issue_session,
     workspace_members,
 )
 from app.connectors.github import GitHubConnector
@@ -110,3 +111,91 @@ def test_invited_member_joins_the_workspace_on_sign_in(graph):
     members = workspace_members(workspace["id"])
     joined = next(member for member in members if member["email"] == "employee@example.com")
     assert joined["status"] == "active"
+
+
+def test_invite_sends_an_invitation_email_when_mail_is_configured(graph, monkeypatch):
+    from email import message_from_bytes
+
+    from fastapi.testclient import TestClient
+
+    from app.core.config import settings
+    from app.main import app
+
+    sent = []
+
+    class FakeSMTP:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> bool:
+            return False
+
+        def starttls(self) -> None:
+            pass
+
+        def login(self, *_args) -> None:
+            pass
+
+        def send_message(self, message) -> None:
+            sent.append(message)
+
+    monkeypatch.setattr("app.auth.app_auth.smtplib.SMTP", FakeSMTP)
+    monkeypatch.setattr(settings, "smtp_host", "smtp.test")
+    monkeypatch.setattr(settings, "email_from", "OrgMemory <no-reply@orgmemory.test>")
+    monkeypatch.setattr(settings, "frontend_url", "https://orgmemory.test")
+
+    owner = create_dev_session("owner3@example.com", "Invite Sender")
+    workspace = create_workspace("Mail Workspace", owner["token"])
+    # Bind the session to the new workspace: the dev session still points at
+    # the auto-created local one, and the route authorizes against active.
+    session = issue_session(owner["user"]["id"], workspace["id"])
+    client = TestClient(app)
+    response = client.post(
+        f"/api/workspaces/{workspace['id']}/members/invite",
+        json={"email": "newteammate@example.com", "role": "member"},
+        headers={"Authorization": f"Bearer {session['token']}"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "invited"
+    assert body["invite_delivery"] == "email"
+
+    # Background tasks run before TestClient hands the response back, so the
+    # invitation mail is observable here.
+    assert len(sent) == 1
+    message = message_from_bytes(bytes(sent[0]))
+    assert message["To"] == "newteammate@example.com"
+    assert "Mail Workspace" in message["Subject"]
+    text = message.get_payload()
+    assert "https://orgmemory.test/login" in text
+    assert "sign in with this email address" in text
+
+
+def test_invite_without_mail_still_records_the_membership(graph, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.core.config import settings
+    from app.main import app
+
+    monkeypatch.setattr(settings, "smtp_host", "")
+    monkeypatch.setattr(settings, "email_from", "")
+
+    owner = create_dev_session("owner4@example.com", "Invite Sender")
+    workspace = create_workspace("Quiet Workspace", owner["token"])
+    session = issue_session(owner["user"]["id"], workspace["id"])
+    client = TestClient(app)
+    response = client.post(
+        f"/api/workspaces/{workspace['id']}/members/invite",
+        json={"email": "offline@example.com", "role": "viewer"},
+        headers={"Authorization": f"Bearer {session['token']}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["invite_delivery"] == "none"
+    members = workspace_members(workspace["id"])
+    invited = next(member for member in members if member["email"] == "offline@example.com")
+    assert invited["status"] == "invited"

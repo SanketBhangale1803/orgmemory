@@ -370,7 +370,14 @@ def invite_member(workspace_id: str, email: str, role: str = "member") -> dict[s
             "INSERT OR REPLACE INTO workspace_members VALUES (?,?,?,?,?,?,?,?)",
             (new_id("mem"), workspace_id, user_id, role, "invited", email, now, now),
         )
-    return {"workspace_id": workspace_id, "email": email, "role": role, "status": "invited"}
+    return {
+        "workspace_id": workspace_id,
+        "email": email,
+        "role": role,
+        "status": "invited",
+        # Told to the admin so they know whether to share the link by hand.
+        "invite_delivery": invite_delivery_mode(),
+    }
 
 
 def logout(token: str | None) -> dict[str, bool]:
@@ -417,6 +424,49 @@ def _send_login_code(email: str, code: str) -> None:
         if settings.smtp_user:
             smtp.login(settings.smtp_user, settings.smtp_password)
         smtp.send_message(message)
+
+
+def invite_delivery_mode() -> str:
+    """Whether an invitation can actually be emailed with current settings."""
+    return "email" if settings.smtp_host and settings.email_from else "none"
+
+
+def send_invite_email(
+    email: str, workspace_name: str, role: str, inviter: str = ""
+) -> dict[str, Any]:
+    """Tell a new teammate they were added, and that signing in joins them.
+
+    Delivery is best-effort: an invite is already a live membership record, so
+    a mail outage must never roll it back — the admin can always share the
+    sign-in link by hand.
+    """
+    if not settings.smtp_host or not settings.email_from:
+        return {"sent": False, "reason": "smtp_not_configured"}
+    message = EmailMessage()
+    message["Subject"] = f"You've been added to {workspace_name} on OrgMemory"
+    message["From"] = settings.email_from
+    message["To"] = email
+    added_by = f"{inviter} added you to" if inviter else "You were added to"
+    role_line = f"Your access level is {role}. " if role not in {"member", ""} else ""
+    message.set_content(
+        f"{added_by} {workspace_name}, your company memory workspace.\n\n"
+        f"{role_line}"
+        "No extra setup is needed: sign in with this email address and you\n"
+        "land directly inside the workspace.\n\n"
+        f"Sign in: {settings.frontend_url}/login\n\n"
+        "If you were not expecting this, you can ignore the email — nothing\n"
+        "happens until you sign in."
+    )
+    try:
+        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=20) as smtp:
+            if settings.smtp_starttls:
+                smtp.starttls()
+            if settings.smtp_user:
+                smtp.login(settings.smtp_user, settings.smtp_password)
+            smtp.send_message(message)
+    except Exception as exc:  # noqa: BLE001 - mail failure must not fail the invite
+        return {"sent": False, "reason": str(exc)}
+    return {"sent": True}
 
 
 def slugify(value: str) -> str:
