@@ -246,10 +246,17 @@ class RepoGraphBuilder:
             parsed = yaml.safe_load(content) or {}
         except yaml.YAMLError:
             return
-        for name, config in (parsed.get("services") or {}).items():
+        if not isinstance(parsed, dict):
+            return
+        services = parsed.get("services") or {}
+        if not isinstance(services, dict):
+            return
+        for name, config in services.items():
+            if not isinstance(config, dict):
+                continue
             docker_id = f"docker:{project_id}:{name}"
             service_id = f"{project_id}:{normalize_service(name)}"
-            depends = sorted((config or {}).get("depends_on") or [])
+            depends = sorted(config.get("depends_on") or [])
             env = config.get("environment") or {}
             if isinstance(env, list):
                 env_names = [str(value).split("=", 1)[0] for value in env]
@@ -261,8 +268,8 @@ class RepoGraphBuilder:
                     "id": docker_id,
                     "project_id": project_id,
                     "name": name,
-                    "image": (config or {}).get("image", ""),
-                    "ports": (config or {}).get("ports", []),
+                    "image": config.get("image", ""),
+                    "ports": config.get("ports", []),
                     "depends_on": depends,
                     "environment": env_names,
                 },
