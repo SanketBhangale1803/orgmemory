@@ -33,9 +33,24 @@ Phase 2 adds one deliberately approval-gated write path:
 
 4. `propose_repository_refresh` creates a deduplicated request to refresh a
    GitHub-backed memory space when the current evidence is stale or incomplete.
-   It cannot run an import itself. The request appears in **Approvals**, where a
-   signed-in person must explicitly approve or deny it. Only approval queues the
-   server-side GitHub ingest and records its outcome in the audit trail.
+   It cannot run an import itself. The request appears **inline in the
+   workspace** (and on the Approvals page), where a signed-in person must
+   explicitly approve or deny it. Only approval queues the server-side GitHub
+   ingest and records its outcome in the audit trail.
+
+Phase 3 closes the loop from the human side of the same boundary:
+
+5. `list_orgmemory_approvals` shows the pending refresh requests the signed-in
+   person can see — including who asked and why — so an agent working for a
+   workspace admin reads the queue without leaving the page.
+6. `resolve_orgmemory_approval` records a person's decision (approve/deny) on a
+   pending request through the page's own session. Approval queues exactly the
+   same background ingest as pressing the button; nothing executes because an
+   agent decided by itself.
+
+The workspace mirrors both sides automatically: it polls the approvals queue,
+renders requests inline with approve/deny actions for admins, and folds any
+agent-made resolution into the same visible state.
 
 The implementation is in `frontend/lib/webmcp.ts`, with lifecycle management in
 `frontend/hooks/useOrgMemoryWebMCP.ts` and the human-agent interaction in
@@ -71,10 +86,12 @@ WebMCP enabled, then ask the browser agent:
 3. "Ask OrgMemory what I should know before editing this service."
 4. When evidence is missing, ask: "Propose refreshing this repository because
    the recent changes have not been indexed." Confirm that the agent reports a
-   pending request, then open **Approvals**. The repository must remain untouched
-   until a person presses **Approve & refresh**.
+   pending request and that it appears inline in the workspace immediately.
+5. Signed in as a workspace admin, ask: "What approvals are waiting?" then
+   decide one: "Approve the refresh from Team Employee." The ingest must only
+   run after that recorded decision, with the outcome in the audit trail.
 
-The agent should discover the four page tools, use the project IDs returned by
+The agent should discover the six page tools, use the project IDs returned by
 the first tool, and place source-backed answers in both its response and the
-visible OrgMemory conversation. The one write-capable tool must never bypass the
+visible OrgMemory conversation. The write-capable tools must never bypass the
 human approval boundary.

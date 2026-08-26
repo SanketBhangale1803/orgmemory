@@ -1,5 +1,11 @@
 from app.audit import AuditService
-from app.auth.app_auth import create_dev_session, create_workspace, invite_member, workspace_members
+from app.auth.app_auth import (
+    create_dev_session,
+    create_oauth_session,
+    create_workspace,
+    invite_member,
+    workspace_members,
+)
 from app.connectors.github import GitHubConnector
 from app.core.database import row
 from app.hcag_adapter import HCAGAdapter
@@ -82,3 +88,25 @@ def test_dev_auth_workspace_and_invite_flow(graph):
     assert invited["status"] == "invited"
     members = workspace_members(workspace["id"])
     assert {member["email"] for member in members} >= {"owner@example.com", "member@example.com"}
+
+
+def test_invited_member_joins_the_workspace_on_sign_in(graph):
+    """An admin adds someone; that person signs in and lands inside the team."""
+    owner = create_dev_session("owner2@example.com", "Workspace Owner")
+    workspace = create_workspace("Team Workspace", owner["token"])
+    invite_member(workspace["id"], "employee@example.com", "member")
+
+    # The invited person has never signed in before, so OAuth creates their
+    # identity and then must honor the outstanding invitation.
+    signed_in = create_oauth_session(
+        "github", "gh_employee", "employee@example.com", "New Employee", "Personal"
+    )
+
+    user = signed_in["user"]
+    assert user["active_workspace_id"] == workspace["id"]
+    assert user["role"] == "member"
+    memberships = {item["id"]: item["role"] for item in user["workspaces"]}
+    assert memberships.get(workspace["id"]) == "member"
+    members = workspace_members(workspace["id"])
+    joined = next(member for member in members if member["email"] == "employee@example.com")
+    assert joined["status"] == "active"

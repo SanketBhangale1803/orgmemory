@@ -2535,3 +2535,67 @@ input:focus, textarea:focus, select:focus { border-color: #4d9188; box-shadow: 0
 @media (max-width:680px) {
   .ws-satellite > main { width:min(100% - 28px,1120px); padding:22px 0 50px; }
 }
+
+/* Inline approvals — the human decision lives beside the conversation. Requests
+   raised by teammates (or agents acting for them) surface here; deciding them
+   never requires leaving the chat. */
+.ws-pill.attention { border-color:color-mix(in srgb, var(--maroon) 38%, var(--line-firm)); background:var(--red-wash); color:var(--maroon); font-weight:620; }
+.ws-pill.attention:hover { border-color:var(--maroon); color:var(--maroon); }
+
+.ws-inbox { display:flex; flex-direction:column; gap:11px; padding:15px 17px; border:1px solid color-mix(in srgb, var(--maroon) 26%, var(--line)); border-radius:14px; background:var(--surface); box-shadow:var(--shadow-rest); }
+.ws-inbox header { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.ws-inbox header strong { color:var(--ink); font-size:13.5px; font-weight:640; letter-spacing:-.01em; }
+.ws-inbox header a { color:var(--maroon); font-size:12px; font-weight:600; white-space:nowrap; }
+.ws-inbox-note { padding:8px 12px; border-radius:9px; background:var(--paper-warm); color:var(--maroon); font-size:12.5px; line-height:1.55; }
+.ws-inbox .ws-alert { padding:8px 12px; border-radius:9px; font-size:12.5px; }
+
+.ws-approval { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; padding-top:11px; border-top:1px solid var(--line); }
+.ws-approval-body { display:flex; flex-direction:column; gap:4px; min-width:0; }
+.ws-approval-body p { margin:0; color:var(--ink-soft); font-size:13px; line-height:1.55; overflow-wrap:anywhere; }
+.ws-approval-body p strong { color:var(--ink); font-weight:620; }
+.ws-approval-body small { color:var(--ink-faint); font-size:12px; line-height:1.55; overflow-wrap:anywhere; }
+.ws-approval-actions { display:flex; flex:none; align-items:center; gap:7px; }
+.ws-approval-actions button { min-height:32px; padding:0 14px; border:1px solid var(--maroon); border-radius:999px; background:var(--maroon); color:#fff; font-size:11.5px; font-weight:620; transition:background .25s var(--ease),opacity .25s var(--ease); }
+.ws-approval-actions button:hover:not(:disabled) { background:var(--maroon-lift); }
+.ws-approval-actions button.danger { border-color:var(--line-firm); background:transparent; color:var(--ink-soft); }
+.ws-approval-actions button.danger:hover:not(:disabled) { border-color:var(--red); background:var(--red-wash); color:var(--red); }
+.ws-approval-actions button:disabled { opacity:.5; }
+.ws-approval-status { flex:none; color:var(--ink-ghost); font-size:11.5px; }
+
+.ws-refreshing { display:flex; align-items:center; gap:10px; color:var(--ink-faint); font-size:12.5px; }
+
+/* Approvals page — same tokens and rhythm as the chat, reached through the
+   slim bar instead of the legacy multi-domain shell. */
+.ap-wrap { width:min(100% - 36px,880px); margin:0 auto; padding:30px 0 70px; display:flex; flex-direction:column; gap:16px; }
+.ap-head { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; }
+.ap-head h1 { margin:0; color:var(--ink); font-size:clamp(23px,2.8vw,29px); font-weight:600; letter-spacing:-.028em; line-height:1.2; }
+.ap-head p { max-width:520px; margin:8px 0 0; color:var(--ink-soft); font-size:13.5px; line-height:1.7; }
+.ap-head a { color:var(--maroon); }
+.ap-count { flex:none; display:inline-flex; align-items:center; min-height:30px; padding:0 13px; border-radius:999px; background:var(--red-wash); color:var(--maroon); font-size:12px; font-weight:650; }
+
+.ap-card { border:1px solid var(--line); border-radius:14px; background:var(--surface); box-shadow:var(--shadow-rest); overflow:hidden; }
+.ap-card-head { display:flex; align-items:center; justify-content:space-between; gap:14px; padding:14px 18px; border-bottom:1px solid var(--line); }
+.ap-card-head h2 { margin:3px 0 0; color:var(--ink); font-size:14.5px; font-weight:640; letter-spacing:-.015em; }
+.ap-card .badge.info { background:var(--paper-warm); color:var(--ink-soft); }
+
+.ap-row { display:flex; flex-direction:column; gap:10px; padding:14px 18px; }
+.ap-row + .ap-row { border-top:1px solid var(--line); }
+.ap-row-main { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; }
+.ap-row-body { display:flex; flex-direction:column; gap:4px; min-width:0; }
+.ap-row-body strong { color:var(--ink); font-size:13.5px; font-weight:620; }
+.ap-row-body p { margin:0; color:var(--ink-soft); font-size:12.5px; line-height:1.6; overflow-wrap:anywhere; }
+.ap-row-body em { color:var(--maroon); font-style:normal; font-weight:600; }
+.ap-row-body code { align-self:flex-start; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ap-row-actions { display:flex; flex-wrap:wrap; gap:8px; }
+.ap-empty { padding:22px 18px; color:var(--ink-faint); font-size:13px; }
+
+/* People panel on the account page — inviting lands someone straight into the
+   workspace, which is what makes the approval loop start working end to end. */
+.invite-form { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:8px; }
+.invite-form input, .invite-form select { min-height:38px; padding:0 12px; border:1px solid var(--line-firm); border-radius:10px; background:var(--paper); color:var(--ink); font-family:inherit; font-size:13px; }
+.invite-form input:focus, .invite-form select:focus { outline:none; border-color:var(--maroon); }
+.invite-hint { margin:9px 0 0; color:var(--ink-faint); font-size:12px; line-height:1.65; }
+.member-list { display:flex; flex-direction:column; gap:0; margin-top:12px; }
+@media (max-width:680px) {
+  .invite-form { grid-template-columns:1fr; }
+}

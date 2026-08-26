@@ -2635,6 +2635,10 @@ def _public_repository_refresh_request(record: dict) -> dict:
         result = json.loads(record.get("result_json") or "{}")
     except json.JSONDecodeError:
         result = {}
+    requester = (
+        row("SELECT display_name,email FROM users WHERE id=?", (record.get("user_id"),)) or {}
+    )
+    project = row("SELECT name FROM projects WHERE id=?", (record.get("project_id"),)) or {}
     return {
         key: record.get(key)
         for key in (
@@ -2650,7 +2654,15 @@ def _public_repository_refresh_request(record: dict) -> dict:
             "completed_at",
             "error",
         )
-    } | {"result": result}
+    } | {
+        "result": result,
+        # Whoever must decide this request should see who is asking without a
+        # second lookup; an approval made blind is not much of a decision.
+        "requested_by_id": record.get("user_id"),
+        "requested_by_name": requester.get("display_name") or record.get("user_id"),
+        "requested_by_email": requester.get("email") or "",
+        "project_name": project.get("name") or "",
+    }
 
 
 def _run_repository_refresh(request_id: str) -> None:
@@ -2670,9 +2682,7 @@ def _run_repository_refresh(request_id: str) -> None:
         project = row("SELECT name,repository FROM projects WHERE id=?", (record["project_id"],))
         if not project or not project["repository"]:
             raise ValueError("The selected project no longer has a GitHub repository")
-        connector = GitHubConnector(
-            ConnectorSecrets(record["workspace_id"], record["user_id"])
-        )
+        connector = GitHubConnector(ConnectorSecrets(record["workspace_id"], record["user_id"]))
         result = RepositoryIngestor(ingestion, graph, connector).ingest(
             project["repository"], project["name"]
         )
@@ -2770,9 +2780,7 @@ def propose_repository_refresh(
 
 
 @router.get("/repository-refresh-requests")
-def repository_refresh_requests(
-    status: str = "", authorization: str | None = Header(default=None)
-):
+def repository_refresh_requests(status: str = "", authorization: str | None = Header(default=None)):
     principal = _authorize_workspace(authorization)
     records = rows(
         """SELECT * FROM repository_refresh_requests WHERE workspace_id=?
