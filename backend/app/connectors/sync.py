@@ -67,13 +67,14 @@ class SyncEngine:
         cursor: dict[str, Any] | None = None,
         idempotency_key: str = "",
     ) -> dict[str, Any]:
-        manifest = self.registry.get(
-            provider, OAuthTokenVault(workspace_id, user_id)
-        ).manifest
+        manifest = self.registry.get(provider, OAuthTokenVault(workspace_id, user_id)).manifest
         cursor = {**(cursor or {}), "resource_id": resource_id}
-        key = idempotency_key or hashlib.sha256(
-            f"{provider}:{resource_id}:{json.dumps(cursor, sort_keys=True)}".encode()
-        ).hexdigest()
+        key = (
+            idempotency_key
+            or hashlib.sha256(
+                f"{provider}:{resource_id}:{json.dumps(cursor, sort_keys=True)}".encode()
+            ).hexdigest()
+        )
         existing = row(
             """SELECT * FROM connector_sync_jobs
             WHERE workspace_id=? AND provider=? AND idempotency_key=?""",
@@ -180,11 +181,14 @@ class SyncEngine:
             )
             jobs = []
             if not event.records and event.resource_id:
-                subscriptions = rows(
-                    """SELECT DISTINCT project_id FROM connector_sync_jobs
+                subscriptions = (
+                    rows(
+                        """SELECT DISTINCT project_id FROM connector_sync_jobs
                     WHERE workspace_id=? AND provider=? AND resource_id=? AND project_id!=''""",
-                    (workspace_id, provider, event.resource_id),
-                ) or [{"project_id": ""}]
+                        (workspace_id, provider, event.resource_id),
+                    )
+                    or [{"project_id": ""}]
+                )
                 for subscription in subscriptions:
                     jobs.append(
                         self.enqueue(
@@ -414,9 +418,7 @@ class SyncEngine:
             # Release the reservation when the downstream memory transaction
             # fails so the durable retry can finish this exact revision.
             with connect() as conn:
-                conn.execute(
-                    "DELETE FROM connector_applied_records WHERE id=?", (applied_id,)
-                )
+                conn.execute("DELETE FROM connector_applied_records WHERE id=?", (applied_id,))
             raise
         return True
 

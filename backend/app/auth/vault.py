@@ -92,9 +92,7 @@ class AWSKMSCipher:
                 "v": 2,
                 "provider": self.provider,
                 "key_id": self.key_id,
-                "encrypted_data_key": base64.b64encode(
-                    response["CiphertextBlob"]
-                ).decode(),
+                "encrypted_data_key": base64.b64encode(response["CiphertextBlob"]).decode(),
                 "nonce": base64.b64encode(nonce).decode(),
                 "ciphertext": base64.b64encode(ciphertext).decode(),
             }
@@ -169,9 +167,7 @@ class OCIKMSCipher:
                 retry_strategy=oci.retry.DEFAULT_RETRY_STRATEGY,
             )
         else:
-            raise RuntimeError(
-                "CONNECTOR_OCI_KMS_AUTH must be instance-principal or config-file"
-            )
+            raise RuntimeError("CONNECTOR_OCI_KMS_AUTH must be instance-principal or config-file")
 
     @staticmethod
     def _aad(context: dict[str, str]) -> bytes:
@@ -433,9 +429,7 @@ class OAuthTokenVault:
             provider=record["provider"],
             external_id=record["external_id"],
             display_name=record["display_name"],
-            access_token=self.cipher.decrypt(
-                record["secret_encrypted"], self._context(provider)
-            ),
+            access_token=self.cipher.decrypt(record["secret_encrypted"], self._context(provider)),
             metadata=json.loads(record.get("metadata_json") or "{}"),
         )
 

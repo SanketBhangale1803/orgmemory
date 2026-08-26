@@ -58,8 +58,7 @@ TARGET_RE = re.compile(
     # a measurement, or a named direction with a value
     r"\b\d+(\.\d+)?\s*(px|rem|em|%|pt|vh|vw|ms|s)\b|"
     # an explicit destination or comparison
-    r"\bto\s+\S|\binto\s+\S|\blike\s+\S|\bmatch(es|ing)?\b|\bsame as\b|"
-    r"\b(dark|light)\s*mode\b|"
+    r"\bto\s+\S|\binto\s+\S|\blike\s+\S|\bmatch(es|ing)?\b|\bsame as\b|" r"\b(dark|light)\s*mode\b|"
     # anything quoted is a literal the asker supplied
     r"[\"'`][^\"'`]+[\"'`]",
     re.IGNORECASE,
@@ -147,9 +146,9 @@ def _missing_target(query: str, evidence: list[GraphEvidence]) -> dict[str, Any]
         ),
         # No project_id: these are prompts to answer, not repositories to choose.
         "options": [
-            {"label": "A specific colour or value", "hint": "e.g. \"make the background navy\""},
-            {"label": "Match something that exists", "hint": "e.g. \"match the login page\""},
-            {"label": "A direction", "hint": "e.g. \"switch it to light mode\""},
+            {"label": "A specific colour or value", "hint": 'e.g. "make the background navy"'},
+            {"label": "Match something that exists", "hint": 'e.g. "match the login page"'},
+            {"label": "A direction", "hint": 'e.g. "switch it to light mode"'},
         ],
         "files": files[:4],
     }
@@ -168,11 +167,10 @@ def clarification_answer(clarify: dict[str, Any]) -> dict[str, Any]:
         + (f" — {option['hint']}" if option.get("hint") else "")
         for option in clarify["options"]
     )
-    closing = (
-        "Reply with the target and I'll make the change."
-        if clarify.get("reason") == "missing_target"
-        else "Tell me which one and I'll go ahead."
-    )
+    closing = {
+        "missing_target": "Reply with the target and I'll make the change.",
+        "unresolved_reference": "Name it and I'll answer properly.",
+    }.get(clarify.get("reason", ""), "Tell me which one and I'll go ahead.")
     return {
         "answer": f"{clarify['detail']}\n\n{listed}\n\n{closing}",
         "likely_cause": "Not applicable — this is a clarifying question, not a finding.",

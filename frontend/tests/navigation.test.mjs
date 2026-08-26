@@ -37,7 +37,7 @@ test("pages render real product concepts", () => {
     ["../app/login/page.tsx", "Continue with GitHub"],
     ["../app/login/page.tsx", "Continue with Google"],
     ["../app/login/page.tsx", "Email me a code"],
-    ["../app/connectors/page.tsx", "No personal access tokens"],
+    ["../app/connectors/page.tsx", "OAuth tokens never reach the browser"],
     ["../app/ingest/page.tsx", "Private repositories supported"],
     ["../app/graph/page.tsx", "Memory Graph"],
     ["../app/graph/page.tsx", "Blast Radius"],

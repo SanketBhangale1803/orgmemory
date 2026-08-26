@@ -103,8 +103,12 @@ def test_a_run_needs_a_repository_and_a_prompt(graph, origin):
     with pytest.raises(ExecutionError, match="no repository"):
         start(project_id="prj_1", handoff=HANDOFF, repository="", workspace_id=WORKSPACE)
     with pytest.raises(ExecutionError, match="no prompt"):
-        start(project_id="prj_1", handoff={"task": "x"}, repository=str(origin),
-              workspace_id=WORKSPACE)
+        start(
+            project_id="prj_1",
+            handoff={"task": "x"},
+            repository=str(origin),
+            workspace_id=WORKSPACE,
+        )
 
 
 def test_an_unknown_executor_is_rejected(graph, origin):

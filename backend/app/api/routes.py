@@ -229,8 +229,10 @@ def _authorize_project(project_id: str, authorization: str | None, write: bool =
         raise HTTPException(401, "Not authenticated")
     if write and principal["role"] == "viewer":
         raise HTTPException(403, "Viewer role cannot make reliability decisions")
-    if write and principal.get("auth_type") == "mcp_oauth" and "write" not in principal.get(
-        "oauth_scopes", []
+    if (
+        write
+        and principal.get("auth_type") == "mcp_oauth"
+        and "write" not in principal.get("oauth_scopes", [])
     ):
         raise HTTPException(403, "MCP OAuth token does not include the write scope")
     if not row("SELECT id FROM projects WHERE id=?", (project_id,)):
@@ -1232,7 +1234,9 @@ def ingest_github(request: GitHubIngestRequest, authorization: str | None = Head
             )
         for team_id in team_ids:
             scopes.assign_project(result["project_id"], team_id, "write")
-        repository_resource = GitHubConnector.slug(request.repo_url_or_path) or request.repo_url_or_path
+        repository_resource = (
+            GitHubConnector.slug(request.repo_url_or_path) or request.repo_url_or_path
+        )
         connector_sync.enqueue(
             "github",
             principal["active_workspace_id"],
@@ -1462,6 +1466,7 @@ def ask(request: AskRequest, authorization: str | None = Header(default=None)):
         model_provider=request.model,
         surface=request.surface,
         scope=request.scope,
+        history=[turn.model_dump() for turn in request.history],
     )
 
 
@@ -2506,9 +2511,7 @@ def connector_coverage(authorization: str | None = Header(default=None)):
                 tuple(project_ids),
             )
         }
-    statuses = {
-        item["provider"]: item for item in connector_runtime.list_connectors(principal)
-    }
+    statuses = {item["provider"]: item for item in connector_runtime.list_connectors(principal)}
     return {
         "scope": {
             "workspace_id": principal["active_workspace_id"],
@@ -2577,9 +2580,7 @@ def invoke_connector_tool(
 
 
 @router.get("/connector-tool-calls")
-def connector_tool_calls(
-    status: str = "", authorization: str | None = Header(default=None)
-):
+def connector_tool_calls(status: str = "", authorization: str | None = Header(default=None)):
     principal = _authorize_workspace(authorization)
     return connector_runtime.list_tool_calls(principal, status)
 
@@ -2621,9 +2622,7 @@ def enqueue_connector_sync(
 
 
 @router.get("/connector-sync-jobs")
-def connector_sync_jobs(
-    status: str = "", authorization: str | None = Header(default=None)
-):
+def connector_sync_jobs(status: str = "", authorization: str | None = Header(default=None)):
     principal = _authorize_workspace(authorization)
     return connector_sync.list(principal["active_workspace_id"], status)
 

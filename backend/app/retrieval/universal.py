@@ -339,7 +339,33 @@ def _answerable_line(line: str) -> bool:
         return False
     if lowered.startswith(("open the vite url", "http://", "https://")):
         return False
+    if _is_machine_identifier(value):
+        return False
     return not bool(re.search(r"[;{}]\s*$", value))
+
+
+# A labelled field whose value is an identifier rather than a statement: a URL, a
+# commit hash, an ISO timestamp. Ingested commit and repository records are full
+# of these, and they rank well because they are short and contain query terms.
+#
+# They are never an answer. Someone asking "why is it failing" and receiving
+# "Commit SHA: 77fde75f… / Committed at: 2026-07-25T23:07:01Z" has been handed
+# the machinery instead of the answer — strings and numbers that mean nothing
+# without the system that produced them. The underlying chunk stays available as
+# a citation; it just stops being quoted as prose.
+_MACHINE_VALUE_RE = re.compile(
+    r"^[A-Za-z][A-Za-z ]{0,30}:\s*(?:"
+    r"https?://"  # URL: …, Latest commit URL: …
+    r"|[0-9a-f]{7,40}\s*$"  # Commit SHA: 77fde75f…
+    r"|\d{4}-\d{2}-\d{2}[T ]"  # Committed at: 2026-07-25T23:07:01Z
+    r"|[\w.-]+@[\w.-]+\s*$"  # Author email: …
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _is_machine_identifier(value: str) -> bool:
+    return bool(_MACHINE_VALUE_RE.match(value.strip()))
 
 
 def _term_forms(term: str) -> set[str]:

@@ -120,9 +120,7 @@ class RemoteMCPConnector(Connector):
         if not self.manifest.oauth:
             raise ValueError("This remote MCP server has no OAuth configuration")
         flow = user.get("flow") or user
-        client_id = str(
-            json.loads(self.record.get("oauth_json") or "{}").get("client_id") or ""
-        )
+        client_id = str(json.loads(self.record.get("oauth_json") or "{}").get("client_id") or "")
         if not client_id:
             raise ValueError("The remote MCP registration requires an OAuth client_id")
         params = {
@@ -167,9 +165,7 @@ class RemoteMCPConnector(Connector):
         result = self._rpc(account, "tools/list", {})
         return list(result.get("tools") or [])
 
-    def sync(
-        self, account: ConnectorAccount, cursor: dict[str, Any] | None = None
-    ) -> SyncBatch:
+    def sync(self, account: ConnectorAccount, cursor: dict[str, Any] | None = None) -> SyncBatch:
         sync_tool = next(
             (tool for tool in self.manifest.tools if tool.name in {"sync", "sync_incremental"}),
             None,
@@ -198,11 +194,13 @@ class RemoteMCPConnector(Connector):
             payload.get("retry_after_seconds"),
         )
 
-    def search(
-        self, account: ConnectorAccount, query: str, **filters: Any
-    ) -> list[dict[str, Any]]:
+    def search(self, account: ConnectorAccount, query: str, **filters: Any) -> list[dict[str, Any]]:
         tool = next(
-            (item for item in self.manifest.tools if item.kind == ToolKind.READ and "search" in item.name),
+            (
+                item
+                for item in self.manifest.tools
+                if item.kind == ToolKind.READ and "search" in item.name
+            ),
             None,
         )
         if not tool:
@@ -252,9 +250,7 @@ class RemoteMCPConnector(Connector):
     def _call_tool(
         self, account: ConnectorAccount, name: str, arguments: dict[str, Any]
     ) -> dict[str, Any]:
-        result = self._rpc(
-            account, "tools/call", {"name": name, "arguments": arguments}
-        )
+        result = self._rpc(account, "tools/call", {"name": name, "arguments": arguments})
         content = result.get("content") or []
         text = next((item.get("text") for item in content if item.get("type") == "text"), "")
         if not text:

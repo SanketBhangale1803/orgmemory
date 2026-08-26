@@ -181,7 +181,11 @@ def _single_project(
     winner = max(weights, key=lambda key: weights[key])
     kept = [item for item in evidence if str(item.metadata.get("project_id") or "") == winner]
     repository = next(
-        (str(item.metadata.get("repository") or "") for item in kept if item.metadata.get("repository")),
+        (
+            str(item.metadata.get("repository") or "")
+            for item in kept
+            if item.metadata.get("repository")
+        ),
         "",
     )
     return kept, winner, repository
@@ -210,9 +214,7 @@ def _is_actionable(query: str) -> bool:
     if not ACTION_RE.search(cleaned):
         return False
     return bool(
-        CODE_SUBJECT_RE.search(cleaned)
-        or FILE_PATH_RE.search(cleaned)
-        or EDITOR_RE.search(cleaned)
+        CODE_SUBJECT_RE.search(cleaned) or FILE_PATH_RE.search(cleaned) or EDITOR_RE.search(cleaned)
     )
 
 

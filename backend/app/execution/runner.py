@@ -211,8 +211,14 @@ def execute(run_id: str, *, push: bool = False) -> dict[str, Any]:
         changed = _changed_files(worktree)
         if not changed:
             # An honest "nothing to do" beats an empty commit that looks like work.
-            _finish(run_id, "no_changes", error="", context_event_id=run["context_event_id"],
-                    workspace_id=run["workspace_id"], project_id=run["project_id"])
+            _finish(
+                run_id,
+                "no_changes",
+                error="",
+                context_event_id=run["context_event_id"],
+                workspace_id=run["workspace_id"],
+                project_id=run["project_id"],
+            )
             return get(run_id) or {}
 
         diff_stat = _git(worktree, "diff", "--stat", "HEAD").strip()
@@ -245,13 +251,24 @@ def execute(run_id: str, *, push: bool = False) -> dict[str, Any]:
             pull_request_url = _open_pull_request(worktree, run["task"], base_branch)
             _update(run_id, pushed=1, pull_request_url=pull_request_url)
 
-        _finish(run_id, status, error="", context_event_id=run["context_event_id"],
-                workspace_id=run["workspace_id"], project_id=run["project_id"])
+        _finish(
+            run_id,
+            status,
+            error="",
+            context_event_id=run["context_event_id"],
+            workspace_id=run["workspace_id"],
+            project_id=run["project_id"],
+        )
         return get(run_id) or {}
     except Exception as exc:
-        _finish(run_id, "failed", error=str(exc)[:2000],
-                context_event_id=run["context_event_id"],
-                workspace_id=run["workspace_id"], project_id=run["project_id"])
+        _finish(
+            run_id,
+            "failed",
+            error=str(exc)[:2000],
+            context_event_id=run["context_event_id"],
+            workspace_id=run["workspace_id"],
+            project_id=run["project_id"],
+        )
         return get(run_id) or {}
 
 

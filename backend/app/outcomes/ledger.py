@@ -244,7 +244,9 @@ def stats(workspace_id: str, project_id: str = "") -> dict[str, Any]:
         }
 
     ids = {item["id"] for item in contexts}
-    actions = [item for item in rows("SELECT * FROM action_events") if item["context_event_id"] in ids]
+    actions = [
+        item for item in rows("SELECT * FROM action_events") if item["context_event_id"] in ids
+    ]
     outcomes = [
         item for item in rows("SELECT * FROM outcome_events") if item["context_event_id"] in ids
     ]
@@ -423,9 +425,9 @@ def _breakdown(
                 field: key,
                 "served": value["served"],
                 "judged": value["judged"],
-                "success_rate": round(value["wins"] / value["judged"], 4)
-                if value["judged"]
-                else 0.0,
+                "success_rate": (
+                    round(value["wins"] / value["judged"], 4) if value["judged"] else 0.0
+                ),
             }
             for key, value in buckets.items()
         ),

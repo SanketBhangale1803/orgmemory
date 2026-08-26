@@ -32,11 +32,18 @@ type Answer = {
   clarification?: {
     question: string;
     detail: string;
-    /* "ambiguous_target" offers repositories to pick from; "missing_target" offers
-       examples of the detail the request left out, which the asker types. */
+    /* "ambiguous_target" offers repositories to pick from; "missing_target" and
+       "unresolved_reference" offer examples of the detail the request left out,
+       which the asker types. */
     reason?: string;
     options: { project_id?: string; label: string; files?: string[]; hint?: string }[];
   };
+  /* What a follow-up like "why is it failing" was bound to. Shown so a wrong
+     binding is visible and correctable rather than silently wrong. */
+  resolved_subject?: string;
+  /* How many connected sources were searched. A count, not a trace — enough to
+     say "I looked and found nothing" without exposing how the looking works. */
+  searched_sources?: number;
   /* Identifies the context this answer was built from, so what happens next can
      be attributed back to it. Never shown — it is a link, not a statistic. */
   context_event_id?: string;
@@ -73,6 +80,26 @@ function loadThread(project: string): Turn[] {
   } catch {
     return [];
   }
+}
+
+/* How many prior turns travel with a question. Only the last few carry the live
+   subject of a conversation, and the server caps this too — this is about
+   sending a sensible payload, not about trusting the client. */
+const HISTORY_TURNS = 8;
+
+/* Flatten the thread into the alternating roles the server expects. Clarifying
+   questions are left out: they are the assistant asking rather than telling, and
+   feeding them back makes the next question look like it was about them. */
+function threadHistory(turns: Turn[]): { role: "user" | "assistant"; content: string }[] {
+  const history: { role: "user" | "assistant"; content: string }[] = [];
+  for (const turn of turns.slice(-HISTORY_TURNS)) {
+    if (turn.question) history.push({ role: "user", content: turn.question });
+    const answer = turn.answer;
+    if (answer?.answer && answer.answer_scope !== "clarification") {
+      history.push({ role: "assistant", content: answer.answer.slice(0, 2000) });
+    }
+  }
+  return history;
 }
 
 function saveThread(project: string, turns: Turn[]) {
@@ -202,6 +229,9 @@ export default function WorkspaceChat({ user }: { user: any }) {
       setDraft("");
       setBusy(true);
       setStage(0);
+      /* Captured before the new turn is appended, so the thread sent is what came
+         before this question rather than including it. */
+      const history = threadHistory(turns);
       setTurns((current) => [...current, { question }]);
       stageTimer.current = window.setInterval(
         () => setStage((value) => Math.min(value + 1, stages.length - 1)),
@@ -218,6 +248,7 @@ export default function WorkspaceChat({ user }: { user: any }) {
             // Choosing a repository from a clarification answers the question it
             // asked, so that turn is scoped to it rather than searched workspace-wide.
             scope: overrideProject ? "project" : scope,
+            history,
           }),
         });
         setTurns((current) =>
@@ -232,7 +263,7 @@ export default function WorkspaceChat({ user }: { user: any }) {
         setBusy(false);
       }
     },
-    [busy, model, project, scope],
+    [busy, model, project, scope, turns],
   );
 
   async function copyHandoff(handoff: Handoff, key: string, contextEventId?: string) {
@@ -626,16 +657,35 @@ function AnswerBlock({
   }
 
   if (!answer.answer_sufficient) {
+    /* Claiming "nothing is connected" to someone with nineteen connected
+       repositories is simply false, and it sends them to a page that will not
+       help. What is true is narrower: this search came back empty. */
+    const searched = answer.searched_sources ?? 0;
     return (
       <div className="ws-answer">
         <div className="ws-withheld">
-          <strong>I don&rsquo;t have this in your company&rsquo;s memory yet.</strong>
-          <p>
-            Nothing connected covers it, and guessing about your company is worse than saying so.
-            Connect the source that would know, and ask again.
-          </p>
+          <strong>I couldn&rsquo;t find this in your company&rsquo;s memory.</strong>
+          {searched > 0 ? (
+            <>
+              <p>
+                I searched {searched === 1 ? "1 connected source" : `${searched} connected sources`}{" "}
+                and found nothing that answers this. Guessing about your company is worse than
+                saying so &mdash; but the question may just need a name I can match on.
+              </p>
+              <p className="ws-withheld-try">
+                Try naming the service, repository, or file &mdash; or the error you&rsquo;re
+                looking at. If it lives somewhere I&rsquo;m not connected to yet, add it.
+              </p>
+            </>
+          ) : (
+            <p>
+              Nothing is connected yet, so there is no memory to search. Connect the source that
+              would know, and ask again.
+            </p>
+          )}
           <Link className="home-link" href="/ingest">
-            Connect a source <span aria-hidden="true">→</span>
+            {searched > 0 ? "Connect another source" : "Connect a source"}{" "}
+            <span aria-hidden="true">→</span>
           </Link>
         </div>
       </div>
@@ -675,6 +725,12 @@ function AnswerBlock({
   return (
     <div className="ws-answer">
       <MarkdownAnswer>{readable(answer.answer, sources)}</MarkdownAnswer>
+
+      {answer.resolved_subject && (
+        /* A follow-up was bound to an earlier subject. Saying which one turns a
+           silent wrong guess into an obvious one the person can correct. */
+        <p className="ws-scope">Answered about: {answer.resolved_subject}</p>
+      )}
 
       {answer.answer_scope === "general_knowledge" && (
         <p className="ws-scope">General knowledge — not from your company&rsquo;s memory.</p>

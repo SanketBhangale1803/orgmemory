@@ -80,14 +80,10 @@ class TestPlatformConnector(Connector):
     def discover(self, account: ConnectorAccount | None = None) -> list[dict[str, Any]]:
         return [{"id": "doc-1", "name": "Document one"}]
 
-    def sync(
-        self, account: ConnectorAccount, cursor: dict[str, Any] | None = None
-    ) -> SyncBatch:
+    def sync(self, account: ConnectorAccount, cursor: dict[str, Any] | None = None) -> SyncBatch:
         return SyncBatch((), dict(cursor or {}))
 
-    def search(
-        self, account: ConnectorAccount, query: str, **filters: Any
-    ) -> list[dict[str, Any]]:
+    def search(self, account: ConnectorAccount, query: str, **filters: Any) -> list[dict[str, Any]]:
         return [{"id": "doc-1", "title": query}]
 
     def execute(
@@ -174,9 +170,7 @@ def test_write_tools_require_approval_and_execute_once(graph):
     assert replay["id"] == pending["id"]
     assert replay["status"] == "succeeded"
     assert TestPlatformConnector.executions == 1
-    assert row(
-        "SELECT id FROM audit_events WHERE event_type='connector.tool.succeeded'"
-    )
+    assert row("SELECT id FROM audit_events WHERE event_type='connector.tool.succeeded'")
 
 
 def test_duplicate_webhook_is_verified_and_applied_once(graph):
@@ -188,12 +182,8 @@ def test_duplicate_webhook_is_verified_and_applied_once(graph):
         body=b'{"document":"doc-1","version":"v1"}',
     )
 
-    first = engine.receive_webhook(
-        TEST_MANIFEST.id, principal["active_workspace_id"], request
-    )
-    replay = engine.receive_webhook(
-        TEST_MANIFEST.id, principal["active_workspace_id"], request
-    )
+    first = engine.receive_webhook(TEST_MANIFEST.id, principal["active_workspace_id"], request)
+    replay = engine.receive_webhook(TEST_MANIFEST.id, principal["active_workspace_id"], request)
 
     assert first == {
         "accepted": True,
@@ -223,7 +213,9 @@ def test_remote_mcp_oauth_uses_pkce_and_delegated_user(graph):
     assert registration.status_code == 200
     client_id = registration.json()["client_id"]
     verifier = "orgmemory-test-verifier-abcdefghijklmnopqrstuvwxyz0123456789"
-    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+    challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+    )
     authorization = client.get(
         "/oauth/authorize",
         params={

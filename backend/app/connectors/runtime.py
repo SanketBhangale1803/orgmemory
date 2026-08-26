@@ -124,9 +124,7 @@ class ConnectorRuntime:
                     }
                 )
         catalog.extend(
-            item
-            for item in product_connector_catalog()
-            if item["provider"] not in installed
+            item for item in product_connector_catalog() if item["provider"] not in installed
         )
         catalog.append(
             {
@@ -180,9 +178,7 @@ class ConnectorRuntime:
             "manifest_digest": "",
             "signing_key_id": signing_key_id or "workspace-attested",
         }
-        manifest = manifest_from_registration(
-            {**provisional, "manifest_digest": "pending"}
-        )
+        manifest = manifest_from_registration({**provisional, "manifest_digest": "pending"})
         digest = manifest.digest()
         connector_id = new_id("custom")
         with connect() as conn:
@@ -482,7 +478,9 @@ class ConnectorRuntime:
                 "tool": record["tool_name"],
             },
         )
-        return self.execute_approved(call_id) if approved else self.get_tool_call(call_id, principal)
+        return (
+            self.execute_approved(call_id) if approved else self.get_tool_call(call_id, principal)
+        )
 
     def execute_approved(self, call_id: str) -> dict[str, Any]:
         record = row("SELECT * FROM connector_tool_calls WHERE id=?", (call_id,))
@@ -512,9 +510,7 @@ class ConnectorRuntime:
             account = vault.account(record["provider"])
             if not account:
                 raise ValueError("The delegated connector grant is no longer active")
-            arguments = vault.decrypt_payload(
-                record["provider"], record["arguments_encrypted"]
-            )
+            arguments = vault.decrypt_payload(record["provider"], record["arguments_encrypted"])
             result = connector.execute(
                 account,
                 record["tool_name"],
@@ -560,9 +556,7 @@ class ConnectorRuntime:
             raise ValueError("Connector tool call not found")
         return self._public_tool_call(record)
 
-    def list_tool_calls(
-        self, principal: dict[str, Any], status: str = ""
-    ) -> list[dict[str, Any]]:
+    def list_tool_calls(self, principal: dict[str, Any], status: str = "") -> list[dict[str, Any]]:
         records = rows(
             """SELECT * FROM connector_tool_calls WHERE workspace_id=?
             AND (?='' OR status=?) ORDER BY requested_at DESC""",

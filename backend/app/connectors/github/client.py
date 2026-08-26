@@ -75,9 +75,7 @@ _GITHUB_MANIFEST = ConnectorManifest(
     ),
     webhooks=(
         WebhookSubscription("push", "Repository push", "x-hub-signature-256"),
-        WebhookSubscription(
-            "pull_request", "Pull request change", "x-hub-signature-256"
-        ),
+        WebhookSubscription("pull_request", "Pull request change", "x-hub-signature-256"),
         WebhookSubscription("issues", "Issue change", "x-hub-signature-256"),
     ),
     rate_limit=RateLimitPolicy(requests=4_500, window_seconds=3_600, burst=20),
@@ -116,9 +114,7 @@ class GitHubConnector(Connector):
     def discover(self, account: ConnectorAccount | None = None) -> list[dict[str, Any]]:
         return self.list_repositories()
 
-    def sync(
-        self, account: ConnectorAccount, cursor: dict[str, Any] | None = None
-    ) -> SyncBatch:
+    def sync(self, account: ConnectorAccount, cursor: dict[str, Any] | None = None) -> SyncBatch:
         cursor = dict(cursor or {})
         repository = str(cursor.get("repository") or "")
         if not repository:
@@ -168,17 +164,12 @@ class GitHubConnector(Connector):
                             or "unknown"
                         ),
                         "Committed at: "
-                        + str(
-                            (((item.get("commit") or {}).get("author") or {}).get("date"))
-                            or ""
-                        ),
+                        + str((((item.get("commit") or {}).get("author") or {}).get("date")) or ""),
                         f"Message: {(item.get('commit') or {}).get('message') or ''}",
                     )
                 ),
                 source_url=str(item.get("html_url") or ""),
-                updated_at=str(
-                    ((item.get("commit") or {}).get("author") or {}).get("date") or ""
-                ),
+                updated_at=str(((item.get("commit") or {}).get("author") or {}).get("date") or ""),
                 metadata={"repository": repository, "sha": item.get("sha")},
             )
             for item in reversed(fresh)
@@ -186,14 +177,14 @@ class GitHubConnector(Connector):
         next_cursor = {
             **cursor,
             "repository": repository,
-            "last_commit_sha": str(commits[0].get("sha") or previous_sha) if commits else previous_sha,
+            "last_commit_sha": (
+                str(commits[0].get("sha") or previous_sha) if commits else previous_sha
+            ),
             "synced_at": datetime.now(UTC).isoformat(),
         }
         return SyncBatch(records, next_cursor)
 
-    def search(
-        self, account: ConnectorAccount, query: str, **filters: Any
-    ) -> list[dict[str, Any]]:
+    def search(self, account: ConnectorAccount, query: str, **filters: Any) -> list[dict[str, Any]]:
         repository = str(filters.get("repository") or "")
         qualifier = f" repo:{repository}" if repository else ""
         result = self._api("GET", f"/search/issues?q={urlencode({'q': query + qualifier})[2:]}")
@@ -227,17 +218,20 @@ class GitHubConnector(Connector):
     def handle_webhook(self, request: WebhookRequest) -> WebhookEvent:
         if not settings.github_webhook_secret:
             raise ValueError("GitHub webhook verification is not configured")
-        expected = "sha256=" + hmac.new(
-            settings.github_webhook_secret.encode(), request.body, hashlib.sha256
-        ).hexdigest()
+        expected = (
+            "sha256="
+            + hmac.new(
+                settings.github_webhook_secret.encode(), request.body, hashlib.sha256
+            ).hexdigest()
+        )
         signature = request.headers.get("x-hub-signature-256", "")
         if not signature or not hmac.compare_digest(expected, signature):
             raise ValueError("Invalid GitHub webhook signature")
         payload = json.loads(request.body)
         repository = str((payload.get("repository") or {}).get("full_name") or "")
-        delivery_id = request.headers.get("x-github-delivery") or hashlib.sha256(
-            request.body
-        ).hexdigest()
+        delivery_id = (
+            request.headers.get("x-github-delivery") or hashlib.sha256(request.body).hexdigest()
+        )
         after = str(
             ((payload.get("pull_request") or {}).get("head") or {}).get("sha")
             or payload.get("after")
@@ -255,9 +249,7 @@ class GitHubConnector(Connector):
 
     def health(self, account: ConnectorAccount | None = None) -> ConnectorHealth:
         if not self.token():
-            return ConnectorHealth(
-                self.manifest.id, "disconnected", datetime.now(UTC).isoformat()
-            )
+            return ConnectorHealth(self.manifest.id, "disconnected", datetime.now(UTC).isoformat())
         started = time.monotonic()
         try:
             self._api("GET", "/user")

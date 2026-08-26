@@ -82,12 +82,8 @@ _SLACK_MANIFEST = ConnectorManifest(
     ),
     webhooks=(
         WebhookSubscription("message", "Message created", "x-slack-signature"),
-        WebhookSubscription(
-            "message_changed", "Message changed", "x-slack-signature"
-        ),
-        WebhookSubscription(
-            "message_deleted", "Message deleted", "x-slack-signature"
-        ),
+        WebhookSubscription("message_changed", "Message changed", "x-slack-signature"),
+        WebhookSubscription("message_deleted", "Message deleted", "x-slack-signature"),
     ),
     rate_limit=RateLimitPolicy(requests=45, window_seconds=60, burst=5),
     retry=RetryPolicy(max_attempts=7, base_delay_seconds=2, max_delay_seconds=300),
@@ -126,9 +122,7 @@ class SlackConnector(Connector):
     def discover(self, account: ConnectorAccount | None = None) -> list[dict[str, Any]]:
         return self.list_channels()
 
-    def sync(
-        self, account: ConnectorAccount, cursor: dict[str, Any] | None = None
-    ) -> SyncBatch:
+    def sync(self, account: ConnectorAccount, cursor: dict[str, Any] | None = None) -> SyncBatch:
         cursor = dict(cursor or {})
         channel_id = str(cursor.get("channel_id") or cursor.get("resource_id") or "")
         if not channel_id:
@@ -162,9 +156,7 @@ class SlackConnector(Connector):
             )
             for message in sorted(fresh, key=lambda item: str(item.get("ts") or ""))
         )
-        newest = max(
-            (str(message.get("ts") or "") for message in messages), default=last_timestamp
-        )
+        newest = max((str(message.get("ts") or "") for message in messages), default=last_timestamp)
         return SyncBatch(
             records,
             {
@@ -175,18 +167,14 @@ class SlackConnector(Connector):
             },
         )
 
-    def search(
-        self, account: ConnectorAccount, query: str, **filters: Any
-    ) -> list[dict[str, Any]]:
+    def search(self, account: ConnectorAccount, query: str, **filters: Any) -> list[dict[str, Any]]:
         channel_id = str(filters.get("channel_id") or "")
         if not channel_id:
             raise ConnectorCapabilityError("Slack search requires a channel_id")
         _, messages = self.history(channel_id, int(filters.get("limit") or 200))
         needle = query.casefold()
         return [
-            message
-            for message in messages
-            if needle in str(message.get("text") or "").casefold()
+            message for message in messages if needle in str(message.get("text") or "").casefold()
         ]
 
     def execute(
@@ -223,11 +211,14 @@ class SlackConnector(Connector):
             raise ValueError("Invalid Slack request timestamp") from exc
         if abs(int(time.time()) - timestamp) > 300:
             raise ValueError("Stale Slack webhook request")
-        expected = "v0=" + hmac.new(
-            settings.slack_signing_secret.encode(),
-            f"v0:{timestamp_text}:".encode() + request.body,
-            hashlib.sha256,
-        ).hexdigest()
+        expected = (
+            "v0="
+            + hmac.new(
+                settings.slack_signing_secret.encode(),
+                f"v0:{timestamp_text}:".encode() + request.body,
+                hashlib.sha256,
+            ).hexdigest()
+        )
         signature = request.headers.get("x-slack-signature", "")
         if not signature or not hmac.compare_digest(expected, signature):
             raise ValueError("Invalid Slack webhook signature")
@@ -254,9 +245,7 @@ class SlackConnector(Connector):
         delivery_id = str(payload.get("event_id") or hashlib.sha256(request.body).hexdigest())
         if not channel_id or not ts:
             return WebhookEvent(delivery_id, subtype, channel_id)
-        operation = (
-            SyncOperation.DELETE if subtype == "message_deleted" else SyncOperation.UPSERT
-        )
+        operation = SyncOperation.DELETE if subtype == "message_deleted" else SyncOperation.UPSERT
         record = SyncRecord(
             id=f"slack-message:{channel_id}:{ts}",
             resource_type="message",
@@ -279,9 +268,7 @@ class SlackConnector(Connector):
 
     def health(self, account: ConnectorAccount | None = None) -> ConnectorHealth:
         if not self.token():
-            return ConnectorHealth(
-                self.manifest.id, "disconnected", datetime.now(UTC).isoformat()
-            )
+            return ConnectorHealth(self.manifest.id, "disconnected", datetime.now(UTC).isoformat())
         started = time.monotonic()
         try:
             self._api("auth.test", {})
@@ -311,8 +298,7 @@ class SlackConnector(Connector):
                 # boundary for personal company memory; a bot token remains a
                 # fallback for existing workspace installations.
                 "user_scope": ",".join(
-                    scopes
-                    or list(self.manifest.oauth.scopes if self.manifest.oauth else ())
+                    scopes or list(self.manifest.oauth.scopes if self.manifest.oauth else ())
                 ),
                 "redirect_uri": settings.slack_redirect_uri,
                 "state": flow["state"],

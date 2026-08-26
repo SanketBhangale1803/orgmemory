@@ -30,9 +30,7 @@ def _details(**kwargs: object) -> SimpleNamespace:
 def test_oci_vault_envelope_round_trip_is_bound_to_context(monkeypatch):
     fake_oci = SimpleNamespace(
         auth=SimpleNamespace(
-            signers=SimpleNamespace(
-                InstancePrincipalsSecurityTokenSigner=lambda: object()
-            )
+            signers=SimpleNamespace(InstancePrincipalsSecurityTokenSigner=lambda: object())
         ),
         key_management=SimpleNamespace(
             KmsCryptoClient=lambda **kwargs: _FakeKMSClient(**kwargs),

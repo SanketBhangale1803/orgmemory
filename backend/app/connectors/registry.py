@@ -118,9 +118,11 @@ class ConnectorRegistry:
             manifest
             for manifest in sorted(self._manifests.values(), key=lambda item: item.name.casefold())
             if not (
-                (package := row(
-                    "SELECT status FROM connector_packages WHERE provider=?", (manifest.id,)
-                ))
+                (
+                    package := row(
+                        "SELECT status FROM connector_packages WHERE provider=?", (manifest.id,)
+                    )
+                )
                 and package["status"] == "revoked"
             )
         ]

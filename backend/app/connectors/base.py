@@ -151,9 +151,7 @@ class ConnectorManifest:
             key = Ed25519PublicKey.from_public_bytes(base64.b64decode(public_key))
             key.verify(
                 base64.b64decode(self.signature),
-                json.dumps(
-                    self.unsigned_payload(), sort_keys=True, separators=(",", ":")
-                ).encode(),
+                json.dumps(self.unsigned_payload(), sort_keys=True, separators=(",", ":")).encode(),
             )
             return True
         except (ValueError, TypeError):

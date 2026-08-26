@@ -55,6 +55,13 @@ class TokenRequest(BaseModel):
     display_name: str = "Local connection"
 
 
+class HistoryTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    # Long enough to carry a real question, short enough that twenty of them
+    # cannot be used to smuggle a payload into the prompt.
+    content: str = Field("", max_length=4_000)
+
+
 class AskRequest(BaseModel):
     project_id: str = Field(min_length=4, max_length=128)
     query: str = Field(min_length=3, max_length=4_000)
@@ -68,6 +75,11 @@ class AskRequest(BaseModel):
     # chat, where nobody is thinking in repositories. "project" restores the hard
     # single-repository boundary. "auto" leaves the decision to the router.
     scope: Literal["auto", "workspace", "project"] = "auto"
+    # Prior turns, oldest first, so a follow-up like "why is it failing" can be
+    # bound to the subject the asker already named. Capped because only the last
+    # few exchanges carry the live subject, and an unbounded history is an
+    # unbounded prompt.
+    history: list[HistoryTurn] = Field(default_factory=list, max_length=20)
 
 
 class ExecuteRequest(BaseModel):

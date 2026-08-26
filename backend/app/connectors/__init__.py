@@ -17,6 +17,7 @@ def get_connector_registry():
 
     return load()
 
+
 __all__ = [
     "Connector",
     "ConnectorAccount",

@@ -76,6 +76,7 @@ def register_mcp_client(
         "scope": " ".join(allowed_scopes),
     }
 
+
 def issue_access_token(
     *, client_id: str, user_id: str, workspace_id: str, scopes: list[str]
 ) -> tuple[str, int]:
@@ -237,7 +238,9 @@ def authorize_mcp_client(
     params = {"code": raw_code}
     if state:
         params["state"] = state
-    return RedirectResponse(redirect_uri + ("&" if "?" in redirect_uri else "?") + urlencode(params))
+    return RedirectResponse(
+        redirect_uri + ("&" if "?" in redirect_uri else "?") + urlencode(params)
+    )
 
 
 @oauth_router.post("/oauth/token")
@@ -265,7 +268,10 @@ def exchange_mcp_token(
             or datetime.fromisoformat(authorization["expires_at"]) < datetime.now(UTC)
         ):
             raise HTTPException(400, "invalid_grant")
-        if _b64url(hashlib.sha256(code_verifier.encode()).digest()) != authorization["code_challenge"]:
+        if (
+            _b64url(hashlib.sha256(code_verifier.encode()).digest())
+            != authorization["code_challenge"]
+        ):
             raise HTTPException(400, "invalid_grant")
         with connect() as conn:
             conn.execute(

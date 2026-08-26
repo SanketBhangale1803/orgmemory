@@ -17,9 +17,7 @@ def validate_remote_connector_url(url: str) -> str:
     if settings.connector_custom_mcp_allow_private_networks:
         return url
     try:
-        addresses = {
-            item[4][0] for item in socket.getaddrinfo(parsed.hostname, parsed.port or 443)
-        }
+        addresses = {item[4][0] for item in socket.getaddrinfo(parsed.hostname, parsed.port or 443)}
     except socket.gaierror as exc:
         raise ValueError("Remote MCP hostname could not be resolved") from exc
     if not addresses:

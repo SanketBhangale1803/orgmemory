@@ -31,6 +31,7 @@ async def lifespan(_: FastAPI):
     backfill_task = asyncio.create_task(asyncio.to_thread(hcag.backfill_existing_chunks))
     sync_worker_task = None
     if settings.connector_sync_worker_enabled:
+
         async def run_connector_sync_worker() -> None:
             while True:
                 await asyncio.to_thread(connector_sync.run_once)

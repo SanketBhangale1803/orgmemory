@@ -255,7 +255,7 @@ def test_handoff_covers_interface_work_not_just_backend_code():
 
 
 def test_naming_an_editor_is_itself_a_handoff_request():
-    """"Ask cursor to change X" is delegation, even when X names no code noun."""
+    """ "Ask cursor to change X" is delegation, even when X names no code noun."""
     evidence = [_evidence("c1", "theme.scss", "$bg: white;", path="theme.scss")]
     grounded = {
         "sufficient": True,
@@ -289,6 +289,7 @@ def test_handoff_never_mixes_files_from_two_repositories():
     Evidence from a neighbouring project produced a handoff naming files that do
     not exist in the repository being edited, so the agent edited the wrong repo.
     """
+
     def scoped(chunk_id, title, project_id, repository, rank_text):
         item = _evidence(chunk_id, title, rank_text, path=title)
         item.metadata.update({"project_id": project_id, "repository": repository})
@@ -398,9 +399,7 @@ def test_a_pinned_repository_is_a_boundary_not_a_hint():
 
     assert build_handoff("make the bg color navy blue", grounded, evidence) is not None
     assert (
-        build_handoff(
-            "make the bg color navy blue", grounded, evidence, pinned_project_id="prj_a"
-        )
+        build_handoff("make the bg color navy blue", grounded, evidence, pinned_project_id="prj_a")
         is None
     ), "a task must never be aimed at a repository the asker did not pin"
 
@@ -439,7 +438,7 @@ def _styled(chunk_id, title, project_id, name):
 
 
 def test_a_topic_without_a_target_is_asked_about_not_executed(graph):
-    """"change the styling" is a subject, not a task.
+    """ "change the styling" is a subject, not a task.
 
     Handed to an agent it spent ten minutes exploring the repository before
     reporting that it needed a target all along. That is the same question, later.
@@ -453,9 +452,9 @@ def test_a_topic_without_a_target_is_asked_about_not_executed(graph):
     assert result is not None
     assert result["reason"] == "missing_target"
     assert "src/styles.css" in result["files"]
-    assert all(not option.get("project_id") for option in result["options"]), (
-        "these are examples of the missing detail, not repositories to choose"
-    )
+    assert all(
+        not option.get("project_id") for option in result["options"]
+    ), "these are examples of the missing detail, not repositories to choose"
 
 
 def test_a_request_that_names_its_target_is_left_alone(graph):
@@ -468,7 +467,7 @@ def test_a_request_that_names_its_target_is_left_alone(graph):
         "make the styling navy blue",
         "change the theme to #0a1f44",
         "set the layout padding to 24px",
-        'change the styling to match the login page',
+        "change the styling to match the login page",
         "switch the theme to light mode",
         "restyle the header to look like the marketing site",
     ):

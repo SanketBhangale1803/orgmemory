@@ -34,21 +34,19 @@ class OrgMemorySyncApplier:
             if not existing:
                 return {"status": "already_deleted"}
             self.memory.retire_source_memories(project_id, record.id)
-            self.graph.delete_source_knowledge(
-                project_id, record.id, str(existing["source_type"])
-            )
+            self.graph.delete_source_knowledge(project_id, record.id, str(existing["source_type"]))
             with connect() as conn:
                 conn.execute("DELETE FROM knowledge_items WHERE id=?", (existing["id"],))
             return {"status": "deleted", "source_id": record.id}
 
-        sanitized, redactions = sanitize_for_index(record.content, record.source_url or record.title)
+        sanitized, redactions = sanitize_for_index(
+            record.content, record.source_url or record.title
+        )
         if existing and existing["content"] == sanitized:
             return {"status": "unchanged", "source_id": record.id}
         if existing:
             self.memory.retire_source_memories(project_id, record.id)
-            self.graph.delete_source_knowledge(
-                project_id, record.id, str(existing["source_type"])
-            )
+            self.graph.delete_source_knowledge(project_id, record.id, str(existing["source_type"]))
             with connect() as conn:
                 conn.execute("DELETE FROM knowledge_items WHERE id=?", (existing["id"],))
         result = self.ingestion.ingest_item(

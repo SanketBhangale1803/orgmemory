@@ -25,6 +25,7 @@ from app.memory.company import CompanyMemoryService
 from app.outcomes import record_context
 from app.swarm import ContextActivationSwarm
 
+from . import continuity
 from .clarify import clarification, clarification_answer
 from .conversation import assistant_reply, general_knowledge_answer, is_company_question
 from .deliberation import deliberate
@@ -64,6 +65,7 @@ class RetrievalService:
         model_provider: str | None = None,
         surface: str = "api",
         scope: str = "auto",
+        history: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         # "hello" is not a retrieval failure. Conversational turns are answered
         # before any lane runs, so they never consume evidence or a model call.
@@ -77,6 +79,22 @@ class RetrievalService:
                 principal=principal,
                 surface=surface,
             )
+        # A follow-up is bound to the thread before retrieval sees it. "Why is it
+        # failing" must search for the subject the asker has in mind, and when
+        # there is no such subject it must be asked about rather than guessed at:
+        # every corpus contains an incident, so guessing always finds one.
+        asked = query
+        thread = continuity.resolve(query, history)
+        if thread["dangling"]:
+            return self._clarification_result(
+                project_id,
+                query,
+                continuity.unresolved_reference(query),
+                model_provider,
+                principal=principal,
+                surface=surface,
+            )
+        query = thread["query"]
         route = self.hcag.route_query(project_id, query)
         memory_service = CompanyMemoryService(self.hcag.graph)
         scope_service = ScopeService()
@@ -332,6 +350,11 @@ class RetrievalService:
             "approval_required": grounded.get("approval_required", []),
             "answer_kind": intent,
             "answer_scope": answer_scope,
+            # How many sources were actually looked through. A plain count, so a
+            # chat can say "I searched 19 sources and found nothing" without
+            # reaching into the retrieval trace — which is mechanics, and stays
+            # out of the answer surface.
+            "searched_sources": len(searched_projects),
             "diagnostic": route.subdomain == "incident_response",
             "model": model_runtime(
                 model_provider,
@@ -453,14 +476,20 @@ class RetrievalService:
         # The served half of the outcome loop. The id goes back to the caller so
         # whatever happens next — a handoff pasted into an editor, a rejected
         # answer, a merged PR — can be attributed to the context that caused it.
+        # Recorded as the person typed it, not as retrieval rewrote it: the
+        # training corpus should reflect how people really ask.
         result["context_event_id"] = record_context(
             project_id=project_id,
-            query=query,
+            query=asked,
             result=result,
             workspace_id=str((principal or {}).get("active_workspace_id") or ""),
             principal_id=str((principal or {}).get("id") or ""),
             surface=surface,
         )
+        if thread["subject"]:
+            # Surfaced so the chat can show what the follow-up was bound to, and
+            # so a wrong binding is visible rather than silent.
+            result["resolved_subject"] = thread["subject"]
         return result
 
     def _synthesize(
@@ -479,6 +508,35 @@ class RetrievalService:
             candidate_count=settings.org_memory_answer_candidates,
             judge_enabled=settings.org_memory_answer_judge_enabled,
         )
+
+    def _clarification_result(
+        self,
+        project_id: str,
+        query: str,
+        ambiguity: dict[str, Any],
+        model_provider: str | None,
+        *,
+        principal: dict[str, Any] | None = None,
+        surface: str = "api",
+    ) -> dict[str, Any]:
+        """A question asked back, shaped like any other answer.
+
+        Reuses the unsourced path because a clarification legitimately cites
+        nothing — there is no evidence behind "what does 'it' mean", and pretending
+        otherwise would put sources under a sentence they did not support.
+        """
+        result = self._unsourced_result(
+            project_id,
+            query,
+            clarification_answer(ambiguity),
+            model_provider,
+            principal=principal,
+            surface=surface,
+        )
+        result["clarification"] = ambiguity
+        result["answer_scope"] = "clarification"
+        result["answer_kind"] = "clarification"
+        return result
 
     def _unsourced_result(
         self,
@@ -1473,11 +1531,7 @@ class RetrievalService:
         calibrated["level"] = (
             "high"
             if score >= 0.75
-            else "medium"
-            if score >= 0.5
-            else "low"
-            if score > 0
-            else "none"
+            else "medium" if score >= 0.5 else "low" if score > 0 else "none"
         )
         if score < float(trust.get("score") or 0.0):
             calibrated["reason"] = (
