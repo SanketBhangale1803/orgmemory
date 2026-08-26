@@ -29,6 +29,14 @@ Provider. The page registers these read-only tools:
 3. `inspect_orgmemory_changes` summarizes additions, updates, invalidations,
    conflicts, and affected artifacts from recent memory change sets.
 
+Phase 2 adds one deliberately approval-gated write path:
+
+4. `propose_repository_refresh` creates a deduplicated request to refresh a
+   GitHub-backed memory space when the current evidence is stale or incomplete.
+   It cannot run an import itself. The request appears in **Approvals**, where a
+   signed-in person must explicitly approve or deny it. Only approval queues the
+   server-side GitHub ingest and records its outcome in the audit trail.
+
 The implementation is in `frontend/lib/webmcp.ts`, with lifecycle management in
 `frontend/hooks/useOrgMemoryWebMCP.ts` and the human-agent interaction in
 `frontend/components/WorkspaceChat.tsx`.
@@ -41,6 +49,14 @@ The implementation is in `frontend/lib/webmcp.ts`, with lifecycle management in
 - Project IDs are checked against the signed-in user's already authorized project
   list before a scoped API call is made.
 - Phase 1 tools are read-only and explicitly annotated as non-destructive.
+- The Phase 2 tool is annotated as a non-destructive, approval-required write:
+  proposing is idempotent, has no repository side effect, and returns the next
+  human step instead of pretending that a refresh happened.
+- Refresh requests are tied to the authorized project, workspace, requester,
+  and normalized reason. The approvals list is project-visibility filtered, and
+  resolving a request rechecks project write permission.
+- The actual GitHub ingest runs only after approval, records success or failure,
+  and keeps credentials server-side in the existing connector secret store.
 - An `AbortController` removes tools when the page unmounts or the authorized
   project set changes.
 - Ordinary browsers without WebMCP continue to work through feature detection.
@@ -53,7 +69,12 @@ WebMCP enabled, then ask the browser agent:
 1. "What OrgMemory spaces can I access?"
 2. "Using OrgMemory, what changed recently in the selected project?"
 3. "Ask OrgMemory what I should know before editing this service."
+4. When evidence is missing, ask: "Propose refreshing this repository because
+   the recent changes have not been indexed." Confirm that the agent reports a
+   pending request, then open **Approvals**. The repository must remain untouched
+   until a person presses **Approve & refresh**.
 
-The agent should discover the three page tools, use the project IDs returned by
-the first tool, and place the final source-backed answer in both its response and
-the visible OrgMemory conversation.
+The agent should discover the four page tools, use the project IDs returned by
+the first tool, and place source-backed answers in both its response and the
+visible OrgMemory conversation. The one write-capable tool must never bypass the
+human approval boundary.

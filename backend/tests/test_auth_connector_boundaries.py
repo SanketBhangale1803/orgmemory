@@ -13,7 +13,7 @@ from app.auth.app_auth import (
 from app.connectors.github import GitHubConnector
 from app.connectors.slack import SlackConnector
 from app.core.config import settings
-from app.core.database import row
+from app.core.database import connect, new_id, row, utcnow
 from app.main import app
 
 
@@ -147,6 +147,51 @@ def test_github_connector_callback_exchanges_code_only_in_runtime(graph, monkeyp
     assert response.headers["location"] == f"{settings.frontend_url}/connectors?connected=github"
     assert completed["provider"] == "github"
     assert completed["code"] == "oauth-code"
+
+
+def test_repository_refresh_requires_approval_before_running(graph, monkeypatch):
+    session = create_dev_session("refresh@example.com", "Refresh Requester")
+    project_id = new_id("prj")
+    now = utcnow()
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO projects VALUES (?,?,?,?,?,?)",
+            (
+                project_id,
+                "Refreshable project",
+                "https://github.com/acme/refreshable.git",
+                "ready",
+                now,
+                now,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO workspace_projects VALUES (?,?)",
+            (session["user"]["active_workspace_id"], project_id),
+        )
+    client = TestClient(app)
+    headers = {"Authorization": f"Bearer {session['token']}"}
+    payload = {"project_id": project_id, "reason": "Recent GitHub evidence is stale."}
+
+    proposed = client.post("/api/repository-refresh-requests", json=payload, headers=headers)
+    assert proposed.status_code == 200
+    proposal = proposed.json()
+    assert proposal["status"] == "pending_approval"
+
+    repeated = client.post("/api/repository-refresh-requests", json=payload, headers=headers)
+    assert repeated.status_code == 200
+    assert repeated.json()["id"] == proposal["id"]
+
+    executed: list[str] = []
+    monkeypatch.setattr("app.api.routes._run_repository_refresh", executed.append)
+    approved = client.post(
+        f"/api/repository-refresh-requests/{proposal['id']}/resolve",
+        json={"approved": True},
+        headers=headers,
+    )
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "queued"
+    assert executed == [proposal["id"]]
 
 
 def test_slack_oauth_requests_and_prefers_personal_user_token(graph, monkeypatch):

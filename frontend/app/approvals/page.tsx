@@ -7,12 +7,14 @@ import { api, formatDate } from "@/lib/api";
 export default function Approvals() {
   const [items, setItems] = useState<any[]>([]);
   const [connectorCalls, setConnectorCalls] = useState<any[]>([]);
+  const [refreshRequests, setRefreshRequests] = useState<any[]>([]);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const load = () => Promise.all([
     api<any[]>("/api/actions"),
     api<any[]>("/api/connector-tool-calls"),
-  ]).then(([actions, calls]) => { setItems(actions); setConnectorCalls(calls); });
+    api<any[]>("/api/repository-refresh-requests"),
+  ]).then(([actions, calls, refreshes]) => { setItems(actions); setConnectorCalls(calls); setRefreshRequests(refreshes); });
 
   useEffect(() => { load().catch((exc) => setError(exc.message)); }, []);
 
@@ -35,10 +37,30 @@ export default function Approvals() {
     } catch (exc: any) { setError(exc.message); }
   }
 
+  async function resolveRefresh(id: string, approved: boolean) {
+    try {
+      const result: any = await api(`/api/repository-refresh-requests/${id}/resolve`, {
+        method: "POST", body: JSON.stringify({ approved }),
+      });
+      setMessage(approved ? `Repository refresh ${result.status}.` : "Repository refresh denied.");
+      await load();
+    } catch (exc: any) { setError(exc.message); }
+  }
+
   return <Page title="Approvals" description="Human decisions for every connector send, modify, purchase, or delete request.">
     {message && <div className="notice">{message}</div>}
     {error && <div className="notice error">{error}</div>}
     <section className="card" style={{ marginTop: message || error ? 16 : 0 }}>
+      <div className="section-head"><div><span className="panel-label">WebMCP proposal</span><h2>Repository refresh requests</h2></div><span className="badge warning">Human approval required</span></div>
+      {refreshRequests.length ? <table className="table"><thead><tr><th>Repository</th><th>Reason</th><th>Status</th><th>Requested</th><th>Decision</th></tr></thead><tbody>{refreshRequests.map((request) => <tr key={request.id}>
+        <td><strong>{request.repository}</strong>{request.result?.files_scanned !== undefined && <div className="subtle">{request.result.files_scanned} files scanned · {request.result.incremental?.sources_changed || 0} sources changed</div>}{request.error && <div className="notice error">{request.error}</div>}</td>
+        <td>{request.reason}</td>
+        <td><span className={`badge ${request.status === "succeeded" ? "success" : request.status === "failed" ? "danger" : "warning"}`}>{request.status.replace(/_/g, " ")}</span></td>
+        <td>{formatDate(request.requested_at)}</td>
+        <td>{request.status === "pending_approval" ? <div className="row"><button className="button" onClick={() => resolveRefresh(request.id, true)}>Approve & refresh</button><button className="button danger" onClick={() => resolveRefresh(request.id, false)}>Deny</button></div> : <span className="subtle">{request.resolved_by || "—"}</span>}</td>
+      </tr>)}</tbody></table> : <div className="empty">No WebMCP repository refresh requests are waiting for approval.</div>}
+    </section>
+    <section className="card" style={{ marginTop: 18 }}>
       <div className="section-head"><div><span className="panel-label">Connector gateway</span><h2>External write requests</h2></div><span className="badge warning">Explicit approval</span></div>
       {connectorCalls.length ? <table className="table"><thead><tr><th>Tool</th><th>Risk</th><th>Status</th><th>Requested</th><th>Decision</th></tr></thead><tbody>{connectorCalls.map((call) => <tr key={call.id}>
         <td><strong>{call.provider}.{call.tool_name}</strong><div className="subtle">Keys: {(call.arguments?.declared_keys || []).join(", ") || "none"} · values redacted</div><code>{call.idempotency_key}</code>{call.error && <div className="notice error">{call.error}</div>}</td>

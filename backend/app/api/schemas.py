@@ -19,6 +19,15 @@ class GitHubBulkIngestRequest(BaseModel):
     workspace_id: str | None = None
 
 
+class RepositoryRefreshProposalRequest(BaseModel):
+    project_id: str = Field(min_length=4, max_length=128)
+    reason: str = Field(min_length=5, max_length=800)
+
+
+class RepositoryRefreshResolutionRequest(BaseModel):
+    approved: bool
+
+
 class UploadRequest(BaseModel):
     project_id: str = Field(min_length=4, max_length=128)
     source_type: Literal[

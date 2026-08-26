@@ -134,6 +134,8 @@ from .schemas import (
     ProjectCreateRequest,
     ProjectTeamRequest,
     ProposeRequest,
+    RepositoryRefreshProposalRequest,
+    RepositoryRefreshResolutionRequest,
     ResolveRequest,
     SemanticChangeInterpretRequest,
     SimulateRequest,
@@ -2625,6 +2627,200 @@ def enqueue_connector_sync(
 def connector_sync_jobs(status: str = "", authorization: str | None = Header(default=None)):
     principal = _authorize_workspace(authorization)
     return connector_sync.list(principal["active_workspace_id"], status)
+
+
+def _public_repository_refresh_request(record: dict) -> dict:
+    result = {}
+    try:
+        result = json.loads(record.get("result_json") or "{}")
+    except json.JSONDecodeError:
+        result = {}
+    return {
+        key: record.get(key)
+        for key in (
+            "id",
+            "project_id",
+            "repository",
+            "reason",
+            "status",
+            "requested_at",
+            "resolved_at",
+            "resolved_by",
+            "started_at",
+            "completed_at",
+            "error",
+        )
+    } | {"result": result}
+
+
+def _run_repository_refresh(request_id: str) -> None:
+    record = row("SELECT * FROM repository_refresh_requests WHERE id=?", (request_id,))
+    if not record or record["status"] != "queued":
+        return
+    now = utcnow()
+    with connect() as conn:
+        claimed = conn.execute(
+            """UPDATE repository_refresh_requests SET status='running',started_at=?
+            WHERE id=? AND status='queued'""",
+            (now, request_id),
+        ).rowcount
+    if not claimed:
+        return
+    try:
+        project = row("SELECT name,repository FROM projects WHERE id=?", (record["project_id"],))
+        if not project or not project["repository"]:
+            raise ValueError("The selected project no longer has a GitHub repository")
+        connector = GitHubConnector(
+            ConnectorSecrets(record["workspace_id"], record["user_id"])
+        )
+        result = RepositoryIngestor(ingestion, graph, connector).ingest(
+            project["repository"], project["name"]
+        )
+        repository_resource = GitHubConnector.slug(project["repository"]) or project["repository"]
+        connector_sync.enqueue(
+            "github",
+            record["workspace_id"],
+            record["user_id"],
+            repository_resource,
+            project_id=record["project_id"],
+            cursor={"repository": repository_resource},
+            idempotency_key=f"approved-refresh:{request_id}",
+        )
+        with connect() as conn:
+            conn.execute(
+                """UPDATE repository_refresh_requests
+                SET status='succeeded',completed_at=?,result_json=?,error='' WHERE id=?""",
+                (utcnow(), json.dumps(result), request_id),
+            )
+        audit.record(
+            "repository.refresh.succeeded",
+            f"Refreshed {project['name']}",
+            record["project_id"],
+            payload={
+                "refresh_request_id": request_id,
+                "files_scanned": int(result.get("files_scanned", 0) or 0),
+                "sources_changed": int(
+                    (result.get("incremental") or {}).get("sources_changed", 0) or 0
+                ),
+            },
+        )
+    except Exception as exc:
+        with connect() as conn:
+            conn.execute(
+                """UPDATE repository_refresh_requests
+                SET status='failed',completed_at=?,error=? WHERE id=?""",
+                (utcnow(), str(exc), request_id),
+            )
+        audit.record(
+            "repository.refresh.failed",
+            "Repository refresh failed",
+            record["project_id"],
+            payload={"refresh_request_id": request_id, "error": str(exc)},
+        )
+
+
+@router.post("/repository-refresh-requests")
+def propose_repository_refresh(
+    request: RepositoryRefreshProposalRequest,
+    authorization: str | None = Header(default=None),
+):
+    principal = _authorize_project(request.project_id, authorization, write=True)
+    project = row("SELECT name,repository FROM projects WHERE id=?", (request.project_id,)) or {}
+    repository = str(project.get("repository") or "")
+    if not GitHubConnector.slug(repository):
+        raise HTTPException(400, "This memory space is not connected to a GitHub repository")
+    reason = request.reason.strip()
+    idempotency_key = hashlib.sha256(
+        f"{request.project_id}:{reason.casefold()}".encode()
+    ).hexdigest()
+    existing = row(
+        """SELECT * FROM repository_refresh_requests
+        WHERE workspace_id=? AND user_id=? AND project_id=? AND idempotency_key=?""",
+        (principal["active_workspace_id"], principal["id"], request.project_id, idempotency_key),
+    )
+    if existing:
+        return _public_repository_refresh_request(existing)
+    request_id, now = new_id("refresh"), utcnow()
+    with connect() as conn:
+        conn.execute(
+            """INSERT INTO repository_refresh_requests
+            (id,workspace_id,user_id,project_id,repository,reason,idempotency_key,status,requested_at)
+            VALUES (?,?,?,?,?,?,?,'pending_approval',?)""",
+            (
+                request_id,
+                principal["active_workspace_id"],
+                principal["id"],
+                request.project_id,
+                repository,
+                reason,
+                idempotency_key,
+                now,
+            ),
+        )
+    audit.record(
+        "repository.refresh.proposed",
+        f"Refresh requested for {project.get('name') or request.project_id}",
+        request.project_id,
+        actor=str(principal["id"]),
+        payload={"refresh_request_id": request_id, "reason": reason, "repository": repository},
+    )
+    return _public_repository_refresh_request(
+        row("SELECT * FROM repository_refresh_requests WHERE id=?", (request_id,)) or {}
+    )
+
+
+@router.get("/repository-refresh-requests")
+def repository_refresh_requests(
+    status: str = "", authorization: str | None = Header(default=None)
+):
+    principal = _authorize_workspace(authorization)
+    records = rows(
+        """SELECT * FROM repository_refresh_requests WHERE workspace_id=?
+        AND (?='' OR status=?) ORDER BY requested_at DESC""",
+        (principal["active_workspace_id"], status, status),
+    )
+    visible_project_ids = _visible_project_ids(principal)
+    if visible_project_ids is not None:
+        records = [record for record in records if record["project_id"] in visible_project_ids]
+    return [_public_repository_refresh_request(record) for record in records]
+
+
+@router.post("/repository-refresh-requests/{request_id}/resolve")
+def resolve_repository_refresh(
+    request_id: str,
+    request: RepositoryRefreshResolutionRequest,
+    background_tasks: BackgroundTasks,
+    authorization: str | None = Header(default=None),
+):
+    principal = _authorize_workspace(authorization)
+    record = row("SELECT * FROM repository_refresh_requests WHERE id=?", (request_id,))
+    if not record or record["workspace_id"] != principal["active_workspace_id"]:
+        raise HTTPException(404, "Repository refresh request not found")
+    _authorize_project(record["project_id"], authorization, write=True)
+    if principal["id"] != record["user_id"] and principal["role"] not in {"owner", "admin"}:
+        raise HTTPException(403, "Only the requester or a workspace admin may resolve this request")
+    if record["status"] != "pending_approval":
+        raise HTTPException(400, "Repository refresh request is not pending approval")
+    status = "queued" if request.approved else "denied"
+    now = utcnow()
+    with connect() as conn:
+        conn.execute(
+            """UPDATE repository_refresh_requests SET status=?,resolved_at=?,resolved_by=?
+            WHERE id=?""",
+            (status, now, principal["id"], request_id),
+        )
+    audit.record(
+        f"repository.refresh.{status}",
+        f"Repository refresh {status}",
+        record["project_id"],
+        actor=str(principal["id"]),
+        payload={"refresh_request_id": request_id},
+    )
+    if request.approved:
+        background_tasks.add_task(_run_repository_refresh, request_id)
+    return _public_repository_refresh_request(
+        row("SELECT * FROM repository_refresh_requests WHERE id=?", (request_id,)) or {}
+    )
 
 
 @router.get("/connectors/custom/registrations")

@@ -163,6 +163,18 @@ CREATE TABLE IF NOT EXISTS connector_sync_jobs (
   FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS repository_refresh_requests (
+  id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, user_id TEXT NOT NULL,
+  project_id TEXT NOT NULL, repository TEXT NOT NULL, reason TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL, status TEXT NOT NULL,
+  requested_at TEXT NOT NULL, resolved_at TEXT, resolved_by TEXT,
+  started_at TEXT, completed_at TEXT, result_json TEXT NOT NULL DEFAULT '{}',
+  error TEXT NOT NULL DEFAULT '',
+  UNIQUE(workspace_id, user_id, project_id, idempotency_key),
+  FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS connector_webhook_deliveries (
   id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider TEXT NOT NULL,
   delivery_id TEXT NOT NULL, payload_hash TEXT NOT NULL, event_type TEXT NOT NULL,
@@ -518,6 +530,7 @@ CREATE INDEX IF NOT EXISTS idx_workspace_members ON workspace_members(workspace_
 CREATE INDEX IF NOT EXISTS idx_workspace_connectors ON workspace_connector_accounts(workspace_id, provider, status);
 CREATE INDEX IF NOT EXISTS idx_oauth_grants_user ON oauth_token_grants(workspace_id,user_id,provider,status);
 CREATE INDEX IF NOT EXISTS idx_connector_sync_due ON connector_sync_jobs(status,next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_repository_refresh_requests ON repository_refresh_requests(workspace_id,status,requested_at);
 CREATE INDEX IF NOT EXISTS idx_connector_tool_calls_status ON connector_tool_calls(workspace_id,status,requested_at);
 CREATE INDEX IF NOT EXISTS idx_email_login_codes ON email_login_codes(email, created_at);
 CREATE INDEX IF NOT EXISTS idx_team_members_user ON team_members(user_id, team_id);

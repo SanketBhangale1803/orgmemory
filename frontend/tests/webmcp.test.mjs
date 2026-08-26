@@ -24,7 +24,7 @@ const runtime = await import(
   `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`
 );
 
-test("the authenticated workspace registers three browser-native WebMCP tools", () => {
+test("the authenticated workspace registers four browser-native WebMCP tools", () => {
   assert.match(types, /interface Document/);
   assert.match(types, /modelContext\?: WebMCPModelContext/);
   assert.match(webmcp, /document\.modelContext\.registerTool|modelContext\.registerTool/);
@@ -33,6 +33,7 @@ test("the authenticated workspace registers three browser-native WebMCP tools", 
     "list_orgmemory_spaces",
     "ask_orgmemory",
     "inspect_orgmemory_changes",
+    "propose_repository_refresh",
   ]) {
     assert.match(webmcp, new RegExp(`name: "${tool}"`));
   }
@@ -59,7 +60,7 @@ test("browser-agent questions reuse the secure API and update the visible conver
   assert.match(webmcp, /source citations/);
   assert.match(webmcp, /options\.ask\(question, project\.id, scope\)/);
   assert.match(chat, /data-webmcp-status=\{webMCP\.status\}/);
-  assert.match(chat, /Three browser-native WebMCP tools are available/);
+  assert.match(chat, /Four browser-native WebMCP tools are available/);
 });
 
 test("WebMCP validates project access before calling scoped backend endpoints", () => {
@@ -116,14 +117,26 @@ test("the real WebMCP implementation registers, invokes, and unregisters all too
           },
         ];
       },
+      async proposeRepositoryRefresh(projectId, reason) {
+        calls.push({ kind: "refresh", projectId, reason });
+        return {
+          id: "refresh_1",
+          project_id: projectId,
+          repository: "https://github.com/acme/demo.git",
+          reason,
+          status: "pending_approval",
+          requested_at: "2026-08-26T12:00:00Z",
+        };
+      },
     });
 
     assert.equal(registration.supported, true);
-    assert.equal(registration.toolCount, 3);
+    assert.equal(registration.toolCount, 4);
     assert.deepEqual([...registered.keys()], [
       "list_orgmemory_spaces",
       "ask_orgmemory",
       "inspect_orgmemory_changes",
+      "propose_repository_refresh",
     ]);
 
     const spaces = await registered.get("list_orgmemory_spaces").execute({});
@@ -142,6 +155,11 @@ test("the real WebMCP implementation registers, invokes, and unregisters all too
       limit: 500,
     });
     assert.equal(changes.structuredContent.changes[0].conflicts, 1);
+    const refresh = await registered.get("propose_repository_refresh").execute({
+      project_id: "prj_demo",
+      reason: "The latest commit evidence is stale.",
+    });
+    assert.equal(refresh.structuredContent.status, "pending_approval");
     assert.deepEqual(calls, [
       {
         kind: "ask",
@@ -150,6 +168,11 @@ test("the real WebMCP implementation registers, invokes, and unregisters all too
         scope: "project",
       },
       { kind: "changes", projectId: "prj_demo", limit: 50 },
+      {
+        kind: "refresh",
+        projectId: "prj_demo",
+        reason: "The latest commit evidence is stale.",
+      },
     ]);
 
     await assert.rejects(

@@ -2,6 +2,7 @@ export const ORGMEMORY_WEBMCP_TOOLS = [
   "list_orgmemory_spaces",
   "ask_orgmemory",
   "inspect_orgmemory_changes",
+  "propose_repository_refresh",
 ] as const;
 
 export type OrgMemorySpace = {
@@ -39,6 +40,15 @@ export type OrgMemoryChangeSet = {
   affected_skills?: unknown[];
 };
 
+export type OrgMemoryRefreshRequest = {
+  id: string;
+  project_id: string;
+  repository: string;
+  reason: string;
+  status: "pending_approval" | "denied" | "queued" | "running" | "succeeded" | "failed";
+  requested_at: string;
+};
+
 export type WebMCPActivity = {
   tool: (typeof ORGMEMORY_WEBMCP_TOOLS)[number];
   state: "running" | "complete" | "error";
@@ -54,6 +64,10 @@ type RegistrationOptions = {
     scope: "workspace" | "project",
   ) => Promise<OrgMemoryWebMCPAnswer>;
   inspectChanges: (projectId: string, limit: number) => Promise<OrgMemoryChangeSet[]>;
+  proposeRepositoryRefresh: (
+    projectId: string,
+    reason: string,
+  ) => Promise<OrgMemoryRefreshRequest>;
   onActivity?: (activity: WebMCPActivity) => void;
 };
 
@@ -65,6 +79,13 @@ export type WebMCPRegistration = {
 
 const READ_ONLY = {
   readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+} as const;
+
+const APPROVAL_REQUIRED_WRITE = {
+  readOnlyHint: false,
   destructiveHint: false,
   idempotentHint: true,
   openWorldHint: false,
@@ -293,6 +314,59 @@ export async function registerOrgMemoryWebMCP(
             ).length;
             return toolResult(
               `${changes.length} recent change set${changes.length === 1 ? "" : "s"} found for ${project.name}; ${reviewCount} need review.`,
+              payload,
+            );
+          }),
+      },
+      registration,
+    ),
+    modelContext.registerTool(
+      {
+        name: "propose_repository_refresh",
+        title: "Propose repository refresh",
+        description:
+          "Create an approval-required request to refresh an authorized GitHub repository when its OrgMemory evidence is stale or incomplete. This tool never refreshes the repository itself; a person must approve it in OrgMemory first.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            project_id: {
+              type: "string",
+              description:
+                "An authorized GitHub-backed project ID from list_orgmemory_spaces. Defaults to the active project.",
+            },
+            reason: {
+              type: "string",
+              minLength: 5,
+              maxLength: 800,
+              description:
+                "Why a refresh is needed, such as stale commit evidence or a missing source.",
+            },
+          },
+          required: ["reason"],
+          additionalProperties: false,
+        },
+        annotations: APPROVAL_REQUIRED_WRITE,
+        execute: (input) =>
+          tracked("propose_repository_refresh", options.onActivity, async () => {
+            const project = projectFor(input, options.spaces, options.getActiveProjectId());
+            if (!project.repository) {
+              throw new Error("Choose a GitHub-backed project before requesting a repository refresh.");
+            }
+            const reason = stringInput(input, "reason");
+            if (reason.length < 5) throw new Error("reason must contain at least 5 characters");
+            const request = await options.proposeRepositoryRefresh(project.id, reason);
+            const payload = {
+              refresh_request_id: request.id,
+              project_id: project.id,
+              project_name: project.name,
+              repository: request.repository,
+              reason: request.reason,
+              status: request.status,
+              next_step:
+                "A person must approve or deny this request in OrgMemory before any repository refresh runs.",
+            };
+            return toolResult(
+              `Repository refresh request for ${project.name} is ${request.status}. No refresh has run yet; it requires human approval.`,
               payload,
             );
           }),

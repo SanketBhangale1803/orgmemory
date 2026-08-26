@@ -6,7 +6,7 @@ import MarkdownAnswer from "@/components/MarkdownAnswer";
 import { RunbookMark } from "@/components/RunbookLogo";
 import { useOrgMemoryWebMCP } from "@/hooks/useOrgMemoryWebMCP";
 import { api } from "@/lib/api";
-import type { OrgMemoryChangeSet } from "@/lib/webmcp";
+import type { OrgMemoryChangeSet, OrgMemoryRefreshRequest } from "@/lib/webmcp";
 
 type Model = { id: string; label: string; company: string; model: string; configured: boolean; default: boolean };
 type Project = { id: string; name: string; repository?: string };
@@ -284,6 +284,15 @@ export default function WorkspaceChat({ user }: { user: any }) {
     [],
   );
 
+  const proposeRepositoryRefresh = useCallback(
+    (projectId: string, reason: string) =>
+      api<OrgMemoryRefreshRequest>("/api/repository-refresh-requests", {
+        method: "POST",
+        body: JSON.stringify({ project_id: projectId, reason }),
+      }),
+    [],
+  );
+
   const webMCP = useOrgMemoryWebMCP({
     enabled: projects.length > 0 && Boolean(project),
     spaces: projects,
@@ -294,6 +303,7 @@ export default function WorkspaceChat({ user }: { user: any }) {
       return ask(question, projectId, "webmcp", requestedScope);
     },
     inspectChanges,
+    proposeRepositoryRefresh,
   });
 
   const webMCPLabel = (() => {
@@ -531,7 +541,7 @@ export default function WorkspaceChat({ user }: { user: any }) {
           </button>
         </div>
         <p className="ws-foot">
-          {webMCPLabel && <span className="ws-agent-ready" title="Three browser-native WebMCP tools are available"><i />{webMCPLabel}</span>}
+          {webMCPLabel && <span className="ws-agent-ready" title="Four browser-native WebMCP tools are available"><i />{webMCPLabel}</span>}
           Answers cite the company sources behind them.
           <Link href="/memories">Browse memory</Link>
         </p>

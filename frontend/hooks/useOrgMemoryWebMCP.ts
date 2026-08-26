@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   registerOrgMemoryWebMCP,
   type OrgMemoryChangeSet,
+  type OrgMemoryRefreshRequest,
   type OrgMemorySpace,
   type OrgMemoryWebMCPAnswer,
   type WebMCPActivity,
@@ -19,6 +20,10 @@ type HookOptions = {
     scope: "workspace" | "project",
   ) => Promise<OrgMemoryWebMCPAnswer>;
   inspectChanges: (projectId: string, limit: number) => Promise<OrgMemoryChangeSet[]>;
+  proposeRepositoryRefresh: (
+    projectId: string,
+    reason: string,
+  ) => Promise<OrgMemoryRefreshRequest>;
 };
 
 export type WebMCPStatus = "idle" | "registering" | "ready" | "unsupported" | "error";
@@ -49,6 +54,7 @@ export function useOrgMemoryWebMCP(options: HookOptions) {
       getActiveProjectId: () => optionsRef.current.activeProjectId,
       ask: (...args) => optionsRef.current.ask(...args),
       inspectChanges: (...args) => optionsRef.current.inspectChanges(...args),
+      proposeRepositoryRefresh: (...args) => optionsRef.current.proposeRepositoryRefresh(...args),
       onActivity: (next) => {
         if (current) setActivity(next);
       },
