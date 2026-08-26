@@ -74,6 +74,7 @@ class Settings(BaseSettings):
     github_client_id: str = ""
     github_client_secret: str = ""
     github_redirect_uri: str = "http://localhost:8000/api/auth/github/callback"
+    github_oauth_use_pkce: bool = True
     github_token: str = ""
     slack_client_id: str = ""
     slack_client_secret: str = ""

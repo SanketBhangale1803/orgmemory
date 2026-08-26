@@ -302,9 +302,11 @@ class GitHubConnector(Connector):
             timeout=30,
         )
         response.raise_for_status()
-        token = response.json().get("access_token")
+        payload = response.json()
+        token = payload.get("access_token")
         if not token:
-            raise ValueError("GitHub OAuth did not return an access token")
+            error = str(payload.get("error") or "unknown_error")
+            raise ValueError(f"GitHub OAuth token exchange failed: {error}")
         user = self._api("GET", "/user", token=token)
         email = user.get("email")
         if not email:
@@ -320,7 +322,7 @@ class GitHubConnector(Connector):
             "display_name": user.get("name") or user["login"],
             "email": email,
             "avatar_url": user.get("avatar_url", ""),
-            "scope": response.json().get("scope", ""),
+            "scope": payload.get("scope", ""),
         }
 
     def list_repositories(self) -> list[dict[str, Any]]:

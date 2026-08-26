@@ -43,7 +43,10 @@ export default function Ingest() {
     });
     api<any[]>("/api/connectors").then(setConnections);
     api<any[]>("/api/connectors/catalog").then(setCatalog).catch(() => undefined);
-    api<any[]>("/api/connectors/github/repos").then(setRepositories).catch(() => undefined);
+    api<{result?: {repositories?: any[]}}>("/api/connectors/github/tools/list_repositories", {
+      method: "POST",
+      body: JSON.stringify({arguments: {}}),
+    }).then(response => setRepositories(response.result?.repositories || [])).catch(() => undefined);
     api<any[]>("/api/connectors/slack/channels").then(items => {
       setChannels(items);
       if (items[0]) setChannel(items[0].id);

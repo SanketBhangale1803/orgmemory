@@ -2698,7 +2698,9 @@ def create_mcp_oauth_client(
 @router.get("/auth/github/start")
 def github_auth_start():
     try:
-        flow = OAuthStateStore().create("github", intent="login", use_pkce=True)
+        flow = OAuthStateStore().create(
+            "github", intent="login", use_pkce=settings.github_oauth_use_pkce
+        )
         return RedirectResponse(GitHubConnector().oauth_url(flow, scopes="read:user user:email"))
     except Exception as exc:
         fail(exc)
@@ -2746,7 +2748,7 @@ def connector_auth_start(
             intent="connect",
             workspace_id=principal["active_workspace_id"],
             user_id=principal["id"],
-            use_pkce=True,
+            use_pkce=settings.github_oauth_use_pkce if provider == "github" else True,
         )
         requested = [item for item in scopes.replace(",", " ").split() if item]
         return RedirectResponse(
