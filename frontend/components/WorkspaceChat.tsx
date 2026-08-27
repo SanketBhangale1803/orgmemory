@@ -63,6 +63,13 @@ type Run = {
   executor: string;
 };
 type Turn = { question: string; answer?: Answer; error?: string };
+type WorkspaceMember = {
+  id: string;
+  email: string;
+  display_name?: string;
+  role: string;
+  status: string;
+};
 
 /* Terminal states stop the poller. Anything else is still in flight. */
 const RUN_DONE = ["committed", "pushed", "no_changes", "failed"];
@@ -157,6 +164,11 @@ export default function WorkspaceChat({ user }: { user: any }) {
   const [decidingId, setDecidingId] = useState("");
   const [inboxNote, setInboxNote] = useState("");
   const [inboxError, setInboxError] = useState("");
+  const [members, setMembers] = useState<WorkspaceMember[]>([]);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState("member");
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [inviting, setInviting] = useState(false);
   const [filter, setFilter] = useState("");
 
   const picker = useRef<HTMLDivElement>(null);
@@ -333,12 +345,23 @@ export default function WorkspaceChat({ user }: { user: any }) {
     [],
   );
 
+  const isAdmin = user?.role === "owner" || user?.role === "admin";
+
+  const loadMembers = useCallback(async () => {
+    if (!isAdmin || !user?.active_workspace_id) return;
+    const items = await api<WorkspaceMember[]>(
+      `/api/workspaces/${user.active_workspace_id}/members`,
+    );
+    setMembers(items);
+  }, [isAdmin, user?.active_workspace_id]);
+
   useEffect(() => {
     if (!user?.active_workspace_id) return;
     loadRequests();
+    void loadMembers().catch(() => undefined);
     const timer = window.setInterval(loadRequests, 8000);
     return () => window.clearInterval(timer);
-  }, [user?.active_workspace_id, loadRequests]);
+  }, [user?.active_workspace_id, loadMembers, loadRequests]);
 
   const webMCP = useOrgMemoryWebMCP({
     enabled: projects.length > 0 && Boolean(project),
@@ -352,6 +375,7 @@ export default function WorkspaceChat({ user }: { user: any }) {
     inspectChanges,
     proposeRepositoryRefresh,
     listApprovals,
+    canResolveApprovals: isAdmin,
     resolveApproval: async (requestId, approved) => {
       const resolved = await resolveApprovalApi(requestId, approved);
       // Mirror the agent's decision into the same state the human inbox reads.
@@ -378,7 +402,6 @@ export default function WorkspaceChat({ user }: { user: any }) {
     () => requests.filter((item) => item.status === "queued" || item.status === "running"),
     [requests],
   );
-  const isAdmin = user?.role === "owner" || user?.role === "admin";
 
   async function decide(request: OrgMemoryRefreshRequest, approved: boolean) {
     setDecidingId(request.id);
@@ -398,6 +421,31 @@ export default function WorkspaceChat({ user }: { user: any }) {
       setInboxError(error.message);
     } finally {
       setDecidingId("");
+    }
+  }
+
+  async function inviteMember() {
+    const email = inviteEmail.trim();
+    if (!email || !user?.active_workspace_id) return;
+    setInviting(true);
+    setInboxError("");
+    try {
+      const result = await api<{ invite_delivery?: string }>(
+        `/api/workspaces/${user.active_workspace_id}/members/invite`,
+        { method: "POST", body: JSON.stringify({ email, role: inviteRole }) },
+      );
+      setInviteEmail("");
+      setInviteOpen(false);
+      setInboxNote(
+        result.invite_delivery === "email"
+          ? `Invitation email sent to ${email}.`
+          : `${email} was added. Share the sign-in link because email delivery is not configured.`,
+      );
+      await loadMembers();
+    } catch (error: any) {
+      setInboxError(error.message);
+    } finally {
+      setInviting(false);
     }
   }
 
@@ -535,13 +583,17 @@ export default function WorkspaceChat({ user }: { user: any }) {
             </button>
           )}
           {pendingApprovals.length > 0 && (
-            <Link className="ws-pill attention" href="/approvals" title="Pending approvals">
+            <Link className="ws-pill attention" href="#workspace-controls" title="Pending approvals">
               <i className="on" />
               <span>
                 {pendingApprovals.length} approval{pendingApprovals.length === 1 ? "" : "s"} waiting
               </span>
             </Link>
           )}
+          <Link className="ws-pill ws-role" href="/account" title="Your workspace role">
+            <small>Role</small>
+            <span>{user?.role || "member"}</span>
+          </Link>
           <Link className="ws-pill quiet" href="/ingest">
             <span>＋ Knowledge</span>
           </Link>
@@ -551,78 +603,10 @@ export default function WorkspaceChat({ user }: { user: any }) {
         </div>
       </header>
 
-      <main className="ws-thread" ref={thread}>
-        <div className="ws-thread-inner">
+      <main className="ws-workspace">
+        <section className="ws-thread" ref={thread}>
+          <div className="ws-thread-inner">
           {loadError && <div className="ws-alert">{loadError}</div>}
-
-          {Boolean(user?.active_workspace_id) && (isAdmin || requests.length > 0) && (
-            <section className="ws-inbox" aria-label="Approvals">
-              <header>
-                <strong>
-                  {pendingApprovals.length
-                    ? `${pendingApprovals.length} approval request${pendingApprovals.length === 1 ? "" : "s"} waiting on you`
-                    : "Approvals"}
-                </strong>
-                <span className="ws-inbox-links">
-                  {isAdmin && <Link href="/account">Add person</Link>}
-                  <Link href="/approvals">All approvals →</Link>
-                </span>
-              </header>
-              {inboxNote && <div className="ws-inbox-note">{inboxNote}</div>}
-              {inboxError && <div className="ws-alert">{inboxError}</div>}
-              {pendingApprovals.length ? (
-                pendingApprovals.map((request) => {
-                  const canResolve = isAdmin || request.requested_by_id === user?.id;
-                  return (
-                    <div className="ws-approval" key={request.id}>
-                      <div className="ws-approval-body">
-                        <p>
-                          <strong>{request.requested_by_name || "A teammate"}</strong>
-                          {(request.requested_by_email ? ` (${request.requested_by_email})` : "")} asked
-                          to refresh{" "}
-                          <strong>{request.project_name || request.repository}</strong>
-                        </p>
-                        {request.reason && <small>&ldquo;{request.reason}&rdquo;</small>}
-                      </div>
-                      {canResolve ? (
-                        <div className="ws-approval-actions">
-                          <button
-                            disabled={decidingId === request.id}
-                            onClick={() => void decide(request, true)}
-                          >
-                            Approve &amp; refresh
-                          </button>
-                          <button
-                            className="danger"
-                            disabled={decidingId === request.id}
-                            onClick={() => void decide(request, false)}
-                          >
-                            Deny
-                          </button>
-                        </div>
-                      ) : (
-                        <span className="ws-approval-status">Waiting for an admin</span>
-                      )}
-                    </div>
-                  );
-                })
-              ) : (
-                <p className="ws-inbox-empty">
-                  Nothing is waiting on you. When a teammate — or an agent acting for one —
-                  requests a repository refresh, it lands here for a decision.
-                </p>
-              )}
-            </section>
-          )}
-
-          {inFlight.length > 0 && (
-            <div className="ws-refreshing" aria-label="Refreshes in progress">
-              <span className="ws-working-dots" aria-hidden="true"><i /><i /><i /></span>
-              {inFlight.length === 1
-                ? `Refreshing ${inFlight[0].repository}…`
-                : `Refreshing ${inFlight.length} repositories…`}
-            </div>
-          )}
 
           {noProjects && (
             <section className="ws-onboard">
@@ -681,36 +665,248 @@ export default function WorkspaceChat({ user }: { user: any }) {
               )}
             </article>
           ))}
-        </div>
+          </div>
+        </section>
+
+        <WorkspaceControlRail
+          workspaceName={workspace?.name || "Company memory"}
+          role={user?.role || "member"}
+          isAdmin={isAdmin}
+          members={members}
+          pendingApprovals={pendingApprovals}
+          inFlight={inFlight}
+          decidingId={decidingId}
+          inboxNote={inboxNote}
+          inboxError={inboxError}
+          inviteOpen={inviteOpen}
+          inviteEmail={inviteEmail}
+          inviteRole={inviteRole}
+          inviting={inviting}
+          webMCPLabel={webMCPLabel}
+          webMCPToolCount={webMCP.toolCount}
+          onInviteOpen={() => setInviteOpen((current) => !current)}
+          onInviteEmailChange={setInviteEmail}
+          onInviteRoleChange={setInviteRole}
+          onInvite={() => void inviteMember()}
+          onDecide={(request, approved) => void decide(request, approved)}
+        />
       </main>
 
       <footer className="ws-compose-wrap">
-        <div className="ws-compose">
-          <textarea
-            rows={1}
-            value={draft}
-            disabled={noProjects}
-            placeholder={noProjects ? "Connect a source to start asking…" : "Ask anything…"}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                void ask(draft).catch(() => undefined);
-              }
-            }}
-            aria-label="Ask OrgMemory"
-          />
-          <button className="ws-send" onClick={() => void ask(draft).catch(() => undefined)} disabled={busy || noProjects || !draft.trim()} aria-label="Send">
-            ↑
-          </button>
+        <div className="ws-compose-layout">
+          <div>
+            <div className="ws-compose">
+              <textarea
+                rows={1}
+                value={draft}
+                disabled={noProjects}
+                placeholder={noProjects ? "Connect a source to start asking…" : "Ask anything…"}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    void ask(draft).catch(() => undefined);
+                  }
+                }}
+                aria-label="Ask OrgMemory"
+              />
+              <button className="ws-send" onClick={() => void ask(draft).catch(() => undefined)} disabled={busy || noProjects || !draft.trim()} aria-label="Send">
+                ↑
+              </button>
+            </div>
+            <p className="ws-foot">
+              {webMCPLabel && <span className="ws-agent-ready" title={`${webMCP.toolCount} browser-native WebMCP tools are available`}><i />{webMCPLabel}</span>}
+              Answers cite the company sources behind them.
+              <Link href="/memories">Browse memory</Link>
+            </p>
+          </div>
         </div>
-        <p className="ws-foot">
-          {webMCPLabel && <span className="ws-agent-ready" title="Six browser-native WebMCP tools are available"><i />{webMCPLabel}</span>}
-          Answers cite the company sources behind them.
-          <Link href="/memories">Browse memory</Link>
-        </p>
       </footer>
     </div>
+  );
+}
+
+type WorkspaceControlRailProps = {
+  workspaceName: string;
+  role: string;
+  isAdmin: boolean;
+  members: WorkspaceMember[];
+  pendingApprovals: OrgMemoryRefreshRequest[];
+  inFlight: OrgMemoryRefreshRequest[];
+  decidingId: string;
+  inboxNote: string;
+  inboxError: string;
+  inviteOpen: boolean;
+  inviteEmail: string;
+  inviteRole: string;
+  inviting: boolean;
+  webMCPLabel: string;
+  webMCPToolCount: number;
+  onInviteOpen: () => void;
+  onInviteEmailChange: (email: string) => void;
+  onInviteRoleChange: (role: string) => void;
+  onInvite: () => void;
+  onDecide: (request: OrgMemoryRefreshRequest, approved: boolean) => void;
+};
+
+/* The workspace rail keeps the state that governs an agent's work in sight:
+   who is here, who can decide, what is waiting, and which page-native tools
+   are available. It is deliberately part of the workspace rather than another
+   destination someone has to remember to visit. */
+function WorkspaceControlRail({
+  workspaceName,
+  role,
+  isAdmin,
+  members,
+  pendingApprovals,
+  inFlight,
+  decidingId,
+  inboxNote,
+  inboxError,
+  inviteOpen,
+  inviteEmail,
+  inviteRole,
+  inviting,
+  webMCPLabel,
+  webMCPToolCount,
+  onInviteOpen,
+  onInviteEmailChange,
+  onInviteRoleChange,
+  onInvite,
+  onDecide,
+}: WorkspaceControlRailProps) {
+  const memberCount = members.length;
+
+  return (
+    <aside className="ws-rail" id="workspace-controls" aria-label="Workspace controls">
+      <section className="ws-rail-card ws-workspace-card">
+        <p className="ws-rail-eyebrow">Workspace</p>
+        <div className="ws-rail-title">
+          <div>
+            <strong>{workspaceName}</strong>
+            <span>{isAdmin ? "You manage access and approvals" : "Your access is managed by an admin"}</span>
+          </div>
+          <b className={`ws-role-badge ${role}`}>{role}</b>
+        </div>
+
+        {isAdmin ? (
+          <>
+            <div className="ws-members-head">
+              <span>People {memberCount ? `· ${memberCount}` : ""}</span>
+              <button type="button" onClick={onInviteOpen} aria-expanded={inviteOpen}>
+                {inviteOpen ? "Close" : "Add person"}
+              </button>
+            </div>
+            {inviteOpen && (
+              <form
+                className="ws-invite-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  onInvite();
+                }}
+              >
+                <label>
+                  Work email
+                  <input
+                    type="email"
+                    value={inviteEmail}
+                    placeholder="teammate@company.com"
+                    onChange={(event) => onInviteEmailChange(event.target.value)}
+                    required
+                  />
+                </label>
+                <label>
+                  Role
+                  <select value={inviteRole} onChange={(event) => onInviteRoleChange(event.target.value)}>
+                    <option value="member">Member — can ask and request refreshes</option>
+                    <option value="viewer">Viewer — can read company memory</option>
+                    <option value="admin">Admin — can manage people and approve</option>
+                  </select>
+                </label>
+                <button className="ws-primary-action" type="submit" disabled={inviting || !inviteEmail.trim()}>
+                  {inviting ? "Adding…" : "Add to workspace"}
+                </button>
+              </form>
+            )}
+            {memberCount > 0 ? (
+              <ul className="ws-member-list">
+                {members.slice(0, 4).map((member) => (
+                  <li key={member.id}>
+                    <span>{member.display_name || member.email}</span>
+                    <small>{member.role}</small>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="ws-rail-copy">Invite your first teammate to share this memory space.</p>
+            )}
+          </>
+        ) : (
+          <p className="ws-rail-copy">
+            You can ask company memory and propose a repository refresh. An owner or admin reviews any request before it runs.
+          </p>
+        )}
+      </section>
+
+      <section className="ws-rail-card" aria-label="Approval inbox">
+        <div className="ws-rail-section-head">
+          <div>
+            <p className="ws-rail-eyebrow">Approval inbox</p>
+            <strong>{pendingApprovals.length ? `${pendingApprovals.length} waiting` : "All clear"}</strong>
+          </div>
+          <Link href="/approvals">History →</Link>
+        </div>
+        {inboxNote && <div className="ws-inbox-note">{inboxNote}</div>}
+        {inboxError && <div className="ws-alert">{inboxError}</div>}
+        {pendingApprovals.length ? (
+          <div className="ws-approval-list">
+            {pendingApprovals.map((request) => (
+              <article className="ws-approval" key={request.id}>
+                <div className="ws-approval-body">
+                  <p><strong>{request.project_name || request.repository}</strong></p>
+                  <small>{request.requested_by_name || "A teammate"} requested a refresh</small>
+                  {request.reason && <em>&ldquo;{request.reason}&rdquo;</em>}
+                </div>
+                {isAdmin ? (
+                  <div className="ws-approval-actions">
+                    <button disabled={decidingId === request.id} onClick={() => onDecide(request, true)}>
+                      Approve
+                    </button>
+                    <button className="danger" disabled={decidingId === request.id} onClick={() => onDecide(request, false)}>
+                      Deny
+                    </button>
+                  </div>
+                ) : (
+                  <span className="ws-approval-status">With an admin</span>
+                )}
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="ws-rail-copy">
+            {isAdmin
+              ? "New refresh requests appear here for an inline decision."
+              : "Your refresh requests appear here until an admin decides."}
+          </p>
+        )}
+        {inFlight.length > 0 && (
+          <p className="ws-refreshing" aria-label="Refreshes in progress">
+            <span className="ws-working-dots" aria-hidden="true"><i /><i /><i /></span>
+            {inFlight.length === 1 ? `Refreshing ${inFlight[0].repository}…` : `Refreshing ${inFlight.length} repositories…`}
+          </p>
+        )}
+      </section>
+
+      <section className="ws-rail-card ws-automation-card">
+        <p className="ws-rail-eyebrow">WebMCP automation</p>
+        <strong>{webMCPLabel || "Browser tools unavailable"}</strong>
+        <p className="ws-rail-copy">
+          {webMCPLabel
+            ? `${webMCPToolCount} page-native tools can read memory, inspect change sets, and propose a refresh.${isAdmin ? " Admin tools can also record your decision." : " Approval decisions stay with workspace admins."}`
+            : "Open this workspace in a WebMCP-capable browser agent to use the page-native tools."}
+        </p>
+      </section>
+    </aside>
   );
 }
 

@@ -228,6 +228,15 @@ def test_workspace_admin_sees_requester_and_resolves_their_refresh(graph, monkey
     assert proposal["requested_by_email"] == "employee@example.com"
     assert proposal["requested_by_name"] == "Team Employee"
 
+    # A requester's browser-agent must not be able to self-approve. The same
+    # endpoint backs the inline buttons and the WebMCP decision tool.
+    self_resolution = employee_client.post(
+        f"/api/repository-refresh-requests/{proposal['id']}/resolve",
+        json={"approved": True},
+        headers={"Authorization": f"Bearer {requester_session['token']}"},
+    )
+    assert self_resolution.status_code == 403
+
     listing = TestClient(app).get(
         "/api/repository-refresh-requests",
         headers={"Authorization": f"Bearer {owner['token']}"},

@@ -2812,6 +2812,11 @@ def repository_refresh_requests(status: str = "", authorization: str | None = He
     visible_project_ids = _visible_project_ids(principal)
     if visible_project_ids is not None:
         records = [record for record in records if record["project_id"] in visible_project_ids]
+    # Members can follow the requests they made, but they do not receive a
+    # workspace-wide approval queue. That queue contains colleague identity and
+    # operational intent, and belongs to the people responsible for decisions.
+    if principal["role"] not in {"owner", "admin"}:
+        records = [record for record in records if record["user_id"] == principal["id"]]
     return [_public_repository_refresh_request(record) for record in records]
 
 
@@ -2822,13 +2827,14 @@ def resolve_repository_refresh(
     background_tasks: BackgroundTasks,
     authorization: str | None = Header(default=None),
 ):
-    principal = _authorize_workspace(authorization)
+    # The requester deliberately cannot approve their own operation. A WebMCP
+    # call uses the same browser session as the person looking at the inbox, so
+    # this boundary applies equally to buttons and browser-native tools.
+    principal = _authorize_workspace(authorization, admin=True)
     record = row("SELECT * FROM repository_refresh_requests WHERE id=?", (request_id,))
     if not record or record["workspace_id"] != principal["active_workspace_id"]:
         raise HTTPException(404, "Repository refresh request not found")
     _authorize_project(record["project_id"], authorization, write=True)
-    if principal["id"] != record["user_id"] and principal["role"] not in {"owner", "admin"}:
-        raise HTTPException(403, "Only the requester or a workspace admin may resolve this request")
     if record["status"] != "pending_approval":
         raise HTTPException(400, "Repository refresh request is not pending approval")
     status = "queued" if request.approved else "denied"

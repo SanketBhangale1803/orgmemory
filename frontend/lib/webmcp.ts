@@ -88,6 +88,7 @@ type RegistrationOptions = {
     reason: string,
   ) => Promise<OrgMemoryRefreshRequest>;
   listApprovals?: (projectId: string) => Promise<OrgMemoryRefreshRequest[]>;
+  canResolveApprovals?: boolean;
   resolveApproval?: (
     requestId: string,
     approved: boolean,
@@ -463,7 +464,7 @@ export async function registerOrgMemoryWebMCP(
                 ? `${pending.length} approval${pending.length === 1 ? "" : "s"} waiting, including ${pending
                     .slice(0, 3)
                     .map((request) => request.repository)
-                    .join(", ")}. Use resolve_orgmemory_approval to decide one.`
+                    .join(", ")}.${options.canResolveApprovals ? " Use resolve_orgmemory_approval to record a decision." : " An OrgMemory admin must record the decision."}`
                 : "No approvals are waiting for a human decision.",
               payload,
             );
@@ -471,7 +472,8 @@ export async function registerOrgMemoryWebMCP(
       },
       registration,
     ),
-    modelContext.registerTool(
+    ...(options.canResolveApprovals && options.resolveApproval
+      ? [modelContext.registerTool(
       {
         name: "resolve_orgmemory_approval",
         title: "Approve or deny a pending request",
@@ -526,7 +528,8 @@ export async function registerOrgMemoryWebMCP(
           }),
       },
       registration,
-    ),
+    )]
+      : []),
   ];
 
   try {
@@ -538,7 +541,7 @@ export async function registerOrgMemoryWebMCP(
 
   return {
     supported: true,
-    toolCount: ORGMEMORY_WEBMCP_TOOLS.length,
+    toolCount: registrations.length,
     dispose: () => controller.abort(),
   };
 }

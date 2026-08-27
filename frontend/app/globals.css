@@ -2347,6 +2347,7 @@ input:focus, textarea:focus, select:focus { border-color: #4d9188; box-shadow: 0
 .ws-pill i { width:6px; height:6px; border-radius:50%; background:var(--ink-ghost); }
 .ws-pill i.on { background:var(--red); box-shadow:0 0 0 3px rgba(200,37,63,.14); }
 .ws-pill.quiet { color:var(--ink-soft); font-weight:600; }
+.ws-pill.ws-role { text-transform:capitalize; }
 
 /* Capped and scrollable: a workspace with twenty repositories ran the list off
    the bottom of the screen, and the only way to see it was to zoom out. */
@@ -2372,8 +2373,45 @@ input:focus, textarea:focus, select:focus { border-color: #4d9188; box-shadow: 0
 .ws-avatar { display:inline-flex; align-items:center; justify-content:center; width:38px; height:38px; border-radius:50%; background:var(--maroon); color:#fff; font-size:11.5px; font-weight:650; letter-spacing:.02em; transition:background .25s var(--ease); }
 .ws-avatar:hover { background:var(--maroon-lift); }
 
-.ws-thread { position:relative; z-index:1; overflow-y:auto; scroll-behavior:smooth; }
-.ws-thread-inner { width:min(100% - 40px,760px); min-height:100%; margin:0 auto; padding:38px 0 26px; display:flex; flex-direction:column; gap:34px; }
+.ws-workspace { width:min(100% - 40px,1120px); min-height:0; margin:0 auto; display:grid; grid-template-columns:minmax(0,1fr) 304px; gap:34px; }
+.ws-thread { position:relative; z-index:1; min-width:0; overflow-y:auto; scroll-behavior:smooth; }
+.ws-thread-inner { width:100%; min-height:100%; margin:0 auto; padding:38px 0 26px; display:flex; flex-direction:column; gap:34px; }
+
+/* The governing context stays alongside the conversation. There is no hidden
+   approval destination to discover, and role is legible before an action is
+   offered. The rail scrolls independently on desktop so a long conversation
+   never removes the workspace state from view. */
+.ws-rail { min-width:0; padding:26px 0; display:flex; flex-direction:column; gap:12px; overflow-y:auto; overscroll-behavior:contain; }
+.ws-rail-card { display:flex; flex-direction:column; gap:12px; padding:16px; border:1px solid var(--line); border-radius:15px; background:rgba(255,255,255,.72); box-shadow:var(--shadow-rest); }
+.ws-workspace-card { border-color:color-mix(in srgb, var(--maroon) 25%, var(--line)); background:linear-gradient(145deg,rgba(255,255,255,.88),var(--paper-warm)); }
+.ws-rail-eyebrow { margin:0; color:var(--maroon); font-size:10px; font-weight:700; letter-spacing:.105em; text-transform:uppercase; }
+.ws-rail-title { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+.ws-rail-title > div { min-width:0; display:flex; flex-direction:column; gap:4px; }
+.ws-rail-title strong,.ws-rail-section-head strong,.ws-automation-card > strong { color:var(--ink); font-size:14px; font-weight:650; letter-spacing:-.015em; }
+.ws-rail-title span { color:var(--ink-faint); font-size:11.5px; line-height:1.45; }
+.ws-role-badge { flex:none; padding:4px 7px; border:1px solid var(--line-firm); border-radius:999px; color:var(--ink-faint); font-size:10px; font-weight:700; letter-spacing:.055em; text-transform:uppercase; }
+.ws-role-badge.owner,.ws-role-badge.admin { border-color:rgba(127,29,46,.25); background:var(--red-wash); color:var(--maroon); }
+.ws-members-head,.ws-rail-section-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.ws-members-head { padding-top:2px; border-top:1px solid var(--line); }
+.ws-members-head span { padding-top:11px; color:var(--ink-soft); font-size:12px; font-weight:620; }
+.ws-members-head button,.ws-rail-section-head a { padding:0; border:0; background:transparent; color:var(--maroon); font-size:11.5px; font-weight:650; }
+.ws-members-head button:hover,.ws-rail-section-head a:hover { text-decoration:underline; }
+.ws-rail-section-head > div { display:flex; flex-direction:column; gap:3px; }
+.ws-rail-copy { margin:0; color:var(--ink-soft); font-size:12px; line-height:1.62; }
+.ws-invite-form { display:flex; flex-direction:column; gap:9px; padding:11px; border:1px solid var(--line); border-radius:11px; background:var(--surface); }
+.ws-invite-form label { display:flex; flex-direction:column; gap:5px; color:var(--ink-faint); font-size:10.5px; font-weight:650; letter-spacing:.035em; text-transform:uppercase; }
+.ws-invite-form input,.ws-invite-form select { width:100%; min-height:35px; padding:0 9px; border:1px solid var(--line-firm); border-radius:8px; background:var(--paper); color:var(--ink); font:inherit; font-size:12px; text-transform:none; letter-spacing:0; outline:none; }
+.ws-invite-form input:focus,.ws-invite-form select:focus { border-color:var(--maroon); }
+.ws-primary-action { min-height:35px; border:0; border-radius:9px; background:var(--maroon); color:#fff; font-size:12px; font-weight:650; transition:background .2s var(--ease),opacity .2s var(--ease); }
+.ws-primary-action:hover:not(:disabled) { background:var(--maroon-lift); }
+.ws-primary-action:disabled { opacity:.55; }
+.ws-member-list { display:flex; flex-direction:column; gap:7px; margin:0; padding:0; list-style:none; }
+.ws-member-list li { display:flex; align-items:baseline; justify-content:space-between; gap:8px; color:var(--ink-soft); font-size:12px; }
+.ws-member-list span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ws-member-list small { flex:none; color:var(--ink-ghost); font-size:10.5px; text-transform:capitalize; }
+.ws-inbox-note { padding:8px 10px; border-radius:9px; background:var(--paper-warm); color:var(--maroon); font-size:11.5px; line-height:1.5; }
+.ws-rail-card .ws-alert { padding:8px 10px; border-radius:9px; font-size:11.5px; }
+.ws-approval-list { display:flex; flex-direction:column; gap:11px; }
 
 /* Resting states get the vertical center of the screen, not the top of a feed. */
 .ws-rest,.ws-onboard { margin:auto 0; padding:34px 0; display:flex; flex-direction:column; align-items:center; text-align:center; }
@@ -2495,15 +2533,16 @@ input:focus, textarea:focus, select:focus { border-color: #4d9188; box-shadow: 0
 
 .ws-alert { padding:13px 15px; border:1px solid rgba(200,37,63,.3); border-radius:12px; background:var(--red-wash); color:var(--maroon); font-size:13px; line-height:1.6; }
 
-.ws-compose-wrap { position:relative; z-index:4; padding:14px max(20px,calc((100vw - 1080px)/2)) 18px; background:linear-gradient(to top,var(--paper) 62%,rgba(251,247,247,0)); }
-.ws-compose { width:min(100%,760px); margin:0 auto; display:grid; grid-template-columns:1fr auto; align-items:end; gap:10px; padding:10px 10px 10px 18px; border:1px solid var(--line-firm); border-radius:20px; background:var(--surface); box-shadow:var(--shadow-lift); transition:border-color .25s var(--ease); }
+.ws-compose-wrap { position:relative; z-index:4; padding:14px 20px 18px; background:linear-gradient(to top,var(--paper) 62%,rgba(251,247,247,0)); }
+.ws-compose-layout { width:min(100%,1120px); margin:0 auto; display:grid; grid-template-columns:minmax(0,1fr) 304px; gap:34px; }
+.ws-compose { width:100%; margin:0; display:grid; grid-template-columns:1fr auto; align-items:end; gap:10px; padding:10px 10px 10px 18px; border:1px solid var(--line-firm); border-radius:20px; background:var(--surface); box-shadow:var(--shadow-lift); transition:border-color .25s var(--ease); }
 .ws-compose:focus-within { border-color:var(--maroon); }
 .ws-compose textarea { width:100%; min-height:26px; max-height:180px; padding:9px 0; border:0; background:transparent; color:var(--ink); font-family:inherit; font-size:15px; line-height:1.6; resize:none; outline:none; field-sizing:content; }
 .ws-compose textarea::placeholder { color:var(--ink-ghost); }
 .ws-send { flex:none; width:40px; height:40px; border:0; border-radius:50%; background:var(--maroon); color:#fff; font-size:16px; transition:background .25s var(--ease),opacity .25s var(--ease); }
 .ws-send:hover:not(:disabled) { background:var(--maroon-lift); }
 .ws-send:disabled { background:var(--line-firm); color:var(--ink-ghost); }
-.ws-foot { width:min(100%,760px); margin:11px auto 0; display:flex; justify-content:center; gap:9px; color:var(--ink-ghost); font-size:11.5px; }
+.ws-foot { width:100%; margin:11px 0 0; display:flex; justify-content:center; gap:9px; color:var(--ink-ghost); font-size:11.5px; }
 .ws-foot a { color:var(--ink-faint); }
 .ws-foot a:hover { color:var(--maroon); }
 .ws-agent-ready { display:inline-flex; align-items:center; gap:6px; color:var(--ink-faint); }
@@ -2514,9 +2553,23 @@ input:focus, textarea:focus, select:focus { border-color: #4d9188; box-shadow: 0
   .ws-bar { padding:11px 16px; }
   .ws-id small { display:none; }
   .ws-pill small { display:none; }
-  .ws-thread-inner { width:min(100% - 28px,760px); padding:26px 0 18px; gap:26px; }
+  .ws-workspace { width:min(100% - 28px,1120px); }
+  .ws-thread-inner { padding:26px 0 18px; gap:26px; }
   .ws-compose-wrap { padding:10px 14px 14px; }
   .ws-menu { width:min(268px,calc(100vw - 32px)); }
+}
+@media (max-width:920px) {
+  .ws-workspace { grid-template-columns:1fr; overflow-y:auto; }
+  .ws-thread { overflow:visible; }
+  .ws-rail { order:-1; padding:18px 0 0; overflow:visible; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); align-items:start; }
+  .ws-compose-layout { width:min(100%,1120px); grid-template-columns:1fr; }
+}
+@media (max-width:680px) {
+  .ws-controls { gap:6px; }
+  .ws-pill.ws-role { display:none; }
+  .ws-rail { grid-template-columns:1fr; gap:10px; }
+  .ws-rail-card { padding:14px; }
+  .ws-approval { flex-direction:column; gap:9px; }
 }
 @media (prefers-reduced-motion:reduce) {
   .ws-orb i,.ws-working-dots i { animation:none; }

@@ -77,26 +77,57 @@ test("browser-agent questions reuse the secure API and update the visible conver
   assert.match(webmcp, /source citations/);
   assert.match(webmcp, /options\.ask\(question, project\.id, scope\)/);
   assert.match(chat, /data-webmcp-status=\{webMCP\.status\}/);
-  assert.match(chat, /Six browser-native WebMCP tools are available/);
+  assert.match(chat, /browser-native WebMCP tools are available/);
 });
 
-test("pending approvals surface inline in the workspace with a real decision path", () => {
-  // The inbox polls the same authorized endpoint the approvals page uses and
+test("workspace controls surface approvals inline with a real, role-aware decision path", () => {
+  // The rail polls the same authorized endpoint the approvals page uses and
   // renders decisions next to the conversation; a browser agent resolving an
-  // approval mirrors into the exact state the inbox reads.
-  assert.match(chat, /ws-inbox/);
+  // approval mirrors into the exact state the rail reads.
+  assert.match(chat, /WorkspaceControlRail/);
+  assert.match(chat, /ws-rail/);
   assert.match(chat, /\/api\/repository-refresh-requests/);
   assert.match(
     chat,
     /repository-refresh-requests\/\$\{encodeURIComponent\(requestId\)\}\/resolve/,
   );
-  assert.match(chat, /Approve &amp; refresh/);
+  assert.match(chat, /Approve/);
   assert.match(chat, /Mirror the agent's decision into the same state the human inbox reads\./);
-  // The inbox is discoverable before the first request exists: admins always
-  // see it, with an empty state that says what belongs here.
-  assert.match(chat, /isAdmin \|\| requests\.length > 0/);
-  assert.match(chat, /Nothing is waiting on you/);
+  // The control rail is discoverable before the first request exists and makes
+  // the distinct admin and employee states visible.
+  assert.match(chat, /New refresh requests appear here for an inline decision/);
+  assert.match(chat, /Your refresh requests appear here until an admin decides/);
   assert.match(chat, /Add person/);
+  assert.match(chat, /canResolveApprovals: isAdmin/);
+});
+
+test("employees cannot receive the browser-agent approval-decision tool", async () => {
+  const registered = new Map();
+  const previousDocument = globalThis.document;
+  globalThis.document = {
+    modelContext: {
+      async registerTool(tool, { signal }) {
+        registered.set(tool.name, tool);
+        signal.addEventListener("abort", () => registered.delete(tool.name), { once: true });
+      },
+    },
+  };
+  try {
+    const registration = await runtime.registerOrgMemoryWebMCP({
+      spaces: [{ id: "prj_demo", name: "Demo", repository: "acme/demo" }],
+      getActiveProjectId: () => "prj_demo",
+      async ask() { return { answer: "ok", answer_sufficient: true, answer_scope: "project", evidence: [] }; },
+      async inspectChanges() { return []; },
+      async proposeRepositoryRefresh() { return { id: "req_1", project_id: "prj_demo", repository: "acme/demo", reason: "stale", status: "pending_approval", requested_at: "" }; },
+      async listApprovals() { return []; },
+      canResolveApprovals: false,
+    });
+    assert.equal(registration.toolCount, 5);
+    assert.equal(registered.has("resolve_orgmemory_approval"), false);
+    registration.dispose();
+  } finally {
+    globalThis.document = previousDocument;
+  }
 });
 
 test("WebMCP validates project access before calling scoped backend endpoints", () => {
@@ -189,6 +220,7 @@ test("the real WebMCP implementation registers, invokes, and unregisters all too
           },
         ];
       },
+      canResolveApprovals: true,
       async resolveApproval(requestId, approved) {
         calls.push({ kind: "resolve", requestId, approved });
         return {

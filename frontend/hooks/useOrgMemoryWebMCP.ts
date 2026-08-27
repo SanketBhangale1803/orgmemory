@@ -25,6 +25,7 @@ type HookOptions = {
     reason: string,
   ) => Promise<OrgMemoryRefreshRequest>;
   listApprovals?: (projectId: string) => Promise<OrgMemoryRefreshRequest[]>;
+  canResolveApprovals?: boolean;
   resolveApproval?: (
     requestId: string,
     approved: boolean,
@@ -37,6 +38,7 @@ export function useOrgMemoryWebMCP(options: HookOptions) {
   const optionsRef = useRef(options);
   const [status, setStatus] = useState<WebMCPStatus>("idle");
   const [activity, setActivity] = useState<WebMCPActivity>();
+  const [toolCount, setToolCount] = useState(0);
   optionsRef.current = options;
 
   const spacesKey = useMemo(
@@ -47,6 +49,7 @@ export function useOrgMemoryWebMCP(options: HookOptions) {
   useEffect(() => {
     if (!options.enabled) {
       setStatus("idle");
+      setToolCount(0);
       return;
     }
 
@@ -63,6 +66,7 @@ export function useOrgMemoryWebMCP(options: HookOptions) {
       listApprovals: optionsRef.current.listApprovals
         ? (...args) => optionsRef.current.listApprovals!(...args)
         : undefined,
+      canResolveApprovals: optionsRef.current.canResolveApprovals,
       resolveApproval: optionsRef.current.resolveApproval
         ? (...args) => optionsRef.current.resolveApproval!(...args)
         : undefined,
@@ -77,6 +81,7 @@ export function useOrgMemoryWebMCP(options: HookOptions) {
         }
         dispose = registration.dispose;
         setStatus(registration.supported ? "ready" : "unsupported");
+        setToolCount(registration.toolCount);
       })
       .catch(() => {
         if (current) setStatus("error");
@@ -86,7 +91,10 @@ export function useOrgMemoryWebMCP(options: HookOptions) {
       current = false;
       dispose();
     };
-  }, [options.enabled, spacesKey]);
+  // A session can hydrate before its workspace role arrives. Re-register when
+  // that role becomes known so an admin receives the decision tool, while a
+  // member never does; server-side authorization remains the final boundary.
+  }, [options.enabled, options.canResolveApprovals, spacesKey]);
 
-  return { status, activity };
+  return { status, activity, toolCount };
 }
