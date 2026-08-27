@@ -4,8 +4,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   registerOrgMemoryWebMCP,
   type OrgMemoryChangeSet,
+  type OrgMemoryProposal,
+  type OrgMemoryProposalInput,
   type OrgMemoryRefreshRequest,
+  type OrgMemoryRelatedEntry,
+  type OrgMemoryRunbook,
+  type OrgMemoryServiceContextEntry,
   type OrgMemorySpace,
+  type OrgMemoryUnit,
   type OrgMemoryWebMCPAnswer,
   type WebMCPActivity,
 } from "@/lib/webmcp";
@@ -20,6 +26,22 @@ type HookOptions = {
     scope: "workspace" | "project",
   ) => Promise<OrgMemoryWebMCPAnswer>;
   inspectChanges: (projectId: string, limit: number) => Promise<OrgMemoryChangeSet[]>;
+  searchMemory: (
+    projectId: string,
+    query: string,
+    type?: string,
+    limit?: number,
+  ) => Promise<OrgMemoryUnit[]>;
+  getMemory: (memoryId: string) => Promise<OrgMemoryUnit>;
+  getRelatedMemories: (memoryId: string) => Promise<OrgMemoryRelatedEntry[]>;
+  listIncidents: (projectId: string, service?: string) => Promise<OrgMemoryUnit[]>;
+  findRunbooks: (service: string, issue?: string) => Promise<OrgMemoryRunbook[]>;
+  getServiceContext: (service: string) => Promise<OrgMemoryServiceContextEntry[]>;
+  listDecisions: (projectId: string, limit?: number) => Promise<OrgMemoryUnit[]>;
+  proposeMemory: (input: OrgMemoryProposalInput) => Promise<OrgMemoryProposal>;
+  listProposals?: () => Promise<OrgMemoryProposal[]>;
+  canResolveProposals?: boolean;
+  resolveProposal?: (proposalId: string, approved: boolean) => Promise<OrgMemoryProposal>;
   proposeRepositoryRefresh: (
     projectId: string,
     reason: string,
@@ -62,6 +84,21 @@ export function useOrgMemoryWebMCP(options: HookOptions) {
       getActiveProjectId: () => optionsRef.current.activeProjectId,
       ask: (...args) => optionsRef.current.ask(...args),
       inspectChanges: (...args) => optionsRef.current.inspectChanges(...args),
+      searchMemory: (...args) => optionsRef.current.searchMemory(...args),
+      getMemory: (...args) => optionsRef.current.getMemory(...args),
+      getRelatedMemories: (...args) => optionsRef.current.getRelatedMemories(...args),
+      listIncidents: (...args) => optionsRef.current.listIncidents(...args),
+      findRunbooks: (...args) => optionsRef.current.findRunbooks(...args),
+      getServiceContext: (...args) => optionsRef.current.getServiceContext(...args),
+      listDecisions: (...args) => optionsRef.current.listDecisions(...args),
+      proposeMemory: (...args) => optionsRef.current.proposeMemory(...args),
+      listProposals: optionsRef.current.listProposals
+        ? (...args) => optionsRef.current.listProposals!(...args)
+        : undefined,
+      canResolveProposals: optionsRef.current.canResolveProposals,
+      resolveProposal: optionsRef.current.resolveProposal
+        ? (...args) => optionsRef.current.resolveProposal!(...args)
+        : undefined,
       proposeRepositoryRefresh: (...args) => optionsRef.current.proposeRepositoryRefresh(...args),
       listApprovals: optionsRef.current.listApprovals
         ? (...args) => optionsRef.current.listApprovals!(...args)
@@ -92,9 +129,9 @@ export function useOrgMemoryWebMCP(options: HookOptions) {
       dispose();
     };
   // A session can hydrate before its workspace role arrives. Re-register when
-  // that role becomes known so an admin receives the decision tool, while a
+  // that role becomes known so an admin receives the decision tools, while a
   // member never does; server-side authorization remains the final boundary.
-  }, [options.enabled, options.canResolveApprovals, spacesKey]);
+  }, [options.enabled, options.canResolveApprovals, options.canResolveProposals, spacesKey]);
 
   return { status, activity, toolCount };
 }

@@ -2655,3 +2655,51 @@ input:focus, textarea:focus, select:focus { border-color: #4d9188; box-shadow: 0
 @media (max-width:680px) {
   .invite-form { grid-template-columns:1fr; }
 }
+
+/* ---------- webmcp demo page ---------- */
+.webmcp-page { min-height:100vh; background:var(--surface); color:var(--ink); }
+.webmcp-hero { display:flex; align-items:center; justify-content:space-between; padding:18px 28px; border-bottom:1px solid var(--line-firm); background:rgba(255,255,255,.9); position:sticky; top:0; z-index:5; }
+.webmcp-brand { display:inline-flex; align-items:center; gap:11px; color:var(--ink-strong); text-decoration:none; }
+.webmcp-brand small { display:block; color:var(--maroon); font:750 9px/1.4 ui-monospace, Menlo, monospace; letter-spacing:.13em; text-transform:uppercase; }
+.webmcp-nav a { color:var(--ink); font-size:13px; font-weight:620; text-decoration:none; padding:9px 14px; border:1px solid var(--line-firm); border-radius:10px; background:var(--surface); }
+.webmcp-nav a:hover { color:var(--maroon); border-color:var(--maroon); }
+.webmcp-main { max-width:860px; margin:0 auto; padding:40px 24px 80px; display:grid; gap:28px; }
+.webmcp-eyebrow { color:var(--maroon); font:750 10px/1.4 ui-monospace, Menlo, monospace; letter-spacing:.14em; text-transform:uppercase; margin:0 0 8px; }
+.webmcp-intro h1 { font-size:clamp(26px,3vw,38px); letter-spacing:-.03em; margin:0 0 10px; color:var(--ink-strong); }
+.webmcp-lede { font-size:15px; line-height:1.55; color:var(--ink); max-width:640px; }
+.webmcp-flow { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:18px 0 14px; padding:16px; border:1px solid var(--line-firm); border-radius:12px; background:#fff; font-size:12.5px; font-weight:620; }
+.webmcp-flow i { color:var(--maroon); font-style:normal; }
+.webmcp-boundary { font-size:13px; line-height:1.5; color:var(--ink-soft); border-left:3px solid var(--maroon); padding-left:12px; }
+.webmcp-boundary strong { color:var(--maroon); }
+.webmcp-catalog, .webmcp-demo { border:1px solid var(--line-firm); border-radius:14px; background:#fff; padding:22px 24px; }
+.webmcp-catalog h2, .webmcp-demo h2 { margin-bottom:8px; }
+.webmcp-catalog p, .webmcp-demo p { font-size:13.5px; line-height:1.55; }
+.webmcp-catalog ul { list-style:none; display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:6px; padding:0; margin:12px 0; }
+.webmcp-catalog code { font-size:12px; background:var(--accent-soft, #f8e9ed); color:var(--maroon-deep); padding:4px 8px; border-radius:6px; display:inline-block; }
+.webmcp-note { color:var(--ink-soft); font-size:12.5px; }
+.webmcp-steps { padding-left:18px; display:grid; gap:10px; margin:14px 0; }
+.webmcp-steps li { font-size:13.5px; line-height:1.5; color:var(--ink-soft); }
+.webmcp-steps li.active { color:var(--ink-strong); font-weight:620; }
+.webmcp-steps .home-btn { min-height:38px; padding:0 16px; font-size:12px; margin-left:10px; }
+.webmcp-approvals { border:1px solid var(--maroon); border-radius:12px; padding:14px 16px; margin:16px 0; background:#fff; }
+.webmcp-approvals-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
+.webmcp-approvals-head .home-btn { min-height:34px; padding:0 14px; font-size:11.5px; }
+.webmcp-approvals ul { list-style:none; margin:0; padding:0; display:grid; gap:10px; }
+.webmcp-approvals li { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; border:1px solid var(--line-firm); border-radius:10px; padding:10px 12px; font-size:12.5px; line-height:1.5; }
+.webmcp-approvals li strong { display:block; font-size:13px; }
+.webmcp-approvals em { display:block; font-style:normal; color:var(--ink-soft); margin:2px 0; }
+.webmcp-approvals small { color:var(--ink-soft); display:block; }
+.webmcp-approvals button { border:1px solid var(--maroon); background:var(--maroon); color:#fff; border-radius:8px; min-height:30px; padding:0 12px; font-size:11.5px; font-weight:640; cursor:pointer; white-space:nowrap; }
+.webmcp-trace { display:grid; gap:12px; margin:16px 0; }
+.webmcp-trace article { border:1px solid var(--line-firm); border-left:3px solid var(--maroon); border-radius:10px; padding:12px 14px; background:var(--surface); }
+.webmcp-trace header { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:6px; }
+.webmcp-trace header code { font-size:12px; color:var(--maroon-deep); background:var(--accent-soft, #f8e9ed); padding:3px 8px; border-radius:6px; }
+.webmcp-trace header span { font-size:12px; color:var(--ink-soft); }
+.webmcp-trace p { margin:0; font-size:13.5px; line-height:1.5; color:var(--ink-strong); font-weight:550; }
+.webmcp-trace ul { margin:8px 0 0; padding-left:18px; font-size:12.5px; line-height:1.55; color:var(--ink-soft); }
+.webmcp-status { color:var(--ink-soft); font-size:12.5px; margin-top:12px; }
+.webmcp-error { color:var(--maroon); font-size:13px; margin-top:12px; }
+.webmcp-loop { border:1px solid var(--maroon); border-radius:12px; background:var(--accent-soft, #f8e9ed); padding:14px 16px; font-size:13.5px; line-height:1.55; }
+.webmcp-loop strong { color:var(--maroon-deep); }
+.ws-rail-link { display:inline-flex; align-items:center; gap:6px; margin-top:10px; color:var(--maroon); font-size:12.5px; font-weight:620; text-decoration:none; }
+.ws-rail-link:hover { color:var(--maroon-deep); text-decoration:underline; }

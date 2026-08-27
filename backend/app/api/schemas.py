@@ -28,6 +28,25 @@ class RepositoryRefreshResolutionRequest(BaseModel):
     approved: bool
 
 
+class MemoryProposalRequest(BaseModel):
+    """A proposed addition to company memory that a person must approve.
+
+    Browser agents (or the API) propose; only an explicit human decision
+    persists anything into the durable memory graph.
+    """
+
+    project_id: str = Field(min_length=4, max_length=128)
+    kind: str = Field(default="fact", max_length=32)
+    subject: str = Field(min_length=3, max_length=300)
+    content: str = Field(min_length=3, max_length=4000)
+    service: str = Field(default="", max_length=120)
+    reason: str = Field(default="", max_length=800)
+
+
+class MemoryProposalResolutionRequest(BaseModel):
+    approved: bool
+
+
 class UploadRequest(BaseModel):
     project_id: str = Field(min_length=4, max_length=128)
     source_type: Literal[

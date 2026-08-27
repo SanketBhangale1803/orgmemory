@@ -2,9 +2,38 @@ export const ORGMEMORY_WEBMCP_TOOLS = [
   "list_orgmemory_spaces",
   "ask_orgmemory",
   "inspect_orgmemory_changes",
+  "search_orgmemory",
+  "get_orgmemory_memory",
+  "get_orgmemory_related_memories",
+  "get_orgmemory_incidents",
+  "get_orgmemory_runbook",
+  "get_orgmemory_service_context",
+  "get_orgmemory_dependencies",
+  "get_orgmemory_decisions",
   "propose_repository_refresh",
+  "propose_orgmemory_memory",
+  "propose_orgmemory_incident",
+  "propose_orgmemory_decision",
   "list_orgmemory_approvals",
   "resolve_orgmemory_approval",
+  "list_orgmemory_proposals",
+  "resolve_orgmemory_proposal",
+] as const;
+
+/* The memory kinds an agent may propose. Mirrors the backend's propable set;
+   anything else is rejected server-side as well. */
+export const ORGMEMORY_PROPOSABLE_KINDS = [
+  "fact",
+  "decision",
+  "incident",
+  "procedure",
+  "policy",
+  "convention",
+  "config",
+  "ownership",
+  "dependency",
+  "preference",
+  "open_question",
 ] as const;
 
 export type OrgMemorySpace = {
@@ -74,6 +103,89 @@ export type WebMCPActivity = {
   message?: string;
 };
 
+export type OrgMemoryUnit = {
+  id: string;
+  project_id: string;
+  project_name?: string;
+  type: string;
+  subject: string;
+  content: string;
+  scope?: {
+    company?: string;
+    project?: string;
+    repo?: string;
+    service?: string;
+    person?: string;
+  };
+  confidence?: number;
+  source_ids?: string[];
+  valid_from?: string | null;
+  valid_to?: string | null;
+  updated_at?: string;
+  score?: number;
+};
+
+export type OrgMemoryRelatedEntry = {
+  relationship: string;
+  linked_at?: string;
+  memory: OrgMemoryUnit;
+};
+
+export type OrgMemoryRunbook = {
+  id: string;
+  project_id: string;
+  project_name?: string;
+  key?: string;
+  title?: string;
+  trigger?: string;
+  steps?: string[];
+  procedures?: string[];
+  status?: string;
+  version?: number;
+  updated_at?: string;
+};
+
+export type OrgMemoryServiceContextEntry = {
+  project_id: string;
+  project_name: string;
+  profile: {
+    name?: string;
+    current_facts?: OrgMemoryUnit[];
+    decisions?: OrgMemoryUnit[];
+    incidents?: OrgMemoryUnit[];
+    dependencies?: OrgMemoryUnit[];
+    owners?: OrgMemoryUnit[];
+    procedures?: OrgMemoryUnit[];
+    policies?: OrgMemoryUnit[];
+  };
+};
+
+export type OrgMemoryProposalInput = {
+  projectId: string;
+  kind: string;
+  subject: string;
+  content: string;
+  service?: string;
+  reason?: string;
+};
+
+export type OrgMemoryProposal = {
+  id: string;
+  project_id: string;
+  project_name?: string;
+  kind: string;
+  subject: string;
+  content: string;
+  service?: string;
+  reason?: string;
+  origin?: string;
+  status: "pending_approval" | "denied" | "approved";
+  requested_at: string;
+  requested_by_name?: string;
+  requested_by_email?: string;
+  memory_id?: string;
+};
+
 type RegistrationOptions = {
   spaces: OrgMemorySpace[];
   getActiveProjectId: () => string;
@@ -83,6 +195,22 @@ type RegistrationOptions = {
     scope: "workspace" | "project",
   ) => Promise<OrgMemoryWebMCPAnswer>;
   inspectChanges: (projectId: string, limit: number) => Promise<OrgMemoryChangeSet[]>;
+  searchMemory: (
+    projectId: string,
+    query: string,
+    type?: string,
+    limit?: number,
+  ) => Promise<OrgMemoryUnit[]>;
+  getMemory: (memoryId: string) => Promise<OrgMemoryUnit>;
+  getRelatedMemories: (memoryId: string) => Promise<OrgMemoryRelatedEntry[]>;
+  listIncidents: (projectId: string, service?: string) => Promise<OrgMemoryUnit[]>;
+  findRunbooks: (service: string, issue?: string) => Promise<OrgMemoryRunbook[]>;
+  getServiceContext: (service: string) => Promise<OrgMemoryServiceContextEntry[]>;
+  listDecisions: (projectId: string, limit?: number) => Promise<OrgMemoryUnit[]>;
+  proposeMemory: (input: OrgMemoryProposalInput) => Promise<OrgMemoryProposal>;
+  listProposals?: () => Promise<OrgMemoryProposal[]>;
+  canResolveProposals?: boolean;
+  resolveProposal?: (proposalId: string, approved: boolean) => Promise<OrgMemoryProposal>;
   proposeRepositoryRefresh: (
     projectId: string,
     reason: string,
@@ -128,6 +256,39 @@ function toolResult(summary: string, structuredContent: unknown): WebMCPToolResu
 
 function stringInput(input: Record<string, unknown>, key: string): string {
   return typeof input[key] === "string" ? input[key].trim() : "";
+}
+
+/* Optional project selection with the same authorization check as the required
+   variant: an id an agent invented must never reach a scoped API call. */
+function optionalProjectId(input: Record<string, unknown>, spaces: OrgMemorySpace[]): string {
+  const requested = stringInput(input, "project_id");
+  if (requested && !spaces.some((space) => space.id === requested)) {
+    throw new Error(
+      "Choose a project_id returned by list_orgmemory_spaces before using this tool.",
+    );
+  }
+  return requested;
+}
+
+function boundedLimit(input: Record<string, unknown>, fallback: number): number {
+  const requested = typeof input.limit === "number" ? input.limit : fallback;
+  return Math.max(1, Math.min(50, Math.trunc(requested)));
+}
+
+function compactUnit(unit: OrgMemoryUnit) {
+  return {
+    memory_id: unit.id,
+    project_id: unit.project_id,
+    project_name: unit.project_name,
+    type: unit.type,
+    subject: unit.subject,
+    content: unit.content,
+    service: unit.scope?.service || undefined,
+    confidence: unit.confidence,
+    sources: unit.source_ids?.length || 0,
+    updated_at: unit.updated_at,
+    score: unit.score,
+  };
 }
 
 function projectFor(
@@ -347,6 +508,416 @@ export async function registerOrgMemoryWebMCP(
     ),
     modelContext.registerTool(
       {
+        name: "search_orgmemory",
+        title: "Search company memory",
+        description:
+          "Search current, permission-scoped organizational memory by query and optional memory kind (incident, decision, fact, dependency, ...). Prefer this structured search over scraping or clicking through the UI.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: {
+              type: "string",
+              maxLength: 400,
+              description:
+                "Words to look for, such as a service name, failure mode, or topic.",
+            },
+            project_id: {
+              type: "string",
+              description:
+                "Optional project ID from list_orgmemory_spaces. Defaults to all authorized spaces.",
+            },
+            type: {
+              type: "string",
+              enum: [...ORGMEMORY_PROPOSABLE_KINDS],
+              description: "Optional memory kind filter, e.g. incident or decision.",
+            },
+            limit: {
+              type: "integer",
+              minimum: 1,
+              maximum: 50,
+              default: 10,
+              description: "Maximum number of memories to return.",
+            },
+          },
+          additionalProperties: false,
+        },
+        annotations: READ_ONLY,
+        execute: (input) =>
+          tracked("search_orgmemory", options.onActivity, async () => {
+            const query = stringInput(input, "query");
+            const kind = stringInput(input, "type");
+            if (!query && !kind) {
+              throw new Error("Provide a query or a memory type to search for.");
+            }
+            const projectId = optionalProjectId(input, options.spaces);
+            const limit = boundedLimit(input, 10);
+            const results = await options.searchMemory(projectId, query, kind || undefined, limit);
+            const payload = {
+              query: query || undefined,
+              type: kind || undefined,
+              project_id: projectId || undefined,
+              result_count: results.length,
+              results: results.map(compactUnit),
+            };
+            return toolResult(
+              results.length
+                ? `${results.length} memor${results.length === 1 ? "y" : "ies"} matched: ${results
+                    .slice(0, 3)
+                    .map((unit) => `[${unit.type}] ${unit.subject}`)
+                    .join("; ")}${results.length > 3 ? "; …" : ""}.`
+                : "No current company memory matched. The answer may be missing because the source was never ingested.",
+              payload,
+            );
+          }),
+      },
+      registration,
+    ),
+    modelContext.registerTool(
+      {
+        name: "get_orgmemory_memory",
+        title: "Get one memory by ID",
+        description:
+          "Fetch a single organizational memory by its memory_id, with full content, scope, confidence, and validity dates. Use IDs returned by search_orgmemory.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            memory_id: {
+              type: "string",
+              description: "A memory_id from search_orgmemory or another OrgMemory tool.",
+            },
+          },
+          required: ["memory_id"],
+          additionalProperties: false,
+        },
+        annotations: READ_ONLY,
+        execute: (input) =>
+          tracked("get_orgmemory_memory", options.onActivity, async () => {
+            const memoryId = stringInput(input, "memory_id");
+            if (!memoryId) throw new Error("memory_id is required");
+            const unit = await options.getMemory(memoryId);
+            const payload = { ...compactUnit(unit), valid_from: unit.valid_from, valid_to: unit.valid_to };
+            return toolResult(
+              `[${unit.type}] ${unit.subject}: ${unit.content}`,
+              payload,
+            );
+          }),
+      },
+      registration,
+    ),
+    modelContext.registerTool(
+      {
+        name: "get_orgmemory_related_memories",
+        title: "Get related memories",
+        description:
+          "Follow the memory graph around one memory: updates, contradictions, supporting and derived memories, plus other memories about the same subject. Use this to understand how a fact changed over time.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            memory_id: {
+              type: "string",
+              description: "A memory_id from search_orgmemory or another OrgMemory tool.",
+            },
+          },
+          required: ["memory_id"],
+          additionalProperties: false,
+        },
+        annotations: READ_ONLY,
+        execute: (input) =>
+          tracked("get_orgmemory_related_memories", options.onActivity, async () => {
+            const memoryId = stringInput(input, "memory_id");
+            if (!memoryId) throw new Error("memory_id is required");
+            const related = await options.getRelatedMemories(memoryId);
+            const payload = {
+              memory_id: memoryId,
+              related_count: related.length,
+              related: related.map((entry) => ({
+                relationship: entry.relationship,
+                ...compactUnit(entry.memory),
+              })),
+            };
+            return toolResult(
+              related.length
+                ? `${related.length} related memor${related.length === 1 ? "y" : "ies"}: ${related
+                    .slice(0, 3)
+                    .map((entry) => `${entry.relationship} → ${entry.memory.subject}`)
+                    .join("; ")}${related.length > 3 ? "; …" : ""}.`
+                : "No related memories found for this ID.",
+              payload,
+            );
+          }),
+      },
+      registration,
+    ),
+    modelContext.registerTool(
+      {
+        name: "get_orgmemory_incidents",
+        title: "Get previous incidents",
+        description:
+          "Retrieve previous incident memories, optionally filtered by service name. Use this to compare current symptoms with what happened before.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            service: {
+              type: "string",
+              description: "Service name such as payments. Omit to list recent incidents across spaces.",
+            },
+            project_id: {
+              type: "string",
+              description:
+                "Optional project ID from list_orgmemory_spaces. Defaults to all authorized spaces.",
+            },
+          },
+          additionalProperties: false,
+        },
+        annotations: READ_ONLY,
+        execute: (input) =>
+          tracked("get_orgmemory_incidents", options.onActivity, async () => {
+            const service = stringInput(input, "service");
+            const projectId = optionalProjectId(input, options.spaces);
+            const incidents = await options.listIncidents(projectId, service || undefined);
+            const payload = {
+              service: service || undefined,
+              project_id: projectId || undefined,
+              incident_count: incidents.length,
+              incidents: incidents.map(compactUnit),
+            };
+            return toolResult(
+              incidents.length
+                ? `${incidents.length} previous incident${incidents.length === 1 ? "" : "s"} found: ${incidents
+                    .slice(0, 3)
+                    .map((unit) => unit.subject)
+                    .join("; ")}${incidents.length > 3 ? "; …" : ""}.`
+                : service
+                  ? `No previous incidents remembered for ${service}.`
+                  : "No incidents are remembered yet.",
+              payload,
+            );
+          }),
+      },
+      registration,
+    ),
+    modelContext.registerTool(
+      {
+        name: "get_orgmemory_runbook",
+        title: "Get a runbook",
+        description:
+          "Retrieve the remembered runbook for a service and optional issue, including trigger, steps, and procedures. Use this before proposing any remediation.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            service: {
+              type: "string",
+              description: "Service name such as payments.",
+            },
+            issue: {
+              type: "string",
+              description: "Optional issue keyword such as timeouts or connection-pool exhaustion.",
+            },
+            project_id: {
+              type: "string",
+              description:
+                "Optional project ID from list_orgmemory_spaces. Defaults to all authorized spaces.",
+            },
+          },
+          required: ["service"],
+          additionalProperties: false,
+        },
+        annotations: READ_ONLY,
+        execute: (input) =>
+          tracked("get_orgmemory_runbook", options.onActivity, async () => {
+            const service = stringInput(input, "service");
+            if (!service) throw new Error("service is required");
+            const issue = stringInput(input, "issue");
+            optionalProjectId(input, options.spaces);
+            const runbooks = await options.findRunbooks(service, issue || undefined);
+            const payload = {
+              service,
+              issue: issue || undefined,
+              runbook_count: runbooks.length,
+              runbooks: runbooks.map((runbook) => ({
+                runbook_id: runbook.id,
+                project_id: runbook.project_id,
+                project_name: runbook.project_name,
+                key: runbook.key,
+                title: runbook.title,
+                trigger: runbook.trigger,
+                steps: runbook.steps,
+                procedures: runbook.procedures,
+                version: runbook.version,
+                status: runbook.status,
+              })),
+            };
+            return toolResult(
+              runbooks.length
+                ? `${runbooks.length} runbook${runbooks.length === 1 ? "" : "s"} found for ${service}: ${runbooks
+                    .map((runbook) => runbook.title || runbook.key || runbook.id)
+                    .slice(0, 3)
+                    .join("; ")}.`
+                : `No runbook is remembered for ${service}${issue ? ` and ${issue}` : ""}.`,
+              payload,
+            );
+          }),
+      },
+      registration,
+    ),
+    modelContext.registerTool(
+      {
+        name: "get_orgmemory_service_context",
+        title: "Get service context",
+        description:
+          "Retrieve the assembled context for a service: current facts, owners, dependencies, decisions, procedures, and incident history. Call this to understand a service before acting on it.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            service: {
+              type: "string",
+              description: "Service name such as payments.",
+            },
+            project_id: {
+              type: "string",
+              description:
+                "Optional project ID from list_orgmemory_spaces. Defaults to all authorized spaces.",
+            },
+          },
+          required: ["service"],
+          additionalProperties: false,
+        },
+        annotations: READ_ONLY,
+        execute: (input) =>
+          tracked("get_orgmemory_service_context", options.onActivity, async () => {
+            const service = stringInput(input, "service");
+            if (!service) throw new Error("service is required");
+            optionalProjectId(input, options.spaces);
+            const entries = await options.getServiceContext(service);
+            const payload = {
+              service,
+              space_count: entries.length,
+              spaces: entries.map((entry) => ({
+                project_id: entry.project_id,
+                project_name: entry.project_name,
+                facts: (entry.profile.current_facts || []).map(compactUnit),
+                owners: (entry.profile.owners || []).map(compactUnit),
+                dependencies: (entry.profile.dependencies || []).map(compactUnit),
+                decisions: (entry.profile.decisions || []).map(compactUnit),
+                procedures: (entry.profile.procedures || []).map(compactUnit),
+                incidents: (entry.profile.incidents || []).map(compactUnit),
+              })),
+            };
+            const factCount = entries.reduce(
+              (total, entry) =>
+                total +
+                (entry.profile.current_facts || []).length +
+                (entry.profile.owners || []).length,
+              0,
+            );
+            return toolResult(
+              entries.length
+                ? `Service context for ${service} assembled from ${entries.length} space${entries.length === 1 ? "" : "s"}: ${factCount} facts/owners, ${payload.spaces.reduce((total, space) => total + space.decisions.length + space.incidents.length, 0)} decisions/incidents.`
+                : `No company memory mentions a service called ${service}.`,
+              payload,
+            );
+          }),
+      },
+      registration,
+    ),
+    modelContext.registerTool(
+      {
+        name: "get_orgmemory_dependencies",
+        title: "Get service dependencies",
+        description:
+          "Retrieve remembered dependencies for a service, including upstream and downstream relationships captured in memory. Use this to reason about blast radius.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            service: {
+              type: "string",
+              description: "Service name such as payments.",
+            },
+            project_id: {
+              type: "string",
+              description:
+                "Optional project ID from list_orgmemory_spaces. Defaults to all authorized spaces.",
+            },
+          },
+          required: ["service"],
+          additionalProperties: false,
+        },
+        annotations: READ_ONLY,
+        execute: (input) =>
+          tracked("get_orgmemory_dependencies", options.onActivity, async () => {
+            const service = stringInput(input, "service");
+            if (!service) throw new Error("service is required");
+            const projectId = optionalProjectId(input, options.spaces);
+            const dependencies = await options.searchMemory(projectId, service, "dependency", 20);
+            const payload = {
+              service,
+              project_id: projectId || undefined,
+              dependency_count: dependencies.length,
+              dependencies: dependencies.map(compactUnit),
+            };
+            return toolResult(
+              dependencies.length
+                ? `${dependencies.length} remembered dependenc${dependencies.length === 1 ? "y" : "ies"} for ${service}: ${dependencies
+                    .slice(0, 3)
+                    .map((unit) => unit.subject)
+                    .join("; ")}${dependencies.length > 3 ? "; …" : ""}.`
+                : `No dependencies are remembered for ${service}.`,
+              payload,
+            );
+          }),
+      },
+      registration,
+    ),
+    modelContext.registerTool(
+      {
+        name: "get_orgmemory_decisions",
+        title: "Get architecture decisions",
+        description:
+          "Retrieve remembered architecture and operational decisions, optionally scoped to one project. Use this to check what the organization already decided before proposing something new.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            project_id: {
+              type: "string",
+              description:
+                "Optional project ID from list_orgmemory_spaces. Defaults to all authorized spaces.",
+            },
+            limit: {
+              type: "integer",
+              minimum: 1,
+              maximum: 50,
+              default: 10,
+              description: "Maximum number of decisions to return.",
+            },
+          },
+          additionalProperties: false,
+        },
+        annotations: READ_ONLY,
+        execute: (input) =>
+          tracked("get_orgmemory_decisions", options.onActivity, async () => {
+            const projectId = optionalProjectId(input, options.spaces);
+            const limit = boundedLimit(input, 10);
+            const decisions = await options.listDecisions(projectId, limit);
+            const payload = {
+              project_id: projectId || undefined,
+              decision_count: decisions.length,
+              decisions: decisions.map(compactUnit),
+            };
+            return toolResult(
+              decisions.length
+                ? `${decisions.length} remembered decision${decisions.length === 1 ? "" : "s"}: ${decisions
+                    .slice(0, 3)
+                    .map((unit) => unit.subject)
+                    .join("; ")}${decisions.length > 3 ? "; …" : ""}.`
+                : "No decisions are remembered yet.",
+              payload,
+            );
+          }),
+      },
+      registration,
+    ),
+    modelContext.registerTool(
+      {
         name: "propose_repository_refresh",
         title: "Propose repository refresh",
         description:
@@ -472,8 +1043,8 @@ export async function registerOrgMemoryWebMCP(
       },
       registration,
     ),
-    ...(options.canResolveApprovals && options.resolveApproval
-      ? [modelContext.registerTool(
+  ...(options.canResolveApprovals && options.resolveApproval
+    ? [modelContext.registerTool(
       {
         name: "resolve_orgmemory_approval",
         title: "Approve or deny a pending request",
@@ -530,7 +1101,327 @@ export async function registerOrgMemoryWebMCP(
       registration,
     )]
       : []),
-  ];
+  modelContext.registerTool(
+    {
+      name: "propose_orgmemory_memory",
+      title: "Propose a memory for approval",
+      description:
+        "Propose adding one verified piece of organizational knowledge (fact, procedure, policy, convention, ...) to company memory. Nothing is saved by this tool: the proposal enters an approval queue and only becomes memory after a person explicitly approves it. Never propose speculative conclusions.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          subject: {
+            type: "string",
+            minLength: 3,
+            maxLength: 300,
+            description: "What the memory is about, e.g. 'payments connection pool'.",
+          },
+          content: {
+            type: "string",
+            minLength: 3,
+            maxLength: 4000,
+            description: "The statement itself, grounded in evidence you can cite.",
+          },
+          kind: {
+            type: "string",
+            enum: [...ORGMEMORY_PROPOSABLE_KINDS],
+            default: "fact",
+            description: "The memory kind. Defaults to fact.",
+          },
+          service: {
+            type: "string",
+            description: "Optional service this memory is scoped to.",
+          },
+          project_id: {
+            type: "string",
+            description:
+              "An authorized project ID from list_orgmemory_spaces. Defaults to the active project.",
+          },
+          reason: {
+            type: "string",
+            maxLength: 800,
+            description: "Why this is verified knowledge, for the human who reviews it.",
+          },
+        },
+        required: ["subject", "content"],
+        additionalProperties: false,
+      },
+      annotations: APPROVAL_REQUIRED_WRITE,
+      execute: (input) =>
+        tracked("propose_orgmemory_memory", options.onActivity, async () => {
+          const kindInput = stringInput(input, "kind");
+          const kind = kindInput || "fact";
+          if (!(ORGMEMORY_PROPOSABLE_KINDS as readonly string[]).includes(kind)) {
+            throw new Error(`kind must be one of: ${ORGMEMORY_PROPOSABLE_KINDS.join(", ")}`);
+          }
+          const project = projectFor(input, options.spaces, options.getActiveProjectId());
+          const proposal = await options.proposeMemory({
+            projectId: project.id,
+            kind,
+            subject: stringInput(input, "subject"),
+            content: stringInput(input, "content"),
+            service: stringInput(input, "service") || undefined,
+            reason: stringInput(input, "reason") || undefined,
+          });
+          return toolResult(
+            `Proposal queued as pending_approval. Nothing has been saved to company memory yet; a person must approve it in OrgMemory.`,
+            {
+              proposal_id: proposal.id,
+              project_id: proposal.project_id,
+              kind: proposal.kind,
+              subject: proposal.subject,
+              status: proposal.status,
+              requested_by: proposal.requested_by_name,
+              next_step:
+                "A person must approve or deny this proposal in OrgMemory before it becomes company memory.",
+            },
+          );
+        }),
+    },
+    registration,
+  ),
+  modelContext.registerTool(
+    {
+      name: "propose_orgmemory_incident",
+      title: "Propose an incident record for approval",
+      description:
+        "Propose recording an incident into company memory once its diagnosis is verified (confirmed by monitoring, logs, or a person). Nothing is saved by this tool: the proposal waits for explicit human approval in OrgMemory.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          subject: {
+            type: "string",
+            minLength: 3,
+            maxLength: 300,
+            description: "Short incident title, e.g. 'payments outage: pool exhaustion'.",
+          },
+          content: {
+            type: "string",
+            minLength: 3,
+            maxLength: 4000,
+            description:
+              "What happened, the verified cause, and the resolution. Only record verified findings.",
+          },
+          service: {
+            type: "string",
+            description: "The service the incident affected, e.g. payments.",
+          },
+          project_id: {
+            type: "string",
+            description:
+              "An authorized project ID from list_orgmemory_spaces. Defaults to the active project.",
+          },
+          reason: {
+            type: "string",
+            maxLength: 800,
+            description: "Why this incident record is verified, for the human who reviews it.",
+          },
+        },
+        required: ["subject", "content"],
+        additionalProperties: false,
+      },
+      annotations: APPROVAL_REQUIRED_WRITE,
+      execute: (input) =>
+        tracked("propose_orgmemory_incident", options.onActivity, async () => {
+          const project = projectFor(input, options.spaces, options.getActiveProjectId());
+          const proposal = await options.proposeMemory({
+            projectId: project.id,
+            kind: "incident",
+            subject: stringInput(input, "subject"),
+            content: stringInput(input, "content"),
+            service: stringInput(input, "service") || undefined,
+            reason: stringInput(input, "reason") || undefined,
+          });
+          return toolResult(
+            `Incident proposal queued as pending_approval. No incident record was saved yet; a person must approve it.`,
+            {
+              proposal_id: proposal.id,
+              project_id: proposal.project_id,
+              kind: proposal.kind,
+              subject: proposal.subject,
+              status: proposal.status,
+              requested_by: proposal.requested_by_name,
+              next_step:
+                "A person must approve or deny this proposal in OrgMemory before it becomes an incident memory.",
+            },
+          );
+        }),
+    },
+    registration,
+  ),
+  modelContext.registerTool(
+    {
+      name: "propose_orgmemory_decision",
+      title: "Propose a decision record for approval",
+      description:
+        "Propose recording an architecture or operational decision into company memory once it is actually decided (not merely recommended). Nothing is saved by this tool: the proposal waits for explicit human approval in OrgMemory.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          subject: {
+            type: "string",
+            minLength: 3,
+            maxLength: 300,
+            description: "What was decided, e.g. 'cap payments worker concurrency'.",
+          },
+          content: {
+            type: "string",
+            minLength: 3,
+            maxLength: 4000,
+            description:
+              "The decision itself and its rationale. Only record decisions that were actually made.",
+          },
+          service: {
+            type: "string",
+            description: "Optional service this decision applies to.",
+          },
+          project_id: {
+            type: "string",
+            description:
+              "An authorized project ID from list_orgmemory_spaces. Defaults to the active project.",
+          },
+          reason: {
+            type: "string",
+            maxLength: 800,
+            description: "Why this decision is verified, for the human who reviews it.",
+          },
+        },
+        required: ["subject", "content"],
+        additionalProperties: false,
+      },
+      annotations: APPROVAL_REQUIRED_WRITE,
+      execute: (input) =>
+        tracked("propose_orgmemory_decision", options.onActivity, async () => {
+          const project = projectFor(input, options.spaces, options.getActiveProjectId());
+          const proposal = await options.proposeMemory({
+            projectId: project.id,
+            kind: "decision",
+            subject: stringInput(input, "subject"),
+            content: stringInput(input, "content"),
+            service: stringInput(input, "service") || undefined,
+            reason: stringInput(input, "reason") || undefined,
+          });
+          return toolResult(
+            `Decision proposal queued as pending_approval. No decision record was saved yet; a person must approve it.`,
+            {
+              proposal_id: proposal.id,
+              project_id: proposal.project_id,
+              kind: proposal.kind,
+              subject: proposal.subject,
+              status: proposal.status,
+              requested_by: proposal.requested_by_name,
+              next_step:
+                "A person must approve or deny this proposal in OrgMemory before it becomes a decision memory.",
+            },
+          );
+        }),
+    },
+    registration,
+  ),
+  modelContext.registerTool(
+    {
+      name: "list_orgmemory_proposals",
+      title: "List memory proposals",
+      description:
+        "List proposed organizational memories that are waiting for a human approval decision, including who proposed each one and why. Read-only.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          project_id: {
+            type: "string",
+            description:
+              "Optional project ID from list_orgmemory_spaces. Defaults to all authorized spaces.",
+          },
+        },
+        additionalProperties: false,
+      },
+      annotations: READ_ONLY,
+      execute: (input) =>
+        tracked("list_orgmemory_proposals", options.onActivity, async () => {
+          if (!options.listProposals) {
+            throw new Error("Proposal tools are not available on this page.");
+          }
+          optionalProjectId(input, options.spaces);
+          const proposals = await options.listProposals();
+          const pending = proposals.filter((proposal) => proposal.status === "pending_approval");
+          const payload = {
+            pending_count: pending.length,
+            proposals: proposals.map((proposal) => ({
+              proposal_id: proposal.id,
+              project_id: proposal.project_id,
+              project_name: proposal.project_name,
+              kind: proposal.kind,
+              subject: proposal.subject,
+              content: proposal.content,
+              service: proposal.service || undefined,
+              reason: proposal.reason || undefined,
+              status: proposal.status,
+              requested_by_name: proposal.requested_by_name,
+              requested_at: proposal.requested_at,
+              memory_id: proposal.memory_id || undefined,
+            })),
+          };
+          return toolResult(
+            pending.length
+              ? `${pending.length} memory proposal${pending.length === 1 ? "" : "s"} waiting for a human decision.${options.canResolveProposals ? " Use resolve_orgmemory_proposal to record it." : ""}`
+              : "No memory proposals are waiting for a decision.",
+            payload,
+          );
+        }),
+    },
+    registration,
+  ),
+  ...(options.canResolveProposals && options.resolveProposal
+    ? [modelContext.registerTool(
+      {
+        name: "resolve_orgmemory_proposal",
+        title: "Approve or deny a memory proposal",
+        description:
+          "Record a human approval decision on a pending OrgMemory memory proposal. Approving persists the memory into company memory; denying closes it. This tool must only be used when the signed-in person has actually decided.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            proposal_id: {
+              type: "string",
+              description: "A proposal_id from list_orgmemory_proposals.",
+            },
+            approved: {
+              type: "boolean",
+              description:
+                "True records an approval and persists the memory; false denies the proposal.",
+            },
+          },
+          required: ["proposal_id", "approved"],
+          additionalProperties: false,
+        },
+        annotations: APPROVAL_REQUIRED_WRITE,
+        execute: (input) =>
+          tracked("resolve_orgmemory_proposal", options.onActivity, async () => {
+            if (!options.resolveProposal) {
+              throw new Error("Proposal decisions are not available on this page.");
+            }
+            const proposalId = stringInput(input, "proposal_id");
+            if (!proposalId) throw new Error("proposal_id is required");
+            const approved = input.approved === true;
+            const proposal = await options.resolveProposal(proposalId, approved);
+            return toolResult(
+              proposal.status === "approved"
+                ? `Approved. The ${proposal.kind} memory "${proposal.subject}" is now part of company memory.`
+                : `Decision recorded: ${proposal.status}. Nothing was saved to company memory.`,
+              {
+                proposal_id: proposal.id,
+                status: proposal.status,
+                kind: proposal.kind,
+                subject: proposal.subject,
+                memory_id: proposal.memory_id || undefined,
+              },
+            );
+          }),
+      },
+      registration,
+    )]
+    : []),
+];
 
   try {
     await Promise.all(registrations);

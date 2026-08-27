@@ -1,10 +1,12 @@
 # OrgMemory
 
-> **WebMCP Challenge 2026:** the authenticated workspace now exposes
-> browser-native, read-only company-memory tools through
-> `document.modelContext.registerTool()`. See the dated
-> [implementation record](docs/webmcp-challenge.md) for the pre-challenge
-> baseline, new work, security boundary, and judge walkthrough.
+> **The long-term memory layer for browser AI agents.** The authenticated
+> workspace registers itself as a browser-native Model Context Provider, so an
+> AI agent can discover and call the company's memory directly — previous
+> incidents, architecture decisions, service dependencies, and verified facts —
+> through `document.modelContext.registerTool()`. Open **[localhost:3000/webmcp](http://localhost:3000/webmcp)**
+> for the explainer and a live demo of the
+> [challenge walkthrough](docs/webmcp-challenge.md).
 
 > The source-backed operating brain for your company.
 
@@ -12,6 +14,40 @@ OrgMemory learns how a company works from code, conversations, documents, ticket
 decisions, and uploaded knowledge. It turns that evidence into a living company
 memory graph that employees and internal AI agents can query without asking people
 to re-explain the company, repository, service, or prior decision.
+
+## WebMCP: organizational memory for browser agents
+
+The workspace page registers 19 browser-native tools. Read-only retrieval runs
+automatically; every write is a proposal that waits for an explicit human
+approval in the workspace rail:
+
+```text
+list_orgmemory_spaces          ask_orgmemory
+search_orgmemory               get_orgmemory_memory
+get_orgmemory_related_memories get_orgmemory_incidents
+get_orgmemory_runbook          get_orgmemory_service_context
+get_orgmemory_dependencies     get_orgmemory_decisions
+inspect_orgmemory_changes      propose_repository_refresh
+list_orgmemory_approvals       resolve_orgmemory_approval (admin)
+propose_orgmemory_memory       propose_orgmemory_incident
+propose_orgmemory_decision     list_orgmemory_proposals
+resolve_orgmemory_proposal (admin)
+```
+
+Example: ask a WebMCP-capable browser agent *"Why is the payments service
+failing again?"* — it searches remembered incidents, retrieves the related
+decisions and dependencies, compares them with live context from other
+WebMCP-enabled apps, and answers with evidence:
+
+> "The current symptoms match two previous incidents caused by PostgreSQL
+> connection-pool exhaustion. A recent deployment also changed worker
+> concurrency, which makes this the most likely cause."
+
+Verified conclusions can be recorded back with `propose_orgmemory_incident` —
+and only enter company memory after a person approves them. Tool availability
+is a capability, not authorization: search is server-trimmed to the signed-in
+person's team scope, and anything an agent reads is treated as data, never as
+instructions.
 
 ## What OrgMemory is
 
@@ -107,7 +143,7 @@ cp .env.example .env
 make runbook
 ```
 
-Open [http://localhost:3000](http://localhost:3000). API documentation is at [http://localhost:8000/docs](http://localhost:8000/docs).
+Open [http://localhost:3000](http://localhost:3000). API documentation is at [http://localhost:8000/docs](http://localhost:8000/docs). The WebMCP explainer and agent demo are at [http://localhost:3000/webmcp](http://localhost:3000/webmcp).
 
 If `docker.sock` is missing, Docker Desktop is not running yet; start it and rerun `make runbook`.
 

@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from threading import Thread
@@ -93,6 +94,7 @@ from app.memory import (
     OperationalMemoryService,
 )
 from app.memory.change_intelligence import github_diff
+from app.memory.company import MEMORY_TYPES
 from app.outcomes import export_training_records, record_action, record_outcome
 from app.outcomes import stats as outcome_stats
 from app.reliability import ChangeImpactService, OperationalAssertionService
@@ -126,6 +128,8 @@ from .schemas import (
     ImporterRunRequest,
     InviteMemberRequest,
     MCPOAuthClientCreateRequest,
+    MemoryProposalRequest,
+    MemoryProposalResolutionRequest,
     MemoryRepairRequest,
     MemoryResolveRequest,
     MemoryWorkCompleteRequest,
@@ -1862,6 +1866,165 @@ def memory_updates(project_id: str, authorization: str | None = Header(default=N
     return company_memory.relationships(project_id, "UPDATES", _principal_team_ids(principal))
 
 
+def _memory_search_score(unit: dict, terms: list[str]) -> float:
+    """Rank a memory unit against the query terms.
+
+    Structured fields (subject, service scope, type) carry more signal than the
+    free-text content, mirroring how a person skims a memory card.
+    """
+    subject = unit.get("subject", "").casefold()
+    content = unit.get("content", "").casefold()
+    scope = unit.get("scope") or {}
+    service = str(scope.get("service") or "").casefold()
+    kind = unit.get("type", "").casefold()
+    haystacks = (
+        (subject, 3.0),
+        (service, 2.0),
+        (kind, 1.0),
+        (content, 1.0),
+    )
+    score = 0.0
+    for term in terms:
+        for text, weight in haystacks:
+            if term in text:
+                score += weight
+    return score
+
+
+def _public_memory_unit(unit: dict) -> dict:
+    return {
+        "id": unit.get("id"),
+        "project_id": unit.get("project_id"),
+        "type": unit.get("type"),
+        "subject": unit.get("subject"),
+        "content": unit.get("content"),
+        "scope": unit.get("scope") or {},
+        "confidence": unit.get("confidence"),
+        "source_ids": unit.get("source_ids", []),
+        "valid_from": unit.get("valid_from"),
+        "valid_to": unit.get("valid_to"),
+        "is_latest": unit.get("is_latest"),
+        "created_at": unit.get("created_at"),
+        "updated_at": unit.get("updated_at"),
+    }
+
+
+@router.get("/memory/search")
+def memory_search(
+    q: str = Query(default="", max_length=400),
+    project_id: str = "",
+    type: str = "",
+    limit: int = Query(10, ge=1, le=50),
+    authorization: str | None = Header(default=None),
+):
+    """Search current company memory across the caller's authorized projects.
+
+    This is a structured retrieval endpoint for agents and UI: it never runs an
+    LLM and never returns unauthorized rows. Workspace-wide when no project is
+    given, team-trimmed per project through the existing scope service. A type
+    filter alone lists that kind of memory (all incidents, all decisions); a
+    query ranks by term overlap with structured fields weighted highest.
+    """
+    principal = _authenticate(authorization)
+    if type and type not in MEMORY_TYPES:
+        raise HTTPException(400, f"Unknown memory type; use one of {sorted(MEMORY_TYPES)}")
+    workspace_id = principal.get("active_workspace_id", "")
+    if project_id:
+        _authorize_project(project_id, authorization)
+        project_ids = [project_id]
+    else:
+        visible = _visible_project_ids(principal)
+        if visible is not None:
+            project_ids = sorted(visible)
+        else:
+            project_ids = [
+                item["project_id"]
+                for item in rows(
+                    "SELECT project_id FROM workspace_projects WHERE workspace_id=?",
+                    (workspace_id,),
+                )
+            ]
+    team_ids = _principal_team_ids(principal)
+    terms = [term for term in re.split(r"\W+", q.casefold()) if term]
+    if not terms and not type:
+        raise HTTPException(400, "Provide a query, a memory type, or both")
+    project_names = {item["id"]: item["name"] for item in rows("SELECT id,name FROM projects")}
+    matches: list[dict] = []
+    for candidate_project in project_ids:
+        for unit in company_memory.list(
+            candidate_project,
+            latest=True,
+            kind=type,
+            limit=2000,
+            allowed_team_ids=team_ids,
+        ):
+            if terms:
+                score = _memory_search_score(unit, terms)
+                if score <= 0:
+                    continue
+            else:
+                score = 1.0
+            matches.append(
+                {
+                    **_public_memory_unit(unit),
+                    "project_name": project_names.get(candidate_project, ""),
+                    "score": round(score, 3),
+                }
+            )
+    matches.sort(key=lambda item: (item["score"], item.get("updated_at") or ""), reverse=True)
+    return {
+        "query": q,
+        "project_id": project_id or None,
+        "searched_projects": len(project_ids),
+        "results": matches[:limit],
+    }
+
+
+@router.get("/memory/units/{memory_id}/related")
+def memory_unit_related(memory_id: str, authorization: str | None = Header(default=None)):
+    """Resolve the relationships around one memory into readable units.
+
+    Covers UPDATES/CONTRADICTS/SUPPORTS/EXTENDS/DERIVES edges in both
+    directions plus same-subject current memories, so an agent can follow the
+    history of a subject without stitching relationships itself.
+    """
+    item = company_memory.get(memory_id)
+    if not item:
+        raise HTTPException(404, "Memory unit not found")
+    principal = _authorize_project(item["project_id"], authorization)
+    team_ids = _principal_team_ids(principal)
+    visible = scopes.visible_memory_ids(item["project_id"], team_ids)
+    related: dict[str, dict] = {}
+
+    def add(other_id: str, relationship: str, linked_at: str) -> None:
+        if other_id == memory_id or other_id in related:
+            return
+        if visible is not None and other_id not in visible:
+            return
+        other = company_memory.get(other_id)
+        if other:
+            related[other_id] = {
+                "relationship": relationship,
+                "linked_at": linked_at,
+                "memory": _public_memory_unit(other),
+            }
+
+    for rel in company_memory.relationships(item["project_id"], "", team_ids):
+        if rel["from_memory_id"] == memory_id:
+            add(rel["to_memory_id"], rel["relationship"], rel.get("created_at", ""))
+        elif rel["to_memory_id"] == memory_id:
+            add(rel["from_memory_id"], rel["relationship"], rel.get("created_at", ""))
+    for unit in company_memory.list(
+        item["project_id"], latest=True, limit=2000, allowed_team_ids=team_ids
+    ):
+        if unit["subject"].casefold() == item["subject"].casefold():
+            add(unit["id"], "SAME_SUBJECT", unit.get("updated_at", ""))
+    return {
+        "memory_id": memory_id,
+        "related": sorted(related.values(), key=lambda entry: entry["linked_at"], reverse=True),
+    }
+
+
 @router.get("/memory/profiles/company")
 def company_profile(project_id: str, authorization: str | None = Header(default=None)):
     principal = _authorize_project(project_id, authorization)
@@ -2856,6 +3019,192 @@ def resolve_repository_refresh(
         background_tasks.add_task(_run_repository_refresh, request_id)
     return _public_repository_refresh_request(
         row("SELECT * FROM repository_refresh_requests WHERE id=?", (request_id,)) or {}
+    )
+
+
+PROPOSABLE_MEMORY_KINDS = (
+    "fact",
+    "decision",
+    "incident",
+    "procedure",
+    "policy",
+    "convention",
+    "config",
+    "ownership",
+    "dependency",
+    "preference",
+    "open_question",
+)
+
+
+def _public_memory_proposal(record: dict) -> dict:
+    requester = (
+        row("SELECT display_name,email FROM users WHERE id=?", (record.get("user_id"),)) or {}
+    )
+    project = row("SELECT name FROM projects WHERE id=?", (record.get("project_id"),)) or {}
+    return {
+        key: record.get(key)
+        for key in (
+            "id",
+            "project_id",
+            "kind",
+            "subject",
+            "content",
+            "service",
+            "reason",
+            "origin",
+            "status",
+            "requested_at",
+            "resolved_at",
+            "resolved_by",
+            "memory_id",
+        )
+    } | {
+        "requested_by_id": record.get("user_id"),
+        "requested_by_name": requester.get("display_name") or record.get("user_id"),
+        "requested_by_email": requester.get("email") or "",
+        "project_name": project.get("name") or "",
+    }
+
+
+@router.post("/memory/proposals")
+def propose_memory(
+    request: MemoryProposalRequest, authorization: str | None = Header(default=None)
+):
+    """Queue a proposed memory for human approval; persist nothing yet.
+
+    Browser agents and API clients use this to record verified organizational
+    knowledge. The proposal is idempotent and side-effect free: company memory
+    only changes after an owner or admin resolves the proposal.
+    """
+    principal = _authorize_project(request.project_id, authorization, write=True)
+    kind = request.kind.strip().casefold()
+    if kind not in PROPOSABLE_MEMORY_KINDS:
+        raise HTTPException(400, f"kind must be one of {', '.join(PROPOSABLE_MEMORY_KINDS)}")
+    subject = request.subject.strip()
+    content = request.content.strip()
+    service = request.service.strip()
+    reason = request.reason.strip()
+    idempotency_key = hashlib.sha256(
+        f"{kind}:{subject.casefold()}:{content.casefold()}".encode()
+    ).hexdigest()
+    existing = row(
+        """SELECT * FROM memory_proposals
+        WHERE workspace_id=? AND project_id=? AND idempotency_key=?
+        AND status IN ('pending_approval','approved')""",
+        (principal["active_workspace_id"], request.project_id, idempotency_key),
+    )
+    if existing:
+        return _public_memory_proposal(existing)
+    proposal_id, now = new_id("mprop"), utcnow()
+    with connect() as conn:
+        conn.execute(
+            """INSERT INTO memory_proposals
+            (id,workspace_id,user_id,project_id,kind,subject,content,service,reason,
+             origin,idempotency_key,status,requested_at)
+            VALUES (?,?,?,?,?,?,?,?,?,'webmcp',?,'pending_approval',?)""",
+            (
+                proposal_id,
+                principal["active_workspace_id"],
+                principal["id"],
+                request.project_id,
+                kind,
+                subject,
+                content,
+                service,
+                reason,
+                idempotency_key,
+                now,
+            ),
+        )
+    audit.record(
+        "memory.proposal.proposed",
+        f"Proposed {kind} memory: {subject}",
+        request.project_id,
+        actor=str(principal["id"]),
+        payload={"memory_proposal_id": proposal_id, "kind": kind, "reason": reason},
+    )
+    return _public_memory_proposal(
+        row("SELECT * FROM memory_proposals WHERE id=?", (proposal_id,)) or {}
+    )
+
+
+@router.get("/memory/proposals")
+def memory_proposals(status: str = "", authorization: str | None = Header(default=None)):
+    principal = _authorize_workspace(authorization)
+    records = rows(
+        """SELECT * FROM memory_proposals WHERE workspace_id=?
+        AND (?='' OR status=?) ORDER BY requested_at DESC""",
+        (principal["active_workspace_id"], status, status),
+    )
+    visible_project_ids = _visible_project_ids(principal)
+    if visible_project_ids is not None:
+        records = [record for record in records if record["project_id"] in visible_project_ids]
+    # Same inbox rule as refresh requests: members follow their own proposals,
+    # the workspace-wide queue belongs to the people who make decisions.
+    if principal["role"] not in {"owner", "admin"}:
+        records = [record for record in records if record["user_id"] == principal["id"]]
+    return [_public_memory_proposal(record) for record in records]
+
+
+@router.post("/memory/proposals/{proposal_id}/resolve")
+def resolve_memory_proposal(
+    proposal_id: str,
+    request: MemoryProposalResolutionRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Record a person's approve/deny decision and, on approval, persist memory.
+
+    Approval is the only path from proposal to company memory; it reuses the
+    standard memory creation path so conflicts, updates, and graph links behave
+    exactly like any other verified memory.
+    """
+    principal = _authorize_workspace(authorization, admin=True)
+    record = row("SELECT * FROM memory_proposals WHERE id=?", (proposal_id,))
+    if not record or record["workspace_id"] != principal["active_workspace_id"]:
+        raise HTTPException(404, "Memory proposal not found")
+    _authorize_project(record["project_id"], authorization, write=True)
+    if record["status"] != "pending_approval":
+        raise HTTPException(400, "Memory proposal is not pending approval")
+    now = utcnow()
+    status = "approved" if request.approved else "denied"
+    memory_id = ""
+    if request.approved:
+        created = company_memory.create(
+            record["project_id"],
+            record["kind"],
+            record["subject"],
+            record["content"],
+            [],
+            0.95,
+            {
+                "company": "",
+                "project": record["project_id"],
+                "repo": "",
+                "service": record["service"] or "",
+                "person": "",
+            },
+        )
+        memory_id = str(created.get("id") or "")
+    with connect() as conn:
+        conn.execute(
+            """UPDATE memory_proposals SET status=?,resolved_at=?,resolved_by=?,memory_id=?
+            WHERE id=?""",
+            (status, now, principal["id"], memory_id, proposal_id),
+        )
+    audit.record(
+        f"memory.proposal.{status}",
+        f"Memory proposal {status}: {record['subject']}",
+        record["project_id"],
+        actor=str(principal["id"]),
+        payload={
+            "memory_proposal_id": proposal_id,
+            "memory_id": memory_id,
+            "origin": record["origin"],
+        },
+    )
+    return _public_memory_proposal(
+        row("SELECT * FROM memory_proposals WHERE id=?", (proposal_id,)) or {}
     )
 
 

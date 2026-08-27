@@ -175,6 +175,19 @@ CREATE TABLE IF NOT EXISTS repository_refresh_requests (
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS memory_proposals (
+  id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, user_id TEXT NOT NULL,
+  project_id TEXT NOT NULL, kind TEXT NOT NULL, subject TEXT NOT NULL,
+  content TEXT NOT NULL, service TEXT NOT NULL DEFAULT '',
+  reason TEXT NOT NULL DEFAULT '', origin TEXT NOT NULL DEFAULT 'webmcp',
+  idempotency_key TEXT NOT NULL, status TEXT NOT NULL,
+  requested_at TEXT NOT NULL, resolved_at TEXT, resolved_by TEXT,
+  memory_id TEXT NOT NULL DEFAULT '',
+  UNIQUE(workspace_id, project_id, idempotency_key),
+  FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS connector_webhook_deliveries (
   id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, provider TEXT NOT NULL,
   delivery_id TEXT NOT NULL, payload_hash TEXT NOT NULL, event_type TEXT NOT NULL,

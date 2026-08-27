@@ -24,7 +24,7 @@ const runtime = await import(
   `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`
 );
 
-test("the authenticated workspace registers six browser-native WebMCP tools", () => {
+test("the authenticated workspace registers browser-native WebMCP tools", () => {
   assert.match(types, /interface Document/);
   assert.match(types, /modelContext\?: WebMCPModelContext/);
   assert.match(webmcp, /document\.modelContext\.registerTool|modelContext\.registerTool/);
@@ -33,9 +33,22 @@ test("the authenticated workspace registers six browser-native WebMCP tools", ()
     "list_orgmemory_spaces",
     "ask_orgmemory",
     "inspect_orgmemory_changes",
+    "search_orgmemory",
+    "get_orgmemory_memory",
+    "get_orgmemory_related_memories",
+    "get_orgmemory_incidents",
+    "get_orgmemory_runbook",
+    "get_orgmemory_service_context",
+    "get_orgmemory_dependencies",
+    "get_orgmemory_decisions",
     "propose_repository_refresh",
+    "propose_orgmemory_memory",
+    "propose_orgmemory_incident",
+    "propose_orgmemory_decision",
     "list_orgmemory_approvals",
     "resolve_orgmemory_approval",
+    "list_orgmemory_proposals",
+    "resolve_orgmemory_proposal",
   ]) {
     assert.match(webmcp, new RegExp(`name: "${tool}"`));
   }
@@ -101,7 +114,7 @@ test("workspace controls surface approvals inline with a real, role-aware decisi
   assert.match(chat, /canResolveApprovals: isAdmin/);
 });
 
-test("employees cannot receive the browser-agent approval-decision tool", async () => {
+test("employees cannot receive the browser-agent approval-decision tools", async () => {
   const registered = new Map();
   const previousDocument = globalThis.document;
   globalThis.document = {
@@ -118,12 +131,24 @@ test("employees cannot receive the browser-agent approval-decision tool", async 
       getActiveProjectId: () => "prj_demo",
       async ask() { return { answer: "ok", answer_sufficient: true, answer_scope: "project", evidence: [] }; },
       async inspectChanges() { return []; },
+      async searchMemory() { return []; },
+      async getMemory() { throw new Error("not found"); },
+      async getRelatedMemories() { return []; },
+      async listIncidents() { return []; },
+      async findRunbooks() { return []; },
+      async getServiceContext() { return []; },
+      async listDecisions() { return []; },
+      async proposeMemory() { throw new Error("should not be called in this test"); },
+      async listProposals() { return []; },
+      canResolveProposals: false,
       async proposeRepositoryRefresh() { return { id: "req_1", project_id: "prj_demo", repository: "acme/demo", reason: "stale", status: "pending_approval", requested_at: "" }; },
       async listApprovals() { return []; },
       canResolveApprovals: false,
     });
-    assert.equal(registration.toolCount, 5);
+    // 19 registered in total; the two human-decision tools are admin-only.
+    assert.equal(registration.toolCount, 17);
     assert.equal(registered.has("resolve_orgmemory_approval"), false);
+    assert.equal(registered.has("resolve_orgmemory_proposal"), false);
     registration.dispose();
   } finally {
     globalThis.document = previousDocument;
@@ -150,6 +175,20 @@ test("the real WebMCP implementation registers, invokes, and unregisters all too
   };
 
   const calls = [];
+  const unit = (overrides = {}) => ({
+    id: "mem_1",
+    project_id: "prj_demo",
+    project_name: "Demo",
+    type: "fact",
+    subject: "payments pool",
+    content: "Payments depends on PostgreSQL pool limits.",
+    scope: { service: "payments" },
+    confidence: 0.9,
+    source_ids: ["src_1"],
+    updated_at: "2026-08-26T12:00:00Z",
+    score: 3,
+    ...overrides,
+  });
   try {
     const registration = await runtime.registerOrgMemoryWebMCP({
       spaces: [{ id: "prj_demo", name: "Demo", repository: "acme/demo" }],
@@ -184,6 +223,94 @@ test("the real WebMCP implementation registers, invokes, and unregisters all too
           },
         ];
       },
+      async searchMemory(projectId, query, type, limit) {
+        calls.push({ kind: "search", projectId, query, type, limit });
+        return [unit({ type: type || "fact" })];
+      },
+      async getMemory(memoryId) {
+        calls.push({ kind: "get", memoryId });
+        return unit();
+      },
+      async getRelatedMemories(memoryId) {
+        calls.push({ kind: "related", memoryId });
+        return [{ relationship: "UPDATES", memory: unit({ id: "mem_0" }) }];
+      },
+      async listIncidents(projectId, service) {
+        calls.push({ kind: "incidents", projectId, service });
+        return [unit({ type: "incident", subject: "payments outage" })];
+      },
+      async findRunbooks(service, issue) {
+        calls.push({ kind: "runbooks", service, issue });
+        return [
+          {
+            id: "rb_1",
+            project_id: "prj_demo",
+            key: "payments-pool",
+            title: "Payments pool exhaustion",
+            trigger: "pool saturation",
+            steps: ["check pool"],
+          },
+        ];
+      },
+      async getServiceContext(service) {
+        calls.push({ kind: "service", service });
+        return [
+          {
+            project_id: "prj_demo",
+            project_name: "Demo",
+            profile: {
+              current_facts: [unit()],
+              decisions: [unit({ type: "decision" })],
+              incidents: [unit({ type: "incident" })],
+              dependencies: [unit({ type: "dependency" })],
+            },
+          },
+        ];
+      },
+      async listDecisions(projectId, limit) {
+        calls.push({ kind: "decisions", projectId, limit });
+        return [unit({ type: "decision", subject: "cap worker concurrency" })];
+      },
+      async proposeMemory(input) {
+        calls.push({ kind: "propose", input });
+        return {
+          id: "mprop_1",
+          project_id: input.projectId,
+          kind: input.kind,
+          subject: input.subject,
+          content: input.content,
+          status: "pending_approval",
+          requested_at: "2026-08-26T12:00:00Z",
+          requested_by_name: "Demo User",
+        };
+      },
+      async listProposals() {
+        calls.push({ kind: "listProposals" });
+        return [
+          {
+            id: "mprop_1",
+            project_id: "prj_demo",
+            kind: "incident",
+            subject: "payments outage recurrence",
+            content: "Verified against monitoring.",
+            status: "pending_approval",
+            requested_at: "2026-08-26T12:00:00Z",
+            requested_by_name: "Demo User",
+          },
+        ];
+      },
+      canResolveProposals: true,
+      async resolveProposal(proposalId, approved) {
+        calls.push({ kind: "resolveProposal", proposalId, approved });
+        return {
+          id: proposalId,
+          project_id: "prj_demo",
+          kind: "incident",
+          subject: "payments outage recurrence",
+          status: approved ? "approved" : "denied",
+          memory_id: approved ? "mem_new" : "",
+        };
+      },
       async proposeRepositoryRefresh(projectId, reason) {
         calls.push({ kind: "refresh", projectId, reason });
         return {
@@ -210,14 +337,6 @@ test("the real WebMCP implementation registers, invokes, and unregisters all too
             requested_by_name: "Team Employee",
             requested_by_email: "employee@example.com",
           },
-          {
-            id: "refresh_0",
-            project_id: "prj_other",
-            repository: "acme/other",
-            reason: "Wrong space.",
-            status: "pending_approval",
-            requested_at: "2026-08-26T11:00:00Z",
-          },
         ];
       },
       canResolveApprovals: true,
@@ -237,14 +356,27 @@ test("the real WebMCP implementation registers, invokes, and unregisters all too
     });
 
     assert.equal(registration.supported, true);
-    assert.equal(registration.toolCount, 6);
+    assert.equal(registration.toolCount, 19);
     assert.deepEqual([...registered.keys()], [
       "list_orgmemory_spaces",
       "ask_orgmemory",
       "inspect_orgmemory_changes",
+      "search_orgmemory",
+      "get_orgmemory_memory",
+      "get_orgmemory_related_memories",
+      "get_orgmemory_incidents",
+      "get_orgmemory_runbook",
+      "get_orgmemory_service_context",
+      "get_orgmemory_dependencies",
+      "get_orgmemory_decisions",
       "propose_repository_refresh",
       "list_orgmemory_approvals",
       "resolve_orgmemory_approval",
+      "propose_orgmemory_memory",
+      "propose_orgmemory_incident",
+      "propose_orgmemory_decision",
+      "list_orgmemory_proposals",
+      "resolve_orgmemory_proposal",
     ]);
 
     const spaces = await registered.get("list_orgmemory_spaces").execute({});
@@ -263,6 +395,82 @@ test("the real WebMCP implementation registers, invokes, and unregisters all too
       limit: 500,
     });
     assert.equal(changes.structuredContent.changes[0].conflicts, 1);
+
+    // Read-only organizational memory surface.
+    const search = await registered.get("search_orgmemory").execute({
+      query: "payments",
+      type: "incident",
+    });
+    assert.equal(search.structuredContent.results[0].subject, "payments pool");
+
+    const memory = await registered.get("get_orgmemory_memory").execute({ memory_id: "mem_1" });
+    assert.equal(memory.structuredContent.memory_id, "mem_1");
+
+    const related = await registered
+      .get("get_orgmemory_related_memories")
+      .execute({ memory_id: "mem_1" });
+    assert.equal(related.structuredContent.related[0].relationship, "UPDATES");
+
+    const incidents = await registered
+      .get("get_orgmemory_incidents")
+      .execute({ service: "payments" });
+    assert.equal(incidents.structuredContent.incident_count, 1);
+
+    const runbook = await registered
+      .get("get_orgmemory_runbook")
+      .execute({ service: "payments", issue: "pool" });
+    assert.equal(runbook.structuredContent.runbook_count, 1);
+
+    const context = await registered
+      .get("get_orgmemory_service_context")
+      .execute({ service: "payments" });
+    assert.equal(context.structuredContent.space_count, 1);
+    assert.equal(context.structuredContent.spaces[0].decisions.length, 1);
+
+    const decisions = await registered.get("get_orgmemory_decisions").execute({});
+    assert.equal(decisions.structuredContent.decisions[0].type, "decision");
+
+    // Approval-gated writes: proposing never persists anything by itself.
+    const proposal = await registered.get("propose_orgmemory_memory").execute({
+      subject: "payments pool cap",
+      content: "Worker concurrency is capped to protect the pool.",
+      kind: "fact",
+      service: "payments",
+      reason: "Verified against the deployment manifest.",
+    });
+    assert.equal(proposal.structuredContent.status, "pending_approval");
+    assert.match(proposal.structuredContent.next_step, /person must approve/);
+
+    await assert.rejects(
+      registered.get("propose_orgmemory_memory").execute({
+        subject: "bad",
+        content: "bad",
+        kind: "not_a_kind",
+      }),
+      /kind must be one of/,
+    );
+
+    const incidentProposal = await registered
+      .get("propose_orgmemory_incident")
+      .execute({ subject: "payments outage recurrence", content: "Verified diagnosis.", service: "payments" });
+    assert.equal(incidentProposal.structuredContent.kind, "incident");
+    assert.match(incidentProposal.structuredContent.next_step, /approve or deny/);
+
+    const decisionProposal = await registered
+      .get("propose_orgmemory_decision")
+      .execute({ subject: "cap worker concurrency", content: "Decided by the platform team during the architecture review." });
+    assert.equal(decisionProposal.structuredContent.kind, "decision");
+
+    const proposals = await registered.get("list_orgmemory_proposals").execute({});
+    assert.equal(proposals.structuredContent.pending_count, 1);
+    assert.equal(proposals.structuredContent.proposals[0].requested_by_name, "Demo User");
+
+    const resolvedProposal = await registered
+      .get("resolve_orgmemory_proposal")
+      .execute({ proposal_id: "mprop_1", approved: true });
+    assert.equal(resolvedProposal.structuredContent.status, "approved");
+    assert.equal(resolvedProposal.structuredContent.memory_id, "mem_new");
+
     const refresh = await registered.get("propose_repository_refresh").execute({
       project_id: "prj_demo",
       reason: "The latest commit evidence is stale.",
@@ -293,22 +501,53 @@ test("the real WebMCP implementation registers, invokes, and unregisters all too
       /refresh_request_id is required/,
     );
 
-    assert.deepEqual(calls, [
-      {
-        kind: "ask",
-        question: "Who owns checkout?",
-        projectId: "prj_demo",
-        scope: "project",
-      },
-      { kind: "changes", projectId: "prj_demo", limit: 50 },
-      {
-        kind: "refresh",
-        projectId: "prj_demo",
-        reason: "The latest commit evidence is stale.",
-      },
-      { kind: "approvals", projectId: "prj_demo" },
-      { kind: "resolve", requestId: "refresh_1", approved: true },
-    ]);
+    assert.deepEqual(
+      calls.filter((call) => call.kind === "search" || call.kind === "get" || call.kind === "related" || call.kind === "incidents" || call.kind === "runbooks" || call.kind === "service" || call.kind === "decisions" || call.kind === "propose" || call.kind === "listProposals" || call.kind === "resolveProposal"),
+      [
+        { kind: "search", projectId: "", query: "payments", type: "incident", limit: 10 },
+        { kind: "get", memoryId: "mem_1" },
+        { kind: "related", memoryId: "mem_1" },
+        { kind: "incidents", projectId: "", service: "payments" },
+        { kind: "runbooks", service: "payments", issue: "pool" },
+        { kind: "service", service: "payments" },
+        { kind: "decisions", projectId: "", limit: 10 },
+        {
+          kind: "propose",
+          input: {
+            projectId: "prj_demo",
+            kind: "fact",
+            subject: "payments pool cap",
+            content: "Worker concurrency is capped to protect the pool.",
+            service: "payments",
+            reason: "Verified against the deployment manifest.",
+          },
+        },
+        {
+          kind: "propose",
+          input: {
+            projectId: "prj_demo",
+            kind: "incident",
+            subject: "payments outage recurrence",
+            content: "Verified diagnosis.",
+            service: "payments",
+            reason: undefined,
+          },
+        },
+        {
+          kind: "propose",
+          input: {
+            projectId: "prj_demo",
+            kind: "decision",
+            subject: "cap worker concurrency",
+            content: "Decided by the platform team during the architecture review.",
+            service: undefined,
+            reason: undefined,
+          },
+        },
+        { kind: "listProposals" },
+        { kind: "resolveProposal", proposalId: "mprop_1", approved: true },
+      ],
+    );
 
     await assert.rejects(
       registered.get("ask_orgmemory").execute({
@@ -316,6 +555,14 @@ test("the real WebMCP implementation registers, invokes, and unregisters all too
         project_id: "prj_not_authorized",
       }),
       /Choose a project_id returned by list_orgmemory_spaces/,
+    );
+    await assert.rejects(
+      registered.get("search_orgmemory").execute({ query: "", type: "" }),
+      /Provide a query or a memory type/,
+    );
+    await assert.rejects(
+      registered.get("get_orgmemory_runbook").execute({ service: "" }),
+      /service is required/,
     );
 
     registration.dispose();

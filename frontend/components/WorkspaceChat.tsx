@@ -6,7 +6,16 @@ import MarkdownAnswer from "@/components/MarkdownAnswer";
 import { RunbookMark } from "@/components/RunbookLogo";
 import { useOrgMemoryWebMCP } from "@/hooks/useOrgMemoryWebMCP";
 import { api } from "@/lib/api";
-import type { OrgMemoryChangeSet, OrgMemoryRefreshRequest } from "@/lib/webmcp";
+import type {
+  OrgMemoryChangeSet,
+  OrgMemoryProposal,
+  OrgMemoryProposalInput,
+  OrgMemoryRelatedEntry,
+  OrgMemoryRunbook,
+  OrgMemoryServiceContextEntry,
+  OrgMemoryRefreshRequest,
+  OrgMemoryUnit,
+} from "@/lib/webmcp";
 
 type Model = { id: string; label: string; company: string; model: string; configured: boolean; default: boolean };
 type Project = { id: string; name: string; repository?: string };
@@ -161,7 +170,9 @@ export default function WorkspaceChat({ user }: { user: any }) {
      moment an employee (or a browser agent acting for one) proposes it, and the
      decision is two buttons in the same place they already work. */
   const [requests, setRequests] = useState<OrgMemoryRefreshRequest[]>([]);
+  const [proposals, setProposals] = useState<OrgMemoryProposal[]>([]);
   const [decidingId, setDecidingId] = useState("");
+  const [decidingProposalId, setDecidingProposalId] = useState("");
   const [inboxNote, setInboxNote] = useState("");
   const [inboxError, setInboxError] = useState("");
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
@@ -304,6 +315,136 @@ export default function WorkspaceChat({ user }: { user: any }) {
     [],
   );
 
+  /* Structured memory retrieval shared by the WebMCP tools and the demo page:
+     the same endpoints a browser agent reaches through its page tools, with the
+     backend doing the permission trimming. */
+  const searchMemoryApi = useCallback(
+    async (projectId: string, query: string, type?: string, limit?: number) => {
+      const params = new URLSearchParams();
+      if (query) params.set("q", query);
+      if (projectId) params.set("project_id", projectId);
+      if (type) params.set("type", type);
+      params.set("limit", String(limit ?? 10));
+      const response = await api<{ results: OrgMemoryUnit[] }>(`/api/memory/search?${params}`);
+      return response.results || [];
+    },
+    [],
+  );
+
+  const getMemoryApi = useCallback(
+    (memoryId: string) => api<OrgMemoryUnit>(`/api/memory/units/${encodeURIComponent(memoryId)}`),
+    [],
+  );
+
+  const getRelatedMemoriesApi = useCallback(
+    async (memoryId: string) => {
+      const response = await api<{ related: OrgMemoryRelatedEntry[] }>(
+        `/api/memory/units/${encodeURIComponent(memoryId)}/related`,
+      );
+      return response.related || [];
+    },
+    [],
+  );
+
+  const listIncidentsApi = useCallback(
+    (projectId: string, service?: string) =>
+      searchMemoryApi(projectId, service || "", "incident", 20),
+    [searchMemoryApi],
+  );
+
+  const findRunbooksApi = useCallback(
+    async (service: string, issue?: string) => {
+      const runbooks = await api<OrgMemoryRunbook[]>("/api/runbooks");
+      const needle = service.toLowerCase();
+      const issueNeedle = (issue || "").toLowerCase();
+      return runbooks.filter((runbook) => {
+        const haystack = [
+          runbook.key,
+          runbook.title,
+          runbook.trigger,
+          (runbook.procedures || []).join(" "),
+          (runbook.steps || []).join(" "),
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        return haystack.includes(needle) && (!issueNeedle || haystack.includes(issueNeedle));
+      });
+    },
+    [],
+  );
+
+  const getServiceContextApi = useCallback(
+    async (service: string) => {
+      /* One profile per authorized space; the backend trims each to the
+         signed-in person's team scope. Empty profiles are skipped so an agent
+         never receives a wall of nothing. */
+      const response = await api<Project[]>("/api/projects");
+      const entries = await Promise.all(
+        (response || []).map(async (space) => {
+          try {
+            const profile = await api<OrgMemoryServiceContextEntry["profile"]>(
+              `/api/memory/profiles/service/${encodeURIComponent(service)}?project_id=${encodeURIComponent(space.id)}`,
+            );
+            const total =
+              (profile.current_facts || []).length +
+              (profile.decisions || []).length +
+              (profile.incidents || []).length +
+              (profile.dependencies || []).length +
+              (profile.owners || []).length +
+              (profile.procedures || []).length;
+            return total > 0
+              ? { project_id: space.id, project_name: space.name, profile }
+              : null;
+          } catch {
+            return null;
+          }
+        }),
+      );
+      return entries.filter(Boolean) as OrgMemoryServiceContextEntry[];
+    },
+    [],
+  );
+
+  const listDecisionsApi = useCallback(
+    (projectId: string, limit?: number) => searchMemoryApi(projectId, "", "decision", limit ?? 10),
+    [searchMemoryApi],
+  );
+
+  const proposeMemoryApi = useCallback(
+    (input: OrgMemoryProposalInput) =>
+      api<OrgMemoryProposal>("/api/memory/proposals", {
+        method: "POST",
+        body: JSON.stringify({
+          project_id: input.projectId,
+          kind: input.kind,
+          subject: input.subject,
+          content: input.content,
+          service: input.service || "",
+          reason: input.reason || "",
+        }),
+      }),
+    [],
+  );
+
+  const loadProposals = useCallback(() => {
+    return api<OrgMemoryProposal[]>("/api/memory/proposals")
+      .then((items) => {
+        setProposals(items);
+        return items;
+      })
+      .catch(() => []);
+  }, []);
+
+  const resolveProposalApi = useCallback(
+    (proposalId: string, approved: boolean) =>
+      api<OrgMemoryProposal>(
+        `/api/memory/proposals/${encodeURIComponent(proposalId)}/resolve`,
+        { method: "POST", body: JSON.stringify({ approved }) },
+      ),
+    [],
+  );
+
   const proposeRepositoryRefresh = useCallback(
     (projectId: string, reason: string) =>
       api<OrgMemoryRefreshRequest>("/api/repository-refresh-requests", {
@@ -358,10 +499,14 @@ export default function WorkspaceChat({ user }: { user: any }) {
   useEffect(() => {
     if (!user?.active_workspace_id) return;
     loadRequests();
+    loadProposals();
     void loadMembers().catch(() => undefined);
-    const timer = window.setInterval(loadRequests, 8000);
+    const timer = window.setInterval(() => {
+      loadRequests();
+      loadProposals();
+    }, 8000);
     return () => window.clearInterval(timer);
-  }, [user?.active_workspace_id, loadMembers, loadRequests]);
+  }, [user?.active_workspace_id, loadMembers, loadRequests, loadProposals]);
 
   const webMCP = useOrgMemoryWebMCP({
     enabled: projects.length > 0 && Boolean(project),
@@ -373,6 +518,24 @@ export default function WorkspaceChat({ user }: { user: any }) {
       return ask(question, projectId, "webmcp", requestedScope);
     },
     inspectChanges,
+    searchMemory: searchMemoryApi,
+    getMemory: getMemoryApi,
+    getRelatedMemories: getRelatedMemoriesApi,
+    listIncidents: listIncidentsApi,
+    findRunbooks: findRunbooksApi,
+    getServiceContext: getServiceContextApi,
+    listDecisions: listDecisionsApi,
+    proposeMemory: proposeMemoryApi,
+    listProposals: loadProposals,
+    canResolveProposals: isAdmin,
+    resolveProposal: async (proposalId, approved) => {
+      const resolved = await resolveProposalApi(proposalId, approved);
+      // Mirror the agent's decision into the same state the human inbox reads.
+      setProposals((current) =>
+        current.map((item) => (item.id === resolved.id ? resolved : item)),
+      );
+      return resolved;
+    },
     proposeRepositoryRefresh,
     listApprovals,
     canResolveApprovals: isAdmin,
@@ -398,6 +561,10 @@ export default function WorkspaceChat({ user }: { user: any }) {
     () => requests.filter((item) => item.status === "pending_approval"),
     [requests],
   );
+  const pendingProposals = useMemo(
+    () => proposals.filter((item) => item.status === "pending_approval"),
+    [proposals],
+  );
   const inFlight = useMemo(
     () => requests.filter((item) => item.status === "queued" || item.status === "running"),
     [requests],
@@ -421,6 +588,30 @@ export default function WorkspaceChat({ user }: { user: any }) {
       setInboxError(error.message);
     } finally {
       setDecidingId("");
+    }
+  }
+
+  /* Approving a memory proposal is the moment agent-supplied knowledge becomes
+     organizational memory. It runs through the same authorized endpoint as the
+     WebMCP resolve tool, so a button and an agent decision are identical. */
+  async function decideProposal(proposal: OrgMemoryProposal, approved: boolean) {
+    setDecidingProposalId(proposal.id);
+    setInboxNote("");
+    setInboxError("");
+    try {
+      const resolved = await resolveProposalApi(proposal.id, approved);
+      setProposals((current) =>
+        current.map((item) => (item.id === resolved.id ? resolved : item)),
+      );
+      setInboxNote(
+        approved
+          ? `Approved — "${resolved.subject}" is now ${resolved.kind} memory.`
+          : `Proposal "${resolved.subject}" was denied. Nothing was saved.`,
+      );
+    } catch (error: any) {
+      setInboxError(error.message);
+    } finally {
+      setDecidingProposalId("");
     }
   }
 
@@ -586,7 +777,8 @@ export default function WorkspaceChat({ user }: { user: any }) {
             <Link className="ws-pill attention" href="#workspace-controls" title="Pending approvals">
               <i className="on" />
               <span>
-                {pendingApprovals.length} approval{pendingApprovals.length === 1 ? "" : "s"} waiting
+                {pendingApprovals.length + pendingProposals.length} approval
+                {pendingApprovals.length + pendingProposals.length === 1 ? "" : "s"} waiting
               </span>
             </Link>
           )}
@@ -675,7 +867,9 @@ export default function WorkspaceChat({ user }: { user: any }) {
           members={members}
           pendingApprovals={pendingApprovals}
           inFlight={inFlight}
+          pendingProposals={pendingProposals}
           decidingId={decidingId}
+          decidingProposalId={decidingProposalId}
           inboxNote={inboxNote}
           inboxError={inboxError}
           inviteOpen={inviteOpen}
@@ -689,6 +883,7 @@ export default function WorkspaceChat({ user }: { user: any }) {
           onInviteRoleChange={setInviteRole}
           onInvite={() => void inviteMember()}
           onDecide={(request, approved) => void decide(request, approved)}
+          onDecideProposal={(proposal, approved) => void decideProposal(proposal, approved)}
         />
       </main>
 
@@ -733,7 +928,9 @@ type WorkspaceControlRailProps = {
   members: WorkspaceMember[];
   pendingApprovals: OrgMemoryRefreshRequest[];
   inFlight: OrgMemoryRefreshRequest[];
+  pendingProposals: OrgMemoryProposal[];
   decidingId: string;
+  decidingProposalId: string;
   inboxNote: string;
   inboxError: string;
   inviteOpen: boolean;
@@ -747,6 +944,7 @@ type WorkspaceControlRailProps = {
   onInviteRoleChange: (role: string) => void;
   onInvite: () => void;
   onDecide: (request: OrgMemoryRefreshRequest, approved: boolean) => void;
+  onDecideProposal: (proposal: OrgMemoryProposal, approved: boolean) => void;
 };
 
 /* The workspace rail keeps the state that governs an agent's work in sight:
@@ -760,7 +958,9 @@ function WorkspaceControlRail({
   members,
   pendingApprovals,
   inFlight,
+  pendingProposals,
   decidingId,
+  decidingProposalId,
   inboxNote,
   inboxError,
   inviteOpen,
@@ -774,6 +974,7 @@ function WorkspaceControlRail({
   onInviteRoleChange,
   onInvite,
   onDecide,
+  onDecideProposal,
 }: WorkspaceControlRailProps) {
   const memberCount = members.length;
 
@@ -897,14 +1098,61 @@ function WorkspaceControlRail({
         )}
       </section>
 
+      <section className="ws-rail-card" aria-label="Memory proposals">
+        <div className="ws-rail-section-head">
+          <div>
+            <p className="ws-rail-eyebrow">Memory proposals</p>
+            <strong>{pendingProposals.length ? `${pendingProposals.length} waiting` : "None"}</strong>
+          </div>
+          <Link href="/webmcp">What is this? →</Link>
+        </div>
+        {pendingProposals.length ? (
+          <div className="ws-approval-list">
+            {pendingProposals.map((proposal) => (
+              <article className="ws-approval" key={proposal.id}>
+                <div className="ws-approval-body">
+                  <p><strong>[{proposal.kind}] {proposal.subject}</strong></p>
+                  <small>
+                    Proposed by {proposal.requested_by_name || "an agent"} in{" "}
+                    {proposal.project_name || proposal.project_id}
+                  </small>
+                  <em>&ldquo;{proposal.content}&rdquo;</em>
+                  {proposal.reason && <small>Why: {proposal.reason}</small>}
+                </div>
+                {isAdmin ? (
+                  <div className="ws-approval-actions">
+                    <button disabled={decidingProposalId === proposal.id} onClick={() => onDecideProposal(proposal, true)}>
+                      Approve
+                    </button>
+                    <button className="danger" disabled={decidingProposalId === proposal.id} onClick={() => onDecideProposal(proposal, false)}>
+                      Deny
+                    </button>
+                  </div>
+                ) : (
+                  <span className="ws-approval-status">With an admin</span>
+                )}
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="ws-rail-copy">
+            When a browser agent proposes verified knowledge, it waits here — nothing enters
+            company memory until a person approves it.
+          </p>
+        )}
+      </section>
+
       <section className="ws-rail-card ws-automation-card">
         <p className="ws-rail-eyebrow">WebMCP automation</p>
         <strong>{webMCPLabel || "Browser tools unavailable"}</strong>
         <p className="ws-rail-copy">
           {webMCPLabel
-            ? `${webMCPToolCount} page-native tools can read memory, inspect change sets, and propose a refresh.${isAdmin ? " Admin tools can also record your decision." : " Approval decisions stay with workspace admins."}`
+            ? `${webMCPToolCount} page-native tools let a browser agent search incidents, decisions, service context, and runbooks — and propose memory that waits for your approval.${isAdmin ? " Admin tools can also record your decision." : ""}`
             : "Open this workspace in a WebMCP-capable browser agent to use the page-native tools."}
         </p>
+        <Link className="ws-rail-link" href="/webmcp">
+          Try the agent demo <span aria-hidden="true">→</span>
+        </Link>
       </section>
     </aside>
   );

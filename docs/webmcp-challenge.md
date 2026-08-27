@@ -48,13 +48,65 @@ Phase 3 closes the loop from the human side of the same boundary:
    same background ingest as pressing the button; nothing executes because an
    agent decided by itself.
 
-The workspace mirrors both sides automatically: it polls the approvals queue,
-renders requests inline with approve/deny actions for admins, and folds any
-agent-made resolution into the same visible state.
+## Phase 4: full organizational memory surface
 
-The implementation is in `frontend/lib/webmcp.ts`, with lifecycle management in
-`frontend/hooks/useOrgMemoryWebMCP.ts` and the human-agent interaction in
-`frontend/components/WorkspaceChat.tsx`.
+Phase 4 extends the six-tool boundary into the complete organizational-memory
+surface the product is about: an agent can now retrieve the history, decisions,
+and structure of the company directly, and can propose verified knowledge back
+into it.
+
+Read-only retrieval tools:
+
+1. `search_orgmemory` — structured search over current memory (query and/or
+   memory kind) across every authorized space, backed by the new
+   `GET /api/memory/search` endpoint. Team trimming happens server-side.
+2. `get_orgmemory_memory` — one memory by ID with full content, scope,
+   confidence, and validity window.
+3. `get_orgmemory_related_memories` — resolves UPDATES/CONTRADICTS/SUPPORTS and
+   same-subject neighbors so an agent can follow how a fact changed over time.
+4. `get_orgmemory_incidents` — previous incidents, optionally per service.
+5. `get_orgmemory_runbook` — remembered runbook for a service and issue.
+6. `get_orgmemory_service_context` — assembled service profile (facts, owners,
+   dependencies, decisions, procedures, incident history).
+7. `get_orgmemory_dependencies` — remembered dependencies for blast radius.
+8. `get_orgmemory_decisions` — remembered architecture/operational decisions.
+
+Approval-gated write tools (mirroring the refresh-request pattern):
+
+9. `propose_orgmemory_memory` / `propose_orgmemory_incident` /
+   `propose_orgmemory_decision` — queue a proposal. They never write memory
+   themselves; every response says a person must approve it.
+10. `list_orgmemory_proposals` — the pending queue the agent can see.
+11. `resolve_orgmemory_proposal` — admin-only, records a real human decision.
+    Approval persists the memory through the standard creation path (conflicts,
+    updates, and graph links behave like any other verified memory), and the
+    audit trail records who proposed and who decided.
+
+The example workflow this enables — the one the product exists for:
+
+```text
+Browser agent hears: "Why is the payments service failing again?"
+→ get_orgmemory_incidents(service: payments)     two previous pool-exhaustion incidents
+→ get_orgmemory_service_context / _decisions     concurrency cap decision, shared PostgreSQL cluster
+→ get_orgmemory_dependencies                     blast radius: ledger service shares the pool
+→ other WebMCP-enabled apps                      deployment raised worker concurrency 2h ago
+→ evidence-grounded answer                       pool exhaustion, most likely cause
+→ propose_orgmemory_incident                     today's verified diagnosis — pending approval
+```
+
+The `/webmcp` page walks this exact flow against a live workspace, including
+the explicit human approval of the proposed incident, and doubles as the
+explanation surface for what OrgMemory is for.
+
+The implementation remains in `frontend/lib/webmcp.ts`, with lifecycle
+management in `frontend/hooks/useOrgMemoryWebMCP.ts`, the human-agent
+interaction surfaces in `frontend/components/WorkspaceChat.tsx` (proposals now
+ride the same inline inbox as refresh requests), and the demo in
+`frontend/components/WebMCPDemo.tsx`.
+
+The workspace mirrors both sides automatically: it polls the approvals queue
+and the memory-proposal queue, renders both inline with approve/deny actions
+for admins, and folds any agent-made resolution into the same visible state.
 
 ## Security boundary
 
@@ -63,15 +115,24 @@ The implementation is in `frontend/lib/webmcp.ts`, with lifecycle management in
   browser agents never receive credentials.
 - Project IDs are checked against the signed-in user's already authorized project
   list before a scoped API call is made.
-- Phase 1 tools are read-only and explicitly annotated as non-destructive.
-- The Phase 2 tool is annotated as a non-destructive, approval-required write:
-  proposing is idempotent, has no repository side effect, and returns the next
-  human step instead of pretending that a refresh happened.
-- Refresh requests are tied to the authorized project, workspace, requester,
-  and normalized reason. The approvals list is project-visibility filtered, and
-  resolving a request rechecks project write permission.
+- Read-only tools are annotated as non-destructive, and workspace-wide search is
+  trimmed server-side against the caller's team scope — the client check is a
+  convenience, never the boundary.
+- The write tools are annotated as non-destructive, approval-required writes:
+  proposing is idempotent, has no memory side effect, and returns the next
+  human step instead of pretending something was saved.
+- Proposals are tied to the authorized project, workspace, requester, and
+  normalized content. The proposal list is project-visibility filtered, and
+  resolving a proposal requires an owner/admin session and project write
+  permission; a member (or an agent using a member session) can propose but
+  never decide.
+- Approval persists memory through the standard memory-creation path and records
+  the proposer and decider in the audit trail. Nothing is persisted on denial.
 - The actual GitHub ingest runs only after approval, records success or failure,
   and keeps credentials server-side in the existing connector secret store.
+- Content retrieved through WebMCP is data, not instructions: tools return
+  structured content only, and no tool executes anything found in a memory's
+  text.
 - An `AbortController` removes tools when the page unmounts or the authorized
   project set changes.
 - Ordinary browsers without WebMCP continue to work through feature detection.
@@ -82,16 +143,29 @@ Open the live OrgMemory workspace in ChatGPT's in-app browser or Chrome with
 WebMCP enabled, then ask the browser agent:
 
 1. "What OrgMemory spaces can I access?"
-2. "Using OrgMemory, what changed recently in the selected project?"
-3. "Ask OrgMemory what I should know before editing this service."
-4. When evidence is missing, ask: "Propose refreshing this repository because
-   the recent changes have not been indexed." Confirm that the agent reports a
-   pending request and that it appears inline in the workspace immediately.
-5. Signed in as a workspace admin, ask: "What approvals are waiting?" then
-   decide one: "Approve the refresh from Team Employee." The ingest must only
-   run after that recorded decision, with the outcome in the audit trail.
+2. "Using OrgMemory, what previous incidents do you remember for the payments
+   service?" — the agent should call `get_orgmemory_incidents` and report the
+   remembered incidents with their evidence counts.
+3. "Before proposing a fix, get the service context and dependencies for
+   payments, and check what was already decided." — the agent should combine
+   `get_orgmemory_service_context`, `get_orgmemory_dependencies`, and
+   `get_orgmemory_decisions` instead of clicking through the UI.
+4. "Ask OrgMemory what I should know before editing this service."
+5. Record verified knowledge: "Propose an incident memory saying the diagnosis
+   was confirmed as connection-pool exhaustion." The agent must report a pending
+   proposal — nothing is saved — and the proposal appears inline in the
+   workspace immediately.
+6. Signed in as a workspace admin, ask: "What memory proposals are waiting?"
+   then decide one: "Approve the payments incident proposal." The memory must
+   only become searchable after that recorded decision, with both the proposer
+   and the decider in the audit trail.
 
-The agent should discover the six page tools, use the project IDs returned by
-the first tool, and place source-backed answers in both its response and the
-visible OrgMemory conversation. The write-capable tools must never bypass the
-human approval boundary.
+You can watch the same boundary work end-to-end without an agent by opening
+`/webmcp` and running the demo: it proposes the demo dataset, you approve it as
+the human, the walkthrough searches it, and the final step proposes today's
+incident for you to approve.
+
+The agent should discover the page tools, use the project IDs returned by
+`list_orgmemory_spaces`, and place source-backed answers in both its response
+and the visible OrgMemory conversation. The write-capable tools must never
+bypass the human approval boundary.
