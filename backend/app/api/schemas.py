@@ -47,6 +47,14 @@ class MemoryProposalResolutionRequest(BaseModel):
     approved: bool
 
 
+class AgentSessionRequest(BaseModel):
+    """One live agent session over the page's WebMCP tool surface."""
+
+    question: str = Field(min_length=5, max_length=1000)
+    project_id: str = Field(default="", max_length=128)
+    model: str = Field(default="", max_length=60)
+
+
 class UploadRequest(BaseModel):
     project_id: str = Field(min_length=4, max_length=128)
     source_type: Literal[

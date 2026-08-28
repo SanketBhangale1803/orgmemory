@@ -87,6 +87,7 @@ from app.intelligence import (
     correlate_changes,
 )
 from app.llm import model_catalog
+from app.llm.providers import configured_model
 from app.memory import (
     ChangeIntelligenceService,
     CompanyBrainService,
@@ -103,10 +104,12 @@ from app.runbooks import RunbookService
 from app.skills import get as get_learned_skill
 from app.skills import list_skills as list_learned_skills
 from app.skills import retire as retire_learned_skill_record
+from app.webmcp_agent import AgentSessionStore, WebMCPAgentRunner
 from app.work import MemoryWorkService
 
 from .schemas import (
     ActionRecordRequest,
+    AgentSessionRequest,
     ApiKeyCreateRequest,
     ArtifactSaveRequest,
     AskRequest,
@@ -234,6 +237,11 @@ def _authorize_project(project_id: str, authorization: str | None, write: bool =
     principal = _authenticate(authorization)
     if not principal:
         raise HTTPException(401, "Not authenticated")
+    return _authorize_project_for_principal(principal, project_id, write=write)
+
+
+def _authorize_project_for_principal(principal: dict, project_id: str, write: bool = False) -> dict:
+    """Project authorization for an already-resolved principal (HTTP or agent)."""
     if write and principal["role"] == "viewer":
         raise HTTPException(403, "Viewer role cannot make reliability decisions")
     if (
@@ -1926,11 +1934,22 @@ def memory_search(
     query ranks by term overlap with structured fields weighted highest.
     """
     principal = _authenticate(authorization)
+    return _memory_search_core(principal, q, project_id=project_id, type=type, limit=limit)
+
+
+def _memory_search_core(
+    principal: dict,
+    q: str,
+    project_id: str = "",
+    type: str = "",
+    limit: int = 10,
+) -> dict:
+    """Shared search core for the HTTP route and the WebMCP agent runner."""
     if type and type not in MEMORY_TYPES:
         raise HTTPException(400, f"Unknown memory type; use one of {sorted(MEMORY_TYPES)}")
     workspace_id = principal.get("active_workspace_id", "")
     if project_id:
-        _authorize_project(project_id, authorization)
+        _authorize_project_for_principal(principal, project_id)
         project_ids = [project_id]
     else:
         visible = _visible_project_ids(principal)
@@ -1988,10 +2007,16 @@ def memory_unit_related(memory_id: str, authorization: str | None = Header(defau
     directions plus same-subject current memories, so an agent can follow the
     history of a subject without stitching relationships itself.
     """
+    principal = _authenticate(authorization)
+    return _memory_related_core(principal, memory_id)
+
+
+def _memory_related_core(principal: dict, memory_id: str) -> dict:
+    """Shared related-memories core for the HTTP route and the agent runner."""
     item = company_memory.get(memory_id)
     if not item:
         raise HTTPException(404, "Memory unit not found")
-    principal = _authorize_project(item["project_id"], authorization)
+    _authorize_project_for_principal(principal, item["project_id"])
     team_ids = _principal_team_ids(principal)
     visible = scopes.visible_memory_ids(item["project_id"], team_ids)
     related: dict[str, dict] = {}
@@ -2023,6 +2048,88 @@ def memory_unit_related(memory_id: str, authorization: str | None = Header(defau
         "memory_id": memory_id,
         "related": sorted(related.values(), key=lambda entry: entry["linked_at"], reverse=True),
     }
+
+
+def _authorized_space_ids(principal: dict) -> list[str]:
+    """Every project in the active workspace this principal may read."""
+    visible = _visible_project_ids(principal)
+    if visible is not None:
+        return sorted(visible)
+    return [
+        item["project_id"]
+        for item in rows(
+            "SELECT project_id FROM workspace_projects WHERE workspace_id=?",
+            (principal.get("active_workspace_id", ""),),
+        )
+    ]
+
+
+def _service_context_core(principal: dict, service: str) -> list[dict]:
+    """Assembled service profile per authorized space, skipping empty ones."""
+    service = service.strip()
+    if not service:
+        raise HTTPException(400, "service is required")
+    team_ids = _principal_team_ids(principal)
+    project_names = {item["id"]: item["name"] for item in rows("SELECT id,name FROM projects")}
+    entries: list[dict] = []
+    for project_id in _authorized_space_ids(principal):
+        try:
+            profile = company_memory.profile(
+                project_id, "service", service, allowed_team_ids=team_ids
+            )
+        except Exception:
+            continue
+        total = sum(
+            len(profile.get(group) or [])
+            for group in (
+                "current_facts",
+                "decisions",
+                "incidents",
+                "dependencies",
+                "owners",
+                "procedures",
+                "policies",
+            )
+        )
+        if total <= 0:
+            continue
+        entries.append(
+            {
+                "project_id": project_id,
+                "project_name": project_names.get(project_id, ""),
+                "profile": profile,
+            }
+        )
+    return entries
+
+
+def _visible_runbooks_core(principal: dict, service: str = "", issue: str = "") -> list[dict]:
+    """Runbooks the principal can see, optionally filtered by service and issue."""
+    visible = _visible_project_ids(principal)
+    records = runbooks.list()
+    if visible is not None:
+        records = [item for item in records if item["project_id"] in visible]
+    project_names = {item["id"]: item["name"] for item in rows("SELECT id,name FROM projects")}
+    needle = service.strip().casefold()
+    issue_needle = issue.strip().casefold()
+    matches: list[dict] = []
+    for record in records:
+        haystack = " ".join(
+            str(part or "")
+            for part in (
+                record.get("key"),
+                record.get("title"),
+                record.get("trigger"),
+                json.dumps(record.get("procedures") or []),
+                json.dumps(record.get("steps") or []),
+            )
+        ).casefold()
+        if needle and needle not in haystack:
+            continue
+        if issue_needle and issue_needle not in haystack:
+            continue
+        matches.append({**record, "project_name": project_names.get(record["project_id"], "")})
+    return matches
 
 
 @router.get("/memory/profiles/company")
@@ -3078,13 +3185,34 @@ def propose_memory(
     only changes after an owner or admin resolves the proposal.
     """
     principal = _authorize_project(request.project_id, authorization, write=True)
-    kind = request.kind.strip().casefold()
+    return _propose_memory_core(
+        principal,
+        request.project_id,
+        request.kind,
+        request.subject,
+        request.content,
+        service=request.service,
+        reason=request.reason,
+    )
+
+
+def _propose_memory_core(
+    principal: dict,
+    project_id: str,
+    kind: str,
+    subject: str,
+    content: str,
+    service: str = "",
+    reason: str = "",
+) -> dict:
+    """Shared proposal core for the HTTP route and the WebMCP agent runner."""
+    kind = kind.strip().casefold()
     if kind not in PROPOSABLE_MEMORY_KINDS:
         raise HTTPException(400, f"kind must be one of {', '.join(PROPOSABLE_MEMORY_KINDS)}")
-    subject = request.subject.strip()
-    content = request.content.strip()
-    service = request.service.strip()
-    reason = request.reason.strip()
+    subject = subject.strip()
+    content = content.strip()
+    service = service.strip()
+    reason = reason.strip()
     idempotency_key = hashlib.sha256(
         f"{kind}:{subject.casefold()}:{content.casefold()}".encode()
     ).hexdigest()
@@ -3092,7 +3220,7 @@ def propose_memory(
         """SELECT * FROM memory_proposals
         WHERE workspace_id=? AND project_id=? AND idempotency_key=?
         AND status IN ('pending_approval','approved')""",
-        (principal["active_workspace_id"], request.project_id, idempotency_key),
+        (principal["active_workspace_id"], project_id, idempotency_key),
     )
     if existing:
         return _public_memory_proposal(existing)
@@ -3107,7 +3235,7 @@ def propose_memory(
                 proposal_id,
                 principal["active_workspace_id"],
                 principal["id"],
-                request.project_id,
+                project_id,
                 kind,
                 subject,
                 content,
@@ -3120,13 +3248,83 @@ def propose_memory(
     audit.record(
         "memory.proposal.proposed",
         f"Proposed {kind} memory: {subject}",
-        request.project_id,
+        project_id,
         actor=str(principal["id"]),
         payload={"memory_proposal_id": proposal_id, "kind": kind, "reason": reason},
     )
     return _public_memory_proposal(
         row("SELECT * FROM memory_proposals WHERE id=?", (proposal_id,)) or {}
     )
+
+
+agent_sessions = AgentSessionStore()
+agent_runner = WebMCPAgentRunner()
+
+
+def _run_agent_session(run_id: str, principal: dict, request: AgentSessionRequest) -> None:
+    def on_step(step: dict) -> None:
+        agent_sessions.append_step(run_id, step)
+
+    try:
+        result = agent_runner.run(
+            principal=principal,
+            question=request.question,
+            project_id=request.project_id,
+            model=request.model or None,
+            on_step=on_step,
+        )
+        agent_sessions.update(
+            run_id,
+            status="complete",
+            answer=result["answer"],
+            memory_ids=result["memory_ids"],
+            proposal=result["proposal"],
+            thoughts=result["thoughts"],
+            mode=result.get("mode", "model"),
+        )
+    except Exception as exc:
+        logger.exception("Agent session failed")
+        agent_sessions.update(run_id, status="error", error=str(exc))
+
+
+@router.post("/webmcp/agent-sessions")
+def start_agent_session(
+    request: AgentSessionRequest, authorization: str | None = Header(default=None)
+):
+    """Run a live agent over the page's WebMCP tool surface.
+
+    Returns immediately; the console polls the session while tools land one by
+    one. Same authorization as every other endpoint, and the only write it can
+    make is a proposal that waits for human approval.
+    """
+    principal = _authenticate(authorization)
+    model = configured_model(request.model or None)
+    run_id = agent_sessions.create(
+        request.question, model.id if model else "", principal.get("active_workspace_id", "")
+    )
+    audit.record(
+        "webmcp.agent_session.started",
+        f"Agent session: {request.question[:80]}",
+        request.project_id or None,
+        actor=str(principal["id"]),
+        payload={"agent_session_id": run_id},
+    )
+    thread = Thread(
+        target=_run_agent_session,
+        args=(run_id, principal, request),
+        daemon=True,
+    )
+    thread.start()
+    return agent_sessions.get(run_id, principal.get("active_workspace_id", ""))
+
+
+@router.get("/webmcp/agent-sessions/{run_id}")
+def agent_session(run_id: str, authorization: str | None = Header(default=None)):
+    principal = _authenticate(authorization)
+    record = agent_sessions.get(run_id, principal.get("active_workspace_id", ""))
+    if not record:
+        raise HTTPException(404, "Agent session not found")
+    return record
 
 
 @router.get("/memory/proposals")

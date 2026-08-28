@@ -1459,7 +1459,16 @@ class RetrievalService:
                 if len(re.sub(r"[^a-z0-9]+", "", alias.casefold())) >= 4
                 and re.sub(r"[^a-z0-9]+", "", alias.casefold()) != "runbook"
             }
-            if any(alias and alias in normalized_query for alias in normalized_aliases):
+            # People type names loosely — "SAP-AI-PR" for a repo named
+            # "SAP-AI-PRs". Matching the singular/plural variants keeps a
+            # trailing "s" from turning a named space into an abstention.
+            alias_variants = {
+                variant
+                for alias in normalized_aliases
+                for variant in (alias, alias.rstrip("s"))
+                if len(variant) >= 4
+            }
+            if any(variant and variant in normalized_query for variant in alias_variants):
                 matches.append(project_id)
         return matches
 
