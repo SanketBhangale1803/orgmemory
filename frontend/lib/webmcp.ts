@@ -1,6 +1,8 @@
 export const ORGMEMORY_WEBMCP_TOOLS = [
   "list_orgmemory_spaces",
   "ask_orgmemory",
+  "get_orgmemory_briefing",
+  "record_orgmemory_outcome",
   "inspect_orgmemory_changes",
   "search_orgmemory",
   "get_orgmemory_memory",
@@ -18,6 +20,18 @@ export const ORGMEMORY_WEBMCP_TOOLS = [
   "resolve_orgmemory_approval",
   "list_orgmemory_proposals",
   "resolve_orgmemory_proposal",
+] as const;
+
+export type WebMCPToolName = (typeof ORGMEMORY_WEBMCP_TOOLS)[number];
+
+/* Closed vocabulary, mirroring the backend ledger. Reward is derived from these,
+   so an agent inventing a sixth value would quietly corrupt the corpus. */
+export const ORGMEMORY_OUTCOMES = [
+  "succeeded",
+  "failed",
+  "partial",
+  "abandoned",
+  "unknown",
 ] as const;
 
 /* The memory kinds an agent may propose. Mirrors the backend's propable set;
@@ -55,6 +69,103 @@ export type OrgMemoryWebMCPAnswer = {
   resolved_subject?: string;
   searched_sources?: number;
   evidence: OrgMemoryEvidence[];
+  likely_cause?: string;
+  confidence?: number;
+  trust_score?: {
+    level?: string;
+    reason?: string;
+    contradictions?: unknown[];
+  };
+  memory_units?: OrgMemoryUnit[];
+  related_entities?: string[];
+  updates?: unknown[];
+  conflicts?: unknown[];
+  safe_actions?: string[];
+  approval_required?: string[];
+  retrieval_trace?: {
+    engine?: string;
+    graph_paths?: unknown[];
+    source_projects?: string[];
+    scope_mode?: string;
+    context_selection_policy?: string;
+    security_trimmed?: boolean;
+  };
+  context_envelope?: {
+    id?: string;
+    memory_ids?: string[];
+    evidence_ids?: string[];
+  };
+};
+
+/* One cited memory inside a pre-action briefing. `why_it_matters` is written by
+   the server rather than the agent: the point of a briefing is that the reason a
+   record is in front of you is not the reader's guess. */
+export type OrgMemoryBriefingCitation = {
+  memory_id: string;
+  type: string;
+  subject: string;
+  content: string;
+  service?: string | null;
+  project_id?: string;
+  project_name?: string | null;
+  confidence?: number;
+  sources?: number;
+  updated_at?: string;
+  why_it_matters: string;
+};
+
+export type OrgMemoryBriefingPrecedent = {
+  skill_id?: string;
+  name?: string;
+  trigger?: string;
+  steps?: string[];
+  successes?: number;
+  confidence?: number;
+};
+
+export type OrgMemoryBriefing = {
+  briefing_id?: string | null;
+  task: string;
+  service?: string | null;
+  project_id?: string | null;
+  /* "no_memory" is a real answer and never collapsed into "proceed": an agent
+     must be able to tell "nothing constrains this" from "nothing is known". */
+  verdict: "no_memory" | "proceed" | "proceed_with_context" | "requires_approval";
+  headline: string;
+  consequential_action?: string | null;
+  must_read: OrgMemoryBriefingCitation[];
+  constraints: OrgMemoryBriefingCitation[];
+  prior_incidents: OrgMemoryBriefingCitation[];
+  blast_radius: OrgMemoryBriefingCitation[];
+  procedures: OrgMemoryBriefingCitation[];
+  precedents: OrgMemoryBriefingPrecedent[];
+  requires_approval: string[];
+  safe_actions: string[];
+  open_questions: string[];
+  memory_count: number;
+};
+
+export type OrgMemoryBriefingInput = {
+  task: string;
+  service?: string;
+  projectId?: string;
+  surface?: string;
+};
+
+export type OrgMemoryOutcomeInput = {
+  briefingId: string;
+  action: string;
+  outcome: "succeeded" | "failed" | "partial" | "abandoned" | "unknown";
+  target?: string;
+  surface?: string;
+  reason?: string;
+};
+
+export type OrgMemoryOutcomeReceipt = {
+  briefing_id: string;
+  action: { id: string; action_type: string };
+  outcome: { id: string; outcome: string; reward: number };
+  recorded: boolean;
 };
 
 export type OrgMemoryChangeSet = {
@@ -98,9 +209,18 @@ export type OrgMemoryRefreshRequest = {
 };
 
 export type WebMCPActivity = {
-  tool: (typeof ORGMEMORY_WEBMCP_TOOLS)[number];
+  id: string;
+  tool: WebMCPToolName;
   state: "running" | "complete" | "error";
   message?: string;
+  input: Record<string, unknown>;
+  inputSummary: string;
+  startedAt: string;
+  completedAt?: string;
+  durationMs?: number;
+  resultCount?: number;
+  resultSummary?: string;
+  permission: "read-only" | "ledger-append" | "approval-required" | "admin-decision";
 };
 
 export type OrgMemoryUnit = {
@@ -195,6 +315,8 @@ type RegistrationOptions = {
     scope: "workspace" | "project",
   ) => Promise<OrgMemoryWebMCPAnswer>;
   inspectChanges: (projectId: string, limit: number) => Promise<OrgMemoryChangeSet[]>;
+  brief: (input: OrgMemoryBriefingInput) => Promise<OrgMemoryBriefing>;
+  recordOutcome: (input: OrgMemoryOutcomeInput) => Promise<OrgMemoryOutcomeReceipt>;
   searchMemory: (
     projectId: string,
     query: string,
@@ -234,6 +356,17 @@ const READ_ONLY = {
   readOnlyHint: true,
   destructiveHint: false,
   idempotentHint: true,
+  openWorldHint: false,
+} as const;
+
+/* Appending to the outcome ledger is a write, but it changes no company
+   knowledge — it records that a briefing was used and how it went. Keeping it a
+   separate tier from APPROVAL_REQUIRED_WRITE is the honest annotation: an agent
+   may report back freely, and still cannot put a single fact into memory. */
+const LEDGER_APPEND = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: false,
   openWorldHint: false,
 } as const;
 
@@ -313,18 +446,92 @@ function count(value: unknown[] | undefined): number {
 async function tracked<T>(
   tool: WebMCPActivity["tool"],
   onActivity: RegistrationOptions["onActivity"],
-  run: () => Promise<T> | T,
+  inputOrRun: Record<string, unknown> | (() => Promise<T> | T),
+  maybeRun?: () => Promise<T> | T,
 ): Promise<T> {
-  onActivity?.({ tool, state: "running" });
+  const input = typeof inputOrRun === "function" ? {} : inputOrRun;
+  const run = typeof inputOrRun === "function" ? inputOrRun : maybeRun;
+  if (!run) throw new Error("WebMCP tool is missing its execution handler");
+  const safeInput = summarizeInput(input);
+  const started = Date.now();
+  const id = `${tool}-${started}-${Math.random().toString(36).slice(2, 8)}`;
+  const permission = tool.startsWith("resolve_orgmemory_")
+    ? "admin-decision"
+    : tool.startsWith("propose_")
+      ? "approval-required"
+      : tool === "record_orgmemory_outcome"
+        ? "ledger-append"
+        : "read-only";
+  const base = {
+    id,
+    tool,
+    input: safeInput,
+    inputSummary: inputLabel(safeInput),
+    startedAt: new Date(started).toISOString(),
+    permission,
+  } satisfies Omit<WebMCPActivity, "state">;
+  onActivity?.({ ...base, state: "running" });
   try {
     const value = await run();
-    onActivity?.({ tool, state: "complete" });
+    const finished = Date.now();
+    const result = resultMetadata(value);
+    onActivity?.({
+      ...base,
+      ...result,
+      state: "complete",
+      completedAt: new Date(finished).toISOString(),
+      durationMs: finished - started,
+    });
     return value;
   } catch (error) {
+    const finished = Date.now();
     const message = error instanceof Error ? error.message : "Tool execution failed";
-    onActivity?.({ tool, state: "error", message });
+    onActivity?.({
+      ...base,
+      state: "error",
+      message,
+      completedAt: new Date(finished).toISOString(),
+      durationMs: finished - started,
+    });
     throw error;
   }
+}
+
+function summarizeInput(input: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(input).map(([key, value]) => {
+      if (/token|secret|password|key|authorization/i.test(key)) return [key, "[redacted]"];
+      if (typeof value === "string") return [key, value.length > 96 ? `${value.slice(0, 93)}…` : value];
+      return [key, value];
+    }),
+  );
+}
+
+function inputLabel(input: Record<string, unknown>): string {
+  const entries = Object.entries(input);
+  if (!entries.length) return "No arguments";
+  return entries
+    .slice(0, 3)
+    .map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
+    .join(" · ");
+}
+
+function resultMetadata(value: unknown): Pick<WebMCPActivity, "resultCount" | "resultSummary"> {
+  const result = value as { content?: Array<{ text?: string }>; structuredContent?: Record<string, unknown> };
+  const structured = result?.structuredContent || {};
+  const countEntry = Object.entries(structured).find(
+    ([key, entry]) => /(_count|count)$/.test(key) && typeof entry === "number",
+  );
+  const arrayEntry = Object.entries(structured).find(([, entry]) => Array.isArray(entry));
+  const summary = result?.content?.find((entry) => typeof entry.text === "string")?.text || "";
+  return {
+    resultCount: countEntry
+      ? Number(countEntry[1])
+      : arrayEntry
+        ? (arrayEntry[1] as unknown[]).length
+        : undefined,
+    resultSummary: summary.length > 120 ? `${summary.slice(0, 117)}…` : summary,
+  };
 }
 
 /**
@@ -407,7 +614,7 @@ export async function registerOrgMemoryWebMCP(
         },
         annotations: READ_ONLY,
         execute: (input) =>
-          tracked("ask_orgmemory", options.onActivity, async () => {
+          tracked("ask_orgmemory", options.onActivity, input, async () => {
             const question = stringInput(input, "question");
             if (question.length < 3) throw new Error("question must contain at least 3 characters");
             const project = projectFor(
@@ -426,6 +633,17 @@ export async function registerOrgMemoryWebMCP(
               answer_scope: answer.answer_scope,
               resolved_subject: answer.resolved_subject,
               searched_sources: answer.searched_sources,
+              likely_cause: answer.likely_cause,
+              confidence: answer.confidence,
+              trust_score: answer.trust_score,
+              memory_units: (answer.memory_units || []).map(compactUnit),
+              related_entities: answer.related_entities || [],
+              updates: answer.updates || [],
+              conflicts: answer.conflicts || [],
+              safe_actions: answer.safe_actions || [],
+              approval_required: answer.approval_required || [],
+              retrieval_trace: answer.retrieval_trace,
+              context_envelope: answer.context_envelope,
               evidence: (answer.evidence || []).map(
                 ({ source_title, source_type, source_url }) => ({
                   title: source_title,
@@ -437,6 +655,150 @@ export async function registerOrgMemoryWebMCP(
             return toolResult(
               `${answer.answer}\n\nSources: ${payload.evidence.map((source) => source.title).join(", ") || "No source was sufficient."}`,
               payload,
+            );
+          }),
+      },
+      registration,
+    ),
+    modelContext.registerTool(
+      {
+        name: "get_orgmemory_briefing",
+        title: "Brief me before I act",
+        description:
+          "Call this BEFORE changing anything — on this site or any other. Describe what you are about to do and OrgMemory returns what this company already knows about it: decisions that constrain the change, incidents that started the same way, the components a change here reaches, the established procedure if one exists, and whether a person has to approve first. Returns a briefing_id; report back with record_orgmemory_outcome once you know whether it worked.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            task: {
+              type: "string",
+              minLength: 3,
+              maxLength: 2000,
+              description:
+                "What you are about to do, in plain language. For example: 'raise worker concurrency on the payments service' or 'merge the pull request that changes the connection pool'.",
+            },
+            service: {
+              type: "string",
+              maxLength: 120,
+              description:
+                "The service, repository, or component the action targets. Naming it retrieves that component's incident history and owners.",
+            },
+            project_id: {
+              type: "string",
+              description:
+                "An authorized project ID from list_orgmemory_spaces. Omit to draw on every memory space the signed-in person can see.",
+            },
+            surface: {
+              type: "string",
+              maxLength: 64,
+              description:
+                "Where you are working — a host name or app, such as 'github.com' or 'pagerduty'. Recorded so the company can tell which surfaces its context actually helps.",
+            },
+          },
+          required: ["task"],
+          additionalProperties: false,
+        },
+        annotations: READ_ONLY,
+        execute: (input) =>
+          tracked("get_orgmemory_briefing", options.onActivity, input, async () => {
+            const task = stringInput(input, "task");
+            if (task.length < 3) {
+              throw new Error("Describe what you are about to do in a few words.");
+            }
+            const projectId = optionalProjectId(input, options.spaces);
+            const briefing = await options.brief({
+              task,
+              service: stringInput(input, "service") || undefined,
+              projectId: projectId || undefined,
+              surface: stringInput(input, "surface") || undefined,
+            });
+            /* The summary line is what a browser agent reads first and often the
+               only thing a person sees quoted back, so the verdict leads it. */
+            const summary =
+              briefing.verdict === "no_memory"
+                ? `No company memory covers this yet. ${briefing.headline}`
+                : briefing.verdict === "requires_approval"
+                  ? `Human approval required. ${briefing.prior_incidents.length} prior incident(s) and ${briefing.constraints.length} recorded decision(s) apply.`
+                  : `${briefing.memory_count} remembered record(s) apply before you act.`;
+            return toolResult(summary, briefing);
+          }),
+      },
+      registration,
+    ),
+    modelContext.registerTool(
+      {
+        name: "record_orgmemory_outcome",
+        title: "Report what happened",
+        description:
+          "Report back what you did with a briefing and whether it worked. This appends an observation to the company's outcome ledger — it does NOT change company memory, so it needs no approval; use propose_orgmemory_incident or propose_orgmemory_memory for anything that should become durable knowledge. Reporting honestly, including failures, is what makes future briefings better.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            briefing_id: {
+              type: "string",
+              description: "The briefing_id returned by get_orgmemory_briefing.",
+            },
+            action: {
+              type: "string",
+              minLength: 2,
+              maxLength: 64,
+              description:
+                "What you actually did, as a short slug — for example 'followed_procedure', 'opened_pr', 'escalated_to_owner', or 'abandoned'.",
+            },
+            outcome: {
+              type: "string",
+              enum: ["succeeded", "failed", "partial", "abandoned", "unknown"],
+              description:
+                "Whether it worked. Use 'unknown' rather than guessing; a wrong label poisons the record more than a missing one.",
+            },
+            target: {
+              type: "string",
+              maxLength: 200,
+              description: "What you acted on — a service, repository, or URL.",
+            },
+            surface: {
+              type: "string",
+              maxLength: 64,
+              description: "Where you acted, such as 'github.com'.",
+            },
+            reason: {
+              type: "string",
+              maxLength: 2000,
+              description: "One or two sentences on what happened and why.",
+            },
+          },
+          required: ["briefing_id", "action", "outcome"],
+          additionalProperties: false,
+        },
+        annotations: LEDGER_APPEND,
+        execute: (input) =>
+          tracked("record_orgmemory_outcome", options.onActivity, input, async () => {
+            const briefingId = stringInput(input, "briefing_id");
+            const action = stringInput(input, "action");
+            if (!briefingId) throw new Error("briefing_id is required");
+            if (action.length < 2) throw new Error("Describe the action you took.");
+            const outcome = stringInput(input, "outcome") || "unknown";
+            if (!ORGMEMORY_OUTCOMES.includes(outcome as (typeof ORGMEMORY_OUTCOMES)[number])) {
+              throw new Error(`outcome must be one of ${ORGMEMORY_OUTCOMES.join(", ")}`);
+            }
+            const receipt = await options.recordOutcome({
+              briefingId,
+              action,
+              outcome: outcome as OrgMemoryOutcomeInput["outcome"],
+              target: stringInput(input, "target") || undefined,
+              surface: stringInput(input, "surface") || undefined,
+              reason: stringInput(input, "reason") || undefined,
+            });
+            return toolResult(
+              `Recorded: ${action} → ${outcome}. Company memory is unchanged; this is an entry in the outcome ledger.`,
+              {
+                briefing_id: receipt.briefing_id,
+                action_id: receipt.action?.id,
+                outcome_id: receipt.outcome?.id,
+                outcome: receipt.outcome?.outcome,
+                changed_company_memory: false,
+                next_step:
+                  "If this produced knowledge the company should keep, propose it with propose_orgmemory_incident or propose_orgmemory_memory so a person can approve it.",
+              },
             );
           }),
       },
@@ -468,7 +830,7 @@ export async function registerOrgMemoryWebMCP(
         },
         annotations: READ_ONLY,
         execute: (input) =>
-          tracked("inspect_orgmemory_changes", options.onActivity, async () => {
+          tracked("inspect_orgmemory_changes", options.onActivity, input, async () => {
             const project = projectFor(
               input,
               options.spaces,
@@ -543,7 +905,7 @@ export async function registerOrgMemoryWebMCP(
         },
         annotations: READ_ONLY,
         execute: (input) =>
-          tracked("search_orgmemory", options.onActivity, async () => {
+          tracked("search_orgmemory", options.onActivity, input, async () => {
             const query = stringInput(input, "query");
             const kind = stringInput(input, "type");
             if (!query && !kind) {
@@ -591,7 +953,7 @@ export async function registerOrgMemoryWebMCP(
         },
         annotations: READ_ONLY,
         execute: (input) =>
-          tracked("get_orgmemory_memory", options.onActivity, async () => {
+          tracked("get_orgmemory_memory", options.onActivity, input, async () => {
             const memoryId = stringInput(input, "memory_id");
             if (!memoryId) throw new Error("memory_id is required");
             const unit = await options.getMemory(memoryId);
@@ -623,7 +985,7 @@ export async function registerOrgMemoryWebMCP(
         },
         annotations: READ_ONLY,
         execute: (input) =>
-          tracked("get_orgmemory_related_memories", options.onActivity, async () => {
+          tracked("get_orgmemory_related_memories", options.onActivity, input, async () => {
             const memoryId = stringInput(input, "memory_id");
             if (!memoryId) throw new Error("memory_id is required");
             const related = await options.getRelatedMemories(memoryId);
@@ -671,7 +1033,7 @@ export async function registerOrgMemoryWebMCP(
         },
         annotations: READ_ONLY,
         execute: (input) =>
-          tracked("get_orgmemory_incidents", options.onActivity, async () => {
+          tracked("get_orgmemory_incidents", options.onActivity, input, async () => {
             const service = stringInput(input, "service");
             const projectId = optionalProjectId(input, options.spaces);
             const incidents = await options.listIncidents(projectId, service || undefined);
@@ -724,7 +1086,7 @@ export async function registerOrgMemoryWebMCP(
         },
         annotations: READ_ONLY,
         execute: (input) =>
-          tracked("get_orgmemory_runbook", options.onActivity, async () => {
+          tracked("get_orgmemory_runbook", options.onActivity, input, async () => {
             const service = stringInput(input, "service");
             if (!service) throw new Error("service is required");
             const issue = stringInput(input, "issue");
@@ -784,7 +1146,7 @@ export async function registerOrgMemoryWebMCP(
         },
         annotations: READ_ONLY,
         execute: (input) =>
-          tracked("get_orgmemory_service_context", options.onActivity, async () => {
+          tracked("get_orgmemory_service_context", options.onActivity, input, async () => {
             const service = stringInput(input, "service");
             if (!service) throw new Error("service is required");
             optionalProjectId(input, options.spaces);
@@ -844,7 +1206,7 @@ export async function registerOrgMemoryWebMCP(
         },
         annotations: READ_ONLY,
         execute: (input) =>
-          tracked("get_orgmemory_dependencies", options.onActivity, async () => {
+          tracked("get_orgmemory_dependencies", options.onActivity, input, async () => {
             const service = stringInput(input, "service");
             if (!service) throw new Error("service is required");
             const projectId = optionalProjectId(input, options.spaces);
@@ -894,7 +1256,7 @@ export async function registerOrgMemoryWebMCP(
         },
         annotations: READ_ONLY,
         execute: (input) =>
-          tracked("get_orgmemory_decisions", options.onActivity, async () => {
+          tracked("get_orgmemory_decisions", options.onActivity, input, async () => {
             const projectId = optionalProjectId(input, options.spaces);
             const limit = boundedLimit(input, 10);
             const decisions = await options.listDecisions(projectId, limit);
@@ -943,7 +1305,7 @@ export async function registerOrgMemoryWebMCP(
         },
         annotations: APPROVAL_REQUIRED_WRITE,
         execute: (input) =>
-          tracked("propose_repository_refresh", options.onActivity, async () => {
+          tracked("propose_repository_refresh", options.onActivity, input, async () => {
             const project = projectFor(input, options.spaces, options.getActiveProjectId());
             if (!project.repository) {
               throw new Error("Choose a GitHub-backed project before requesting a repository refresh.");
@@ -988,7 +1350,7 @@ export async function registerOrgMemoryWebMCP(
         },
         annotations: READ_ONLY,
         execute: (input) =>
-          tracked("list_orgmemory_approvals", options.onActivity, async () => {
+          tracked("list_orgmemory_approvals", options.onActivity, input, async () => {
             const requested = stringInput(input, "project_id");
             if (requested && !options.spaces.some((space) => space.id === requested)) {
               throw new Error(
@@ -1069,7 +1431,7 @@ export async function registerOrgMemoryWebMCP(
         },
         annotations: APPROVAL_REQUIRED_WRITE,
         execute: (input) =>
-          tracked("resolve_orgmemory_approval", options.onActivity, async () => {
+          tracked("resolve_orgmemory_approval", options.onActivity, input, async () => {
             if (!options.resolveApproval) {
               throw new Error("Approval decisions are not available on this page.");
             }
@@ -1148,7 +1510,7 @@ export async function registerOrgMemoryWebMCP(
       },
       annotations: APPROVAL_REQUIRED_WRITE,
       execute: (input) =>
-        tracked("propose_orgmemory_memory", options.onActivity, async () => {
+        tracked("propose_orgmemory_memory", options.onActivity, input, async () => {
           const kindInput = stringInput(input, "kind");
           const kind = kindInput || "fact";
           if (!(ORGMEMORY_PROPOSABLE_KINDS as readonly string[]).includes(kind)) {
@@ -1222,7 +1584,7 @@ export async function registerOrgMemoryWebMCP(
       },
       annotations: APPROVAL_REQUIRED_WRITE,
       execute: (input) =>
-        tracked("propose_orgmemory_incident", options.onActivity, async () => {
+        tracked("propose_orgmemory_incident", options.onActivity, input, async () => {
           const project = projectFor(input, options.spaces, options.getActiveProjectId());
           const proposal = await options.proposeMemory({
             projectId: project.id,
@@ -1291,7 +1653,7 @@ export async function registerOrgMemoryWebMCP(
       },
       annotations: APPROVAL_REQUIRED_WRITE,
       execute: (input) =>
-        tracked("propose_orgmemory_decision", options.onActivity, async () => {
+        tracked("propose_orgmemory_decision", options.onActivity, input, async () => {
           const project = projectFor(input, options.spaces, options.getActiveProjectId());
           const proposal = await options.proposeMemory({
             projectId: project.id,
@@ -1337,7 +1699,7 @@ export async function registerOrgMemoryWebMCP(
       },
       annotations: READ_ONLY,
       execute: (input) =>
-        tracked("list_orgmemory_proposals", options.onActivity, async () => {
+        tracked("list_orgmemory_proposals", options.onActivity, input, async () => {
           if (!options.listProposals) {
             throw new Error("Proposal tools are not available on this page.");
           }
@@ -1396,7 +1758,7 @@ export async function registerOrgMemoryWebMCP(
         },
         annotations: APPROVAL_REQUIRED_WRITE,
         execute: (input) =>
-          tracked("resolve_orgmemory_proposal", options.onActivity, async () => {
+          tracked("resolve_orgmemory_proposal", options.onActivity, input, async () => {
             if (!options.resolveProposal) {
               throw new Error("Proposal decisions are not available on this page.");
             }

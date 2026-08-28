@@ -1,0 +1,23 @@
+Every browser agent begins with the same hidden problem: it can see what is on the page right now, but it does not know what the organization learned yesterday. OrgMemory gives that agent durable, source-backed company context before it acts.
+
+Without WebMCP, the agent performs interface archaeology. It inspects the DOM, guesses which control matters, navigates, parses, and hopes context survives. With WebMCP, the page exposes a direct capability: search organizational memory and receive structured, authorized evidence.
+
+This is the authenticated OrgMemory workspace. The browser sees the same access boundary as the signed-in person. Nineteen tools are available: thirteen read-only retrieval tools and six human-governed proposal or decision tools.
+
+This activity is not decorative. The browser discovered list_orgmemory_spaces directly from the page and invoked it. OrgMemory shows the actual tool name, arguments, result count, and latency, so the path from agent to evidence is observable.
+
+Now payments is failing again. The agent does not start from a blank chat. It asks OrgMemory for previous incidents and receives three remembered failures, including PostgreSQL pool exhaustion and checkout timeouts. Then it assembles the service context around those events.
+
+The next calls connect evidence that ordinary search tends to leave fragmented. Payments shares its PostgreSQL cluster with ledger, defining the blast radius. A prior architecture decision capped payments worker concurrency specifically to protect that shared pool.
+
+This is where organizational memory becomes operational leverage. The first agent combines incident precedent, dependencies, a first-response procedure, and the decision history. It recommends checking the connection count and worker cap before improvising a new fix.
+
+The agent can also propose that a verified recurrence become durable memory. But notice the boundary: nothing is saved yet. A human reviews the claim and its evidence, then explicitly approves or denies it. Capability is not authorization.
+
+After approval, the result is no longer trapped in one chat transcript. It becomes company memory with scope, confidence, provenance, and governance. That creates a clean handoff between agents, sessions, and tools without copying hidden conversation state.
+
+Now comes the test. Session two is a brand-new agent. It shares no chat and carries no context from session one. Still, it immediately retrieves the procedure, previous incidents, service context, and the prior concurrency decision from OrgMemory.
+
+Read tools run automatically inside the user's authorized scope. Write-capable tools only create proposals. Approval and resolution tools remain distinct admin decisions. That separation lets agents move quickly without silently rewriting what the organization believes.
+
+OrgMemory is the long-term memory layer for browser agents: one governed company brain across every session. WebMCP makes that memory discoverable where agents work, so they understand what happened before acting on what is happening now.

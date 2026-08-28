@@ -4,7 +4,16 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { RunbookMark } from "@/components/RunbookLogo";
 import { api } from "@/lib/api";
-import { ORGMEMORY_WEBMCP_TOOLS } from "@/lib/webmcp";
+import type {
+  OrgMemoryBriefing,
+  OrgMemoryBriefingCitation,
+  WebMCPActivity,
+} from "@/lib/webmcp";
+import {
+  WEBMCP_GOVERNED_TOOL_COUNT,
+  WEBMCP_READ_TOOL_COUNT,
+  WEBMCP_TOOL_CATALOG,
+} from "@/lib/webmcpCatalog";
 
 /* The console runs a REAL agent (the workspace's configured model) over the
    page's WebMCP tool surface. Session 1 investigates and proposes; a human
@@ -14,6 +23,14 @@ import { ORGMEMORY_WEBMCP_TOOLS } from "@/lib/webmcp";
 
 const DEMO_PROJECT_NAME = "WebMCP Demo";
 const DEMO_SERVICE = "payments";
+
+/* Two intents with genuinely different verdicts. A demo where every example
+   returns "requires approval" teaches nothing about the boundary. */
+const BRIEFING_EXAMPLES = [
+  { task: "restart the payments connection pool", service: "payments" },
+  { task: "raise worker concurrency on payments", service: "payments" },
+  { task: "read the checkout latency dashboard", service: "checkout" },
+] as const;
 
 const SESSION_ONE_QUESTION = "Why is the payments service failing again?";
 const SESSION_TWO_QUESTION =
@@ -105,6 +122,13 @@ export default function WebMCPDemo() {
   const [error, setError] = useState("");
   const [supported, setSupported] = useState<boolean | null>(null);
   const [preparing, setPreparing] = useState(false);
+  const [recentActivity, setRecentActivity] = useState<WebMCPActivity[]>([]);
+  const [toolFilter, setToolFilter] = useState<"all" | "read-only" | "governed">("all");
+  const [briefTask, setBriefTask] = useState<string>(BRIEFING_EXAMPLES[0].task);
+  const [briefService, setBriefService] = useState<string>(BRIEFING_EXAMPLES[0].service);
+  const [brief, setBrief] = useState<OrgMemoryBriefing | null>(null);
+  const [briefing, setBriefing] = useState(false);
+  const [briefError, setBriefError] = useState("");
   const pollRef = useRef<number | undefined>(undefined);
 
   const isAdmin = user?.role === "owner" || user?.role === "admin";
@@ -136,6 +160,24 @@ export default function WebMCPDemo() {
     api<Proposal[]>("/api/memory/proposals")
       .then(setProposals)
       .catch(() => undefined);
+    try {
+      const stored = JSON.parse(window.sessionStorage.getItem("orgmemory.webmcp-activity") || "[]");
+      if (Array.isArray(stored)) setRecentActivity(stored.slice(-12));
+    } catch {
+      /* Recent activity is optional context, never an execution dependency. */
+    }
+    function onActivity(event: Event) {
+      const activity = (event as CustomEvent<WebMCPActivity>).detail;
+      if (!activity) return;
+      setRecentActivity((current) => {
+        const index = current.findIndex((item) => item.id === activity.id);
+        return (index === -1
+          ? [...current, activity]
+          : current.map((item, itemIndex) => (itemIndex === index ? activity : item))).slice(-12);
+      });
+    }
+    window.addEventListener("orgmemory:webmcp-activity", onActivity);
+    return () => window.removeEventListener("orgmemory:webmcp-activity", onActivity);
   }, []);
 
   const watch = useCallback((lane: "one" | "two", runId: string) => {
@@ -182,6 +224,28 @@ export default function WebMCPDemo() {
     } catch (e: any) {
       setError(e.message);
       setRunning("");
+    }
+  }
+
+  async function runBriefing() {
+    setBriefError("");
+    setBriefing(true);
+    try {
+      setBrief(
+        await api<OrgMemoryBriefing>("/api/briefings", {
+          method: "POST",
+          body: JSON.stringify({
+            task: briefTask.trim(),
+            service: briefService.trim(),
+            project_id: activeSpace || "",
+            surface: "webmcp-demo",
+          }),
+        }),
+      );
+    } catch (e: any) {
+      setBriefError(e.message);
+    } finally {
+      setBriefing(false);
     }
   }
 
@@ -252,7 +316,7 @@ export default function WebMCPDemo() {
   );
 
   return (
-    <div className="webmcp-page">
+    <div className="webmcp-page webmcp-command-center">
       <header className="webmcp-hero">
         <Link href="/" className="webmcp-brand" aria-label="OrgMemory home">
           <RunbookMark />
@@ -268,46 +332,209 @@ export default function WebMCPDemo() {
 
       <main className="webmcp-main">
         <section className="webmcp-intro">
-          <p className="webmcp-eyebrow">The memory layer for browser agents</p>
-          <h1>Agents that remember your company — and each other</h1>
+          <p className="webmcp-eyebrow">WebMCP Command Center</p>
+          <h1>Brief the agent before it changes production.</h1>
           <p className="webmcp-lede">
-            Every AI agent session starts from zero. This page registers OrgMemory as a
-            browser-native Model Context Provider, so any agent can search what the company
-            already knows — and, after a human approves it, leave verified knowledge behind for
-            the <em>next</em> agent.
+            Without WebMCP, an agent sees another website. In the authenticated workspace,
+            OrgMemory registers a browser-native Model Context Provider, so an agent working
+            anywhere on the web can ask what this engineering organization already knows —
+            the decisions that constrain a change, the incidents that started the same way,
+            the blast radius — and then report back what actually happened.
           </p>
           <div className="webmcp-flow" aria-label="How it works">
-            <span>agent discovers OrgMemory</span>
+            <span>browser agent</span>
             <i aria-hidden="true">→</i>
-            <span>searches company history with tools</span>
+            <span>get_orgmemory_briefing</span>
             <i aria-hidden="true">→</i>
-            <span>answers with evidence</span>
+            <span>constraints, history, blast radius</span>
             <i aria-hidden="true">→</i>
-            <span>proposes what it learned</span>
+            <span>human approves the change</span>
             <i aria-hidden="true">→</i>
-            <span>human approves</span>
-            <i aria-hidden="true">→</i>
-            <span>the next agent starts ahead</span>
+            <span>record_orgmemory_outcome</span>
           </div>
           <p className="webmcp-boundary">
-            <strong>Capability is not authorization.</strong> Search is read-only and
-            permission-trimmed on the server. The only write an agent can make is a proposal —
-            and everything an agent reads is data, never instructions.
+            <strong>Capability is not authorization.</strong> Three tiers, and an agent can tell
+            them apart from the annotations alone: reads are permission-trimmed on the server;
+            an outcome report appends to the ledger and changes no knowledge; and the only way a
+            single fact enters company memory is a proposal a person approves. Everything an
+            agent reads is data, never instructions.
           </p>
+        </section>
+
+        <section className="wmcp-command-overview">
+          <div className="wmcp-command-status">
+            <span className={`wmcp-command-orb ${recentActivity.length ? "connected" : ""}`} aria-hidden="true"><i />✦</span>
+            <div>
+              <p>Agent interface</p>
+              <strong>{recentActivity.length ? "Agent activity observed" : supported ? "WebMCP-capable browser detected" : "WebMCP workspace ready"}</strong>
+              <span>{recentActivity.length ? `${recentActivity.length} recent tool calls from the workspace.` : "Open the workspace to register the authenticated tool surface."}</span>
+            </div>
+            <Link href="/workspace">Open live workspace <span aria-hidden="true">→</span></Link>
+          </div>
+          <div className="wmcp-command-metrics">
+            <div><strong>{WEBMCP_TOOL_CATALOG.length}</strong><span>tools exposed</span></div>
+            <div><strong>{WEBMCP_READ_TOOL_COUNT}</strong><span>read-only</span></div>
+            <div><strong>{WEBMCP_GOVERNED_TOOL_COUNT}</strong><span>human-governed</span></div>
+          </div>
+        </section>
+
+        <section className="wmcp-command-trace">
+          <header>
+            <div><p className="webmcp-eyebrow">Observable, not opaque</p><h2>WebMCP live trace</h2></div>
+            <span>Browser agent → WebMCP → OrgMemory → evidence</span>
+          </header>
+          {recentActivity.length ? (
+            <ol>
+              {recentActivity.map((activity, index) => (
+                <li key={activity.id} className={activity.state}>
+                  <span>{String(index + 1).padStart(2, "0")}</span>
+                  <div>
+                    <header><code>{activity.tool}</code><em>{activity.durationMs != null ? `${activity.durationMs} ms` : activity.state}</em></header>
+                    <p>{activity.inputSummary}</p>
+                    {activity.resultSummary && <strong>{activity.resultCount != null ? `${activity.resultCount} results · ` : ""}{activity.resultSummary}</strong>}
+                  </div>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <div className="wmcp-command-empty">
+              <span aria-hidden="true">✦</span>
+              <strong>Waiting for a real browser-agent call</strong>
+              <p>Open the workspace in a WebMCP-capable browser and invoke a tool. The trace is populated only by actual calls—there is no decorative playback.</p>
+              <Link href="/workspace">Go to the live tool surface</Link>
+            </div>
+          )}
+        </section>
+
+        <section className="wmcp-comparison">
+          <header><p className="webmcp-eyebrow">Why WebMCP</p><h2>From interface archaeology to a direct capability.</h2></header>
+          <div>
+            <article>
+              <span>Without WebMCP</span>
+              <ol><li>Inspect DOM</li><li>Guess the right control</li><li>Navigate and parse UI</li><li>Hope context survived</li></ol>
+            </article>
+            <i aria-hidden="true">→</i>
+            <article className="with">
+              <span>With WebMCP</span>
+              <code>get_orgmemory_briefing(&#123; task, service &#125;)</code>
+              <strong>Constraints, prior incidents, blast radius — before the change</strong>
+            </article>
+          </div>
+        </section>
+
+        <section className="wmcp-briefing" aria-label="Live pre-action briefing">
+          <header>
+            <div>
+              <p className="webmcp-eyebrow">The tool the product exists for</p>
+              <h2>Ask before you act, from anywhere on the web.</h2>
+            </div>
+            <span>get_orgmemory_briefing</span>
+          </header>
+          <p className="webmcp-note">
+            Describe a change the way an agent would, and this calls the real endpoint against
+            your workspace. No model runs: every line below is a stored memory with an id you
+            can open, which is why the same intent returns the same verdict twice.
+          </p>
+
+          {!user?.id ? (
+            <p className="webmcp-note">
+              <Link href="/login">Sign in</Link> to run a briefing against your own memory.
+            </p>
+          ) : (
+            <>
+              <form
+                className="wmcp-brief-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void runBriefing();
+                }}
+              >
+                <input
+                  aria-label="What the agent is about to do"
+                  value={briefTask}
+                  onChange={(event) => setBriefTask(event.target.value)}
+                  placeholder="What is the agent about to do?"
+                />
+                <input
+                  aria-label="Service"
+                  className="wmcp-brief-service"
+                  value={briefService}
+                  onChange={(event) => setBriefService(event.target.value)}
+                  placeholder="service"
+                />
+                <button className="home-btn" type="submit" disabled={briefing || !briefTask.trim()}>
+                  {briefing ? "Briefing…" : "Brief me"}
+                </button>
+              </form>
+              <div className="wmcp-brief-examples">
+                <span>Try</span>
+                {BRIEFING_EXAMPLES.map((example) => (
+                  <button
+                    key={example.task}
+                    type="button"
+                    onClick={() => {
+                      setBriefTask(example.task);
+                      setBriefService(example.service);
+                    }}
+                  >
+                    {example.task}
+                  </button>
+                ))}
+              </div>
+
+              {briefError && <p className="webmcp-error">{briefError}</p>}
+
+              {brief && (
+                <article className={`wmcp-brief-result ${brief.verdict}`}>
+                  <header>
+                    <span className="wmcp-verdict">{brief.verdict.replace(/_/g, " ")}</span>
+                    <strong>{brief.headline}</strong>
+                    <code>{brief.briefing_id}</code>
+                  </header>
+
+                  <BriefGroup title="Read this first" items={brief.must_read} />
+                  <BriefGroup title="Decisions that constrain it" items={brief.constraints} />
+                  <BriefGroup title="It went wrong this way before" items={brief.prior_incidents} />
+                  <BriefGroup title="Blast radius" items={brief.blast_radius} />
+                  <BriefGroup title="Established procedure" items={brief.procedures} />
+
+                  {brief.requires_approval.length > 0 && (
+                    <div className="wmcp-brief-gate">
+                      <strong>A person has to decide</strong>
+                      <ul>
+                        {brief.requires_approval.map((reason) => (
+                          <li key={reason}>{reason}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  <footer className="wmcp-brief-foot">
+                    <p>
+                      This opened a row in the outcome ledger. An agent closes it with{" "}
+                      <code>record_orgmemory_outcome</code> once it knows whether the work
+                      succeeded — that record, not the retrieval, is what compounds.
+                    </p>
+                    <Link href="/loop">See the outcome loop →</Link>
+                  </footer>
+                </article>
+              )}
+            </>
+          )}
         </section>
 
         <section className="webmcp-console">
           <div className="webmcp-console-head">
             <div>
-              <p className="webmcp-eyebrow">Live agent console</p>
-              <h2>Watch a real agent use company memory</h2>
+              <p className="webmcp-eyebrow">Reproducible memory handoff</p>
+              <h2>Prove that the next agent starts ahead</h2>
             </div>
             <span className={`webmcp-ws-badge ${supported ? "on" : ""}`}>
               {supported === null
                 ? "checking browser…"
                 : supported
                   ? "WebMCP browser detected"
-                  : "register via document.modelContext on /workspace"}
+                  : "browser-native tools activate in /workspace"}
             </span>
           </div>
 
@@ -430,20 +657,40 @@ export default function WebMCPDemo() {
           )}
         </section>
 
-        <section className="webmcp-catalog">
-          <h2>What an agent discovers on this page</h2>
+        <section className="webmcp-catalog wmcp-tool-command-center">
+          <header>
+            <div><p className="webmcp-eyebrow">Tool manifest</p><h2>What an agent discovers in the workspace</h2></div>
+            <div className="wmcp-tool-filters" aria-label="Filter WebMCP tools">
+              {(["all", "read-only", "governed"] as const).map((filter) => (
+                <button key={filter} type="button" className={toolFilter === filter ? "active" : ""} onClick={() => setToolFilter(filter)}>{filter}</button>
+              ))}
+            </div>
+          </header>
           <p className="webmcp-note">
             Registered through <code>document.modelContext.registerTool()</code> in the
             authenticated workspace. Search and retrieval run automatically; every
             <code>propose_*()</code> tool only queues a proposal.
           </p>
-          <ul>
-            {ORGMEMORY_WEBMCP_TOOLS.map((tool) => (
-              <li key={tool}>
-                <code>{tool}()</code>
-              </li>
+          <div className="wmcp-tool-list">
+            {WEBMCP_TOOL_CATALOG.filter((tool) =>
+              toolFilter === "all" ||
+              (toolFilter === "read-only" ? tool.permission === "read-only" : tool.permission !== "read-only"),
+            ).map((tool) => (
+              <details key={tool.name}>
+                <summary>
+                  <span className={`wmcp-tool-permission ${tool.permission}`}>{tool.permission.replace(/-/g, " ")}</span>
+                  <div><code>{tool.name}</code><strong>{tool.title}</strong></div>
+                  <em>{tool.group}</em>
+                </summary>
+                <div className="wmcp-tool-detail">
+                  <p>{tool.description}</p>
+                  <section><span>Input schema</span><pre>{JSON.stringify(tool.inputSchema, null, 2)}</pre></section>
+                  <section><span>Structured result example</span><pre>{JSON.stringify(tool.resultExample, null, 2)}</pre></section>
+                  <section><span>Recent calls</span><strong>{recentActivity.filter((activity) => activity.tool === tool.name).length || "None in this page session"}</strong></section>
+                </div>
+              </details>
             ))}
-          </ul>
+          </div>
         </section>
       </main>
     </div>
@@ -541,5 +788,29 @@ function SessionPanel({
         </div>
       )}
     </div>
+  );
+}
+
+function BriefGroup({ title, items }: { title: string; items: OrgMemoryBriefingCitation[] }) {
+  // An empty group is omitted rather than shown empty: a briefing that lists
+  // "Prior incidents: none" next to four that do have entries reads as
+  // reassurance, and this page should never reassure by accident.
+  if (!items.length) return null;
+  return (
+    <section className="wmcp-brief-group">
+      <h3>{title}</h3>
+      <ul>
+        {items.map((item) => (
+          <li key={item.memory_id}>
+            <div>
+              <span className="wmcp-brief-kind">{item.type}</span>
+              <strong>{item.subject}</strong>
+            </div>
+            <p>{item.content}</p>
+            <code>{item.memory_id}</code>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }

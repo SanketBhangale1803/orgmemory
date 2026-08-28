@@ -3,58 +3,22 @@
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import ChatBackBar from "@/components/ChatBackBar";
-import Nav from "@/components/Nav";
 import { RunbookMark } from "@/components/RunbookLogo";
 import { api } from "@/lib/api";
+import { titleFor } from "@/lib/workspaceMap";
 
 const SECURING_MIN_MS = 450;
-
-/* One navigation model: the chat is home, and every other page is its satellite
-   carrying the same slim bar. The legacy multi-domain header only survives as a
-   fallback for routes that have not been given a title yet. */
-const chatSatellites: Record<string, string> = {
-  "/ingest": "Add knowledge",
-  "/connectors": "Connections",
-  "/jobs": "Ingestion jobs",
-  "/ask": "Ask OrgMemory",
-  "/work": "Memory work",
-  "/approvals": "Approvals",
-  "/memories": "Memories",
-  "/graph": "Memory graph",
-  "/profiles": "Profiles",
-  "/projects": "Memory spaces",
-  "/updates": "Change intelligence",
-  "/conflicts": "Conflicts",
-  "/settings": "Settings",
-  "/integrations": "MCP & integrations",
-  "/keys": "API keys",
-  "/account": "Account",
-  "/audit": "Audit log",
-  "/benchmarks": "Benchmarks",
-  "/drift": "Drift checks",
-  "/simulation": "Simulation",
-  "/runbooks": "Runbooks",
-  "/reliability": "Reliability",
-  "/admin": "Platform admin",
-};
-
-function satelliteTitle(pathname: string): string {
-  if (chatSatellites[pathname]) return chatSatellites[pathname];
-  if (pathname.startsWith("/runbooks/")) return "Runbook";
-  if (pathname.startsWith("/reliability/")) return "Reliability";
-  if (pathname.startsWith("/updates/")) return "Change intelligence";
-  return "";
-}
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const isLanding = pathname === "/";
   const isDocs = pathname === "/docs" || pathname.startsWith("/docs/");
-  const isPublic = isLanding || isDocs || pathname === "/login";
+  const isWebMCP = pathname === "/webmcp";
+  const isPublic = isLanding || isDocs || isWebMCP || pathname === "/login";
   const isLogin = pathname === "/login";
   const isChat = pathname === "/workspace";
-  const title = isChat ? "" : satelliteTitle(pathname);
+  const title = isChat ? "" : titleFor(pathname);
   const [user, setUser] = useState<any>();
   const [ready, setReady] = useState(false);
 
@@ -96,6 +60,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // The chat carries its own minimal chrome. Wrapping it in the multi-domain
   // header would put the mechanics back on screen it was built to remove.
   if (isChat) return <>{children}</>;
-  if (title) return <div className="om-home ws-satellite"><ChatBackBar user={user} title={title} /><main>{children}</main></div>;
-  return <div className="shell"><Nav user={user}/><main className="main">{children}</main></div>;
+  // Every other page is a satellite of the chat and wears the same slim bar.
+  // A route missing from the map still lands here rather than falling through
+  // to a second navigation model — it just shows without a name, which is the
+  // visible reminder to register it.
+  return (
+    <div className="om-home ws-satellite">
+      <ChatBackBar user={user} title={title || "Workspace"} />
+      <main>{children}</main>
+    </div>
+  );
 }

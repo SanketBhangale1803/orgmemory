@@ -1,36 +1,72 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-test("navigation keeps domains in the top bar and subdomains in contextual tabs", () => {
-  const nav = readFileSync(new URL("../components/Nav.tsx", import.meta.url), "utf8");
-  for (const label of [
-    "Home",
-    "Add knowledge",
-    "Memory Graph",
-    "Ask OrgMemory",
-    "Memory Work",
-    "Explore",
-    "Memories",
-    "Profiles",
-    "Change Intelligence",
-    "Conflicts",
-    "Projects",
-    "Ingestion jobs",
-    "MCP & integrations",
-    "API keys",
-    "Settings",
-    "Account and workspace",
-  ]) assert.match(nav, new RegExp(label));
-  assert.doesNotMatch(nav, /sidebar/);
+test("one registry is the only navigation model", () => {
+  const map = readFileSync(new URL("../lib/workspaceMap.ts", import.meta.url), "utf8");
+  const shell = readFileSync(new URL("../components/AppShell.tsx", import.meta.url), "utf8");
+  // Every destination the product has must be registered, because the command
+  // menu and the title bar both read this file and nothing else.
+  for (const href of [
+    "/workspace",
+    "/ask",
+    "/work",
+    "/loop",
+    "/ingest",
+    "/connectors",
+    "/jobs",
+    "/memories",
+    "/graph",
+    "/profiles",
+    "/projects",
+    "/updates",
+    "/approvals",
+    "/conflicts",
+    "/drift",
+    "/reliability",
+    "/audit",
+    "/webmcp",
+    "/runbooks",
+    "/simulation",
+    "/integrations",
+    "/benchmarks",
+    "/settings",
+    "/account",
+    "/keys",
+    "/admin",
+  ]) assert.match(map, new RegExp(`href: "${href}"`), `${href} must be registered`);
+  // The shell derives titles from the registry rather than keeping its own copy.
+  assert.match(shell, /titleFor\(pathname\)/);
+  assert.doesNotMatch(shell, /chatSatellites/);
+  // The legacy multi-domain header is gone; a second navigation model was the maze.
+  assert.doesNotMatch(shell, /from "@\/components\/Nav"/);
+});
+
+test("the command menu reaches every registered destination from anywhere", () => {
+  const menu = readFileSync(new URL("../components/CommandMenu.tsx", import.meta.url), "utf8");
+  const chat = readFileSync(new URL("../components/WorkspaceChat.tsx", import.meta.url), "utf8");
+  const bar = readFileSync(new URL("../components/ChatBackBar.tsx", import.meta.url), "utf8");
+  assert.match(menu, /searchDestinations/);
+  assert.match(menu, /event\.metaKey \|\| event\.ctrlKey/);
+  assert.match(menu, /key\.toLowerCase\(\) === "k"/);
+  // A typed question is answerable from the menu, not just a page name.
+  assert.match(menu, /orgmemory\.pending-question/);
+  // Both the chat and every satellite page mount it, so the keystroke never dies.
+  assert.match(chat, /<CommandMenu/);
+  assert.match(bar, /<CommandMenu/);
 });
 
 test("pages render real product concepts", () => {
   const pages = [
-    ["../app/page.tsx", "Your company already knows the answer"],
-    ["../app/page.tsx", "Graph foragers"],
-    ["../app/page.tsx", "Sources stay cited"],
-    ["../app/page.tsx", "Google Workspace"],
-    ["../app/page.tsx", "Ask anywhere"],
+    ["../app/page.tsx", "Your organization remembers"],
+    // The landing page must name the vertical, not the category. "Organizational
+    // memory" sells to nobody; engineering organizations are who this is for.
+    ["../app/page.tsx", "The memory layer for engineering organizations"],
+    ["../app/page.tsx", "WebMCP ready"],
+    ["../app/page.tsx", "Incidents, decisions, and owners stay tied to evidence"],
+    ["../app/page.tsx", "Agents get briefed before they act"],
+    ["../app/page.tsx", "Agents investigate. People authorize"],
+    ["../app/page.tsx", "outcome observed"],
+    ["../app/loop/page.tsx", "context actually produced correct action"],
     ["../app/docs/page.tsx", "Context assembly, typed in Python"],
     ["../app/docs/page.tsx", "Specialists forage"],
     ["../app/login/page.tsx", "Log in to OrgMemory"],
@@ -66,12 +102,13 @@ test("pages render real product concepts", () => {
 
 test("public landing, docs, login, and authenticated workspace are separate routes", () => {
   const shell = readFileSync(new URL("../components/AppShell.tsx", import.meta.url), "utf8");
-  const nav = readFileSync(new URL("../components/Nav.tsx", import.meta.url), "utf8");
+  const map = readFileSync(new URL("../lib/workspaceMap.ts", import.meta.url), "utf8");
   assert.match(shell, /const isLanding = pathname === "\/"/);
   assert.match(shell, /pathname\.startsWith\("\/docs\/"\)/);
-  assert.match(shell, /const isPublic = isLanding \|\| isDocs \|\| pathname === "\/login"/);
+  assert.match(shell, /const isWebMCP = pathname === "\/webmcp"/);
+  assert.match(shell, /const isPublic = isLanding \|\| isDocs \|\| isWebMCP \|\| pathname === "\/login"/);
   assert.match(shell, /router\.replace\("\/workspace"\)/);
-  assert.match(nav, /href: "\/workspace"/);
+  assert.match(map, /href: "\/workspace"/);
 });
 
 test("authenticated entry opens quickly while still showing a securing state", () => {
@@ -84,11 +121,11 @@ test("authenticated entry opens quickly while still showing a securing state", (
 
 test("the OrgMemory vector identity replaces the placeholder mark", () => {
   const logo = readFileSync(new URL("../components/RunbookLogo.tsx", import.meta.url), "utf8");
-  const nav = readFileSync(new URL("../components/Nav.tsx", import.meta.url), "utf8");
+  const bar = readFileSync(new URL("../components/ChatBackBar.tsx", import.meta.url), "utf8");
   assert.match(logo, /runbook-mark/);
   assert.match(logo, />ORGMEMORY</);
-  assert.match(nav, /<RunbookLogo inverted/);
-  assert.doesNotMatch(nav, /className="mark"/);
+  assert.match(bar, /<RunbookMark \/>/);
+  assert.doesNotMatch(bar, /className="mark"/);
 });
 
 test("browser API calls use the secure session cookie instead of legacy local storage tokens", () => {
@@ -118,22 +155,39 @@ test("the post-login surface is a chat, not a dashboard", () => {
   // Same model picker and composer the signed-out landing page shows.
   assert.match(chat, /\/api\/models/);
   assert.match(chat, /\/api\/ask/);
-  assert.match(chat, /What do you need to know\?/);
+  assert.match(chat, /Memory for the Agentic Web/);
+  assert.match(chat, /Your organization remembers/);
+  assert.match(chat, /Ask OrgMemory anything/);
 });
 
-test("the chat hides retrieval mechanics from the answer surface", () => {
+test("the intelligence canvas exposes evidence trails without fabricating retrieval progress", () => {
   const chat = readFileSync(new URL("../components/WorkspaceChat.tsx", import.meta.url), "utf8");
-  for (const mechanic of [
+  for (const evidenceField of [
     /context_envelope/,
-    /token_budget/,
     /retrieval_trace/,
-    /chunk_id.*confidence/,
-    /activation_swarm/,
+    /memory_units/,
+    /related_entities/,
+    /likely_cause/,
     /trust_score/,
-  ]) assert.doesNotMatch(chat, mechanic, `chat must not surface ${mechanic}`);
-  // Answers still say where they came from, and hand code work to an editor.
+  ]) assert.match(chat, evidenceField, `chat should preserve ${evidenceField}`);
+  assert.match(chat, /Investigation Trail/);
+  assert.match(chat, /Observed facts/);
+  assert.match(chat, /Permission-trimmed before ranking/);
+  assert.match(chat, /Real results will appear as soon as retrieval returns/);
+  assert.doesNotMatch(chat, /setInterval\([^)]*retrieval|rotatingStages|fakeProgress/);
+  // Answers still distinguish general knowledge and hand code work to an editor.
   assert.match(chat, /general_knowledge/);
   assert.match(chat, /Paste into Cursor, Copilot, or Claude Code/);
+});
+
+test("the public Command Orb carries a question into the authenticated workspace", () => {
+  const command = readFileSync(new URL("../components/HomeCommandOrb.tsx", import.meta.url), "utf8");
+  const chat = readFileSync(new URL("../components/WorkspaceChat.tsx", import.meta.url), "utf8");
+  assert.match(command, /orgmemory\.pending-question/);
+  assert.match(command, /router\.push\("\/workspace"\)/);
+  assert.match(command, /event\.metaKey \|\| event\.ctrlKey/);
+  assert.match(chat, /sessionStorage\.getItem\("orgmemory\.pending-question"\)/);
+  assert.match(chat, /sessionStorage\.removeItem\("orgmemory\.pending-question"\)/);
 });
 
 test("Ask renders answer markdown as typography instead of raw asterisks", () => {

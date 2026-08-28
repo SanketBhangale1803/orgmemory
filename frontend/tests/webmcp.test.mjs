@@ -13,6 +13,15 @@ const chat = readFileSync(
   "utf8",
 );
 const types = readFileSync(new URL("../types/webmcp.d.ts", import.meta.url), "utf8");
+const activityLayer = readFileSync(
+  new URL("../components/AgentActivityLayer.tsx", import.meta.url),
+  "utf8",
+);
+const commandCenter = readFileSync(
+  new URL("../components/WebMCPDemo.tsx", import.meta.url),
+  "utf8",
+);
+const catalog = readFileSync(new URL("../lib/webmcpCatalog.ts", import.meta.url), "utf8");
 
 const compiled = ts.transpileModule(webmcp, {
   compilerOptions: {
@@ -83,12 +92,44 @@ test("WebMCP registration is feature-detected and cleaned up with page lifecycle
   assert.match(hook, /setStatus\(registration\.supported \? "ready" : "unsupported"\)/);
 });
 
+test("WebMCP activity is sourced from real tool execution and persisted as a bounded trace", () => {
+  assert.match(webmcp, /startedAt: new Date\(started\)\.toISOString\(\)/);
+  assert.match(webmcp, /durationMs: finished - started/);
+  assert.match(webmcp, /resultMetadata\(value\)/);
+  assert.match(webmcp, /summarizeInput\(input\)/);
+  assert.match(hook, /orgmemory\.webmcp-activity/);
+  assert.match(hook, /CustomEvent\("orgmemory:webmcp-activity"/);
+  assert.match(hook, /slice\(-24\)/);
+  assert.match(activityLayer, /Show Agent Activity/);
+  assert.match(activityLayer, /Follow Orb/);
+  assert.match(activityLayer, /Developer details/);
+  assert.doesNotMatch(activityLayer, /setInterval|Math\.random/);
+});
+
+test("the WebMCP command center documents the executable surface and never plays a fake trace", () => {
+  assert.match(commandCenter, /WebMCP live trace/);
+  assert.match(commandCenter, /recentActivity\.map/);
+  assert.match(commandCenter, /there is no decorative playback/);
+  assert.match(commandCenter, /document\.modelContext\.registerTool/);
+  assert.match(commandCenter, /Without WebMCP/);
+  assert.match(commandCenter, /With WebMCP/);
+  assert.match(commandCenter, /WEBMCP_TOOL_CATALOG/);
+  assert.match(catalog, /Structured result example|resultExample/);
+  const manifestEntries = catalog.match(/name: "[a-z_]+"/g) || [];
+  assert.equal(manifestEntries.length, 21);
+});
+
 test("browser-agent questions reuse the secure API and update the visible conversation", () => {
   assert.match(chat, /surface: "web" \| "webmcp"/);
   assert.match(chat, /ask\(question, projectId, "webmcp", requestedScope\)/);
   assert.match(chat, /setTurns\(\(current\) => \[\.\.\.current, \{ question \}\]\)/);
   assert.match(webmcp, /source citations/);
   assert.match(webmcp, /options\.ask\(question, project\.id, scope\)/);
+  assert.match(webmcp, /likely_cause: answer\.likely_cause/);
+  assert.match(webmcp, /memory_units: \(answer\.memory_units \|\| \[\]\)\.map\(compactUnit\)/);
+  assert.match(webmcp, /safe_actions: answer\.safe_actions/);
+  assert.match(webmcp, /approval_required: answer\.approval_required/);
+  assert.match(webmcp, /retrieval_trace: answer\.retrieval_trace/);
   assert.match(chat, /data-webmcp-status=\{webMCP\.status\}/);
   assert.match(chat, /browser-native WebMCP tools are available/);
 });
@@ -131,6 +172,8 @@ test("employees cannot receive the browser-agent approval-decision tools", async
       getActiveProjectId: () => "prj_demo",
       async ask() { return { answer: "ok", answer_sufficient: true, answer_scope: "project", evidence: [] }; },
       async inspectChanges() { return []; },
+      async brief() { return { briefing_id: "ctx_1", task: "t", verdict: "no_memory", headline: "h", must_read: [], constraints: [], prior_incidents: [], blast_radius: [], procedures: [], precedents: [], requires_approval: [], safe_actions: [], open_questions: [], memory_count: 0 }; },
+      async recordOutcome() { return { briefing_id: "ctx_1", action: { id: "act_1", action_type: "a" }, outcome: { id: "out_1", outcome: "unknown", reward: 0 }, recorded: true }; },
       async searchMemory() { return []; },
       async getMemory() { throw new Error("not found"); },
       async getRelatedMemories() { return []; },
@@ -145,8 +188,8 @@ test("employees cannot receive the browser-agent approval-decision tools", async
       async listApprovals() { return []; },
       canResolveApprovals: false,
     });
-    // 19 registered in total; the two human-decision tools are admin-only.
-    assert.equal(registration.toolCount, 17);
+    // 21 registered in total; the two human-decision tools are admin-only.
+    assert.equal(registration.toolCount, 19);
     assert.equal(registered.has("resolve_orgmemory_approval"), false);
     assert.equal(registered.has("resolve_orgmemory_proposal"), false);
     registration.dispose();
@@ -222,6 +265,36 @@ test("the real WebMCP implementation registers, invokes, and unregisters all too
             conflicts: ["mem_2"],
           },
         ];
+      },
+      async brief({ task, service }) {
+        calls.push({ kind: "brief", task, service });
+        return {
+          briefing_id: "ctx_1",
+          task,
+          service: service || null,
+          verdict: "requires_approval",
+          headline: "Get a human decision first.",
+          consequential_action: "restarting",
+          must_read: [{ memory_id: "mem_1", type: "incident", subject: "payments pool", content: "", why_it_matters: "x" }],
+          constraints: [],
+          prior_incidents: [{ memory_id: "mem_1", type: "incident", subject: "payments pool", content: "", why_it_matters: "x" }],
+          blast_radius: [],
+          procedures: [],
+          precedents: [],
+          requires_approval: ["A person has to agree before it happens."],
+          safe_actions: [],
+          open_questions: [],
+          memory_count: 1,
+        };
+      },
+      async recordOutcome({ briefingId, action, outcome }) {
+        calls.push({ kind: "outcome", briefingId, action, outcome });
+        return {
+          briefing_id: briefingId,
+          action: { id: "act_1", action_type: action },
+          outcome: { id: "out_1", outcome, reward: 1 },
+          recorded: true,
+        };
       },
       async searchMemory(projectId, query, type, limit) {
         calls.push({ kind: "search", projectId, query, type, limit });
@@ -356,10 +429,12 @@ test("the real WebMCP implementation registers, invokes, and unregisters all too
     });
 
     assert.equal(registration.supported, true);
-    assert.equal(registration.toolCount, 19);
+    assert.equal(registration.toolCount, 21);
     assert.deepEqual([...registered.keys()], [
       "list_orgmemory_spaces",
       "ask_orgmemory",
+      "get_orgmemory_briefing",
+      "record_orgmemory_outcome",
       "inspect_orgmemory_changes",
       "search_orgmemory",
       "get_orgmemory_memory",
@@ -378,6 +453,32 @@ test("the real WebMCP implementation registers, invokes, and unregisters all too
       "list_orgmemory_proposals",
       "resolve_orgmemory_proposal",
     ]);
+
+    // A briefing answers an intent, and its id is what closes the loop later.
+    const briefing = await registered.get("get_orgmemory_briefing").execute({
+      task: "restart the payments connection pool",
+      service: "payments",
+    });
+    assert.equal(briefing.structuredContent.verdict, "requires_approval");
+    assert.equal(briefing.structuredContent.briefing_id, "ctx_1");
+    assert.match(briefing.content[0].text, /Human approval required/);
+
+    const reported = await registered.get("record_orgmemory_outcome").execute({
+      briefing_id: "ctx_1",
+      action: "followed_procedure",
+      outcome: "succeeded",
+    });
+    // The ledger is not company memory, and the tool has to keep saying so.
+    assert.equal(reported.structuredContent.changed_company_memory, false);
+    assert.equal(reported.structuredContent.outcome, "succeeded");
+    await assert.rejects(
+      () => registered.get("record_orgmemory_outcome").execute({
+        briefing_id: "ctx_1",
+        action: "guessed",
+        outcome: "probably_fine",
+      }),
+      /outcome must be one of/,
+    );
 
     const spaces = await registered.get("list_orgmemory_spaces").execute({});
     assert.equal(spaces.structuredContent.spaces[0].project_id, "prj_demo");

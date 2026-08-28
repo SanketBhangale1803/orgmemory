@@ -145,6 +145,30 @@ class OutcomeRecordRequest(BaseModel):
     detail: dict[str, Any] = Field(default_factory=dict)
 
 
+class BriefingRequest(BaseModel):
+    """What an agent is about to do, before it does it."""
+
+    task: str = Field(min_length=3, max_length=2_000)
+    service: str = Field("", max_length=120)
+    project_id: str = Field("", max_length=128)
+    # Where the agent is working when it asks. Recorded on the context event so
+    # the outcome corpus can tell a briefing served to a GitHub pull request from
+    # one served inside the OrgMemory workspace.
+    surface: str = Field("webmcp", max_length=64)
+
+
+class BriefingOutcomeRequest(BaseModel):
+    """What the agent did with a briefing, and whether it worked."""
+
+    briefing_id: str = Field(min_length=4, max_length=128)
+    action: str = Field(min_length=2, max_length=64)
+    outcome: Literal["succeeded", "failed", "partial", "abandoned", "unknown"] = "unknown"
+    target: str = Field("", max_length=200)
+    surface: str = Field("webmcp", max_length=64)
+    reason: str = Field("", max_length=2_000)
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
 class MemoryWorkCreateRequest(BaseModel):
     project_id: str = Field(min_length=4, max_length=128)
     objective: str = Field(min_length=3, max_length=4_000)

@@ -3,7 +3,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   registerOrgMemoryWebMCP,
+  type OrgMemoryBriefing,
+  type OrgMemoryBriefingInput,
   type OrgMemoryChangeSet,
+  type OrgMemoryOutcomeInput,
+  type OrgMemoryOutcomeReceipt,
   type OrgMemoryProposal,
   type OrgMemoryProposalInput,
   type OrgMemoryRefreshRequest,
@@ -26,6 +30,8 @@ type HookOptions = {
     scope: "workspace" | "project",
   ) => Promise<OrgMemoryWebMCPAnswer>;
   inspectChanges: (projectId: string, limit: number) => Promise<OrgMemoryChangeSet[]>;
+  brief: (input: OrgMemoryBriefingInput) => Promise<OrgMemoryBriefing>;
+  recordOutcome: (input: OrgMemoryOutcomeInput) => Promise<OrgMemoryOutcomeReceipt>;
   searchMemory: (
     projectId: string,
     query: string,
@@ -60,6 +66,15 @@ export function useOrgMemoryWebMCP(options: HookOptions) {
   const optionsRef = useRef(options);
   const [status, setStatus] = useState<WebMCPStatus>("idle");
   const [activity, setActivity] = useState<WebMCPActivity>();
+  const [activityLog, setActivityLog] = useState<WebMCPActivity[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const stored = JSON.parse(window.sessionStorage.getItem("orgmemory.webmcp-activity") || "[]");
+      return Array.isArray(stored) ? stored.slice(-24) : [];
+    } catch {
+      return [];
+    }
+  });
   const [toolCount, setToolCount] = useState(0);
   optionsRef.current = options;
 
@@ -84,6 +99,8 @@ export function useOrgMemoryWebMCP(options: HookOptions) {
       getActiveProjectId: () => optionsRef.current.activeProjectId,
       ask: (...args) => optionsRef.current.ask(...args),
       inspectChanges: (...args) => optionsRef.current.inspectChanges(...args),
+      brief: (...args) => optionsRef.current.brief(...args),
+      recordOutcome: (...args) => optionsRef.current.recordOutcome(...args),
       searchMemory: (...args) => optionsRef.current.searchMemory(...args),
       getMemory: (...args) => optionsRef.current.getMemory(...args),
       getRelatedMemories: (...args) => optionsRef.current.getRelatedMemories(...args),
@@ -108,7 +125,22 @@ export function useOrgMemoryWebMCP(options: HookOptions) {
         ? (...args) => optionsRef.current.resolveApproval!(...args)
         : undefined,
       onActivity: (next) => {
-        if (current) setActivity(next);
+        if (!current) return;
+        setActivity(next);
+        setActivityLog((events) => {
+          const index = events.findIndex((event) => event.id === next.id);
+          const updated = index === -1
+            ? [...events, next]
+            : events.map((event, eventIndex) => (eventIndex === index ? next : event));
+          const bounded = updated.slice(-24);
+          try {
+            window.sessionStorage.setItem("orgmemory.webmcp-activity", JSON.stringify(bounded));
+          } catch {
+            /* Activity visibility must not depend on storage availability. */
+          }
+          return bounded;
+        });
+        window.dispatchEvent(new CustomEvent("orgmemory:webmcp-activity", { detail: next }));
       },
     })
       .then((registration) => {
@@ -133,5 +165,18 @@ export function useOrgMemoryWebMCP(options: HookOptions) {
   // member never does; server-side authorization remains the final boundary.
   }, [options.enabled, options.canResolveApprovals, options.canResolveProposals, spacesKey]);
 
-  return { status, activity, toolCount };
+  return {
+    status,
+    activity,
+    activityLog,
+    toolCount,
+    clearActivity: () => {
+      setActivityLog([]);
+      try {
+        window.sessionStorage.removeItem("orgmemory.webmcp-activity");
+      } catch {
+        /* no-op */
+      }
+    },
+  };
 }

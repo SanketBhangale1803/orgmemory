@@ -1,13 +1,19 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import AgentActivityLayer, { WebMCPStatusButton } from "@/components/AgentActivityLayer";
+import CommandMenu, { useCommandMenu } from "@/components/CommandMenu";
 import MarkdownAnswer from "@/components/MarkdownAnswer";
 import { RunbookMark } from "@/components/RunbookLogo";
 import { useOrgMemoryWebMCP } from "@/hooks/useOrgMemoryWebMCP";
 import { api } from "@/lib/api";
 import type {
+  OrgMemoryBriefing,
+  OrgMemoryBriefingInput,
   OrgMemoryChangeSet,
+  OrgMemoryOutcomeInput,
+  OrgMemoryOutcomeReceipt,
   OrgMemoryProposal,
   OrgMemoryProposalInput,
   OrgMemoryRelatedEntry,
@@ -58,6 +64,32 @@ type Answer = {
   /* Identifies the context this answer was built from, so what happens next can
      be attributed back to it. Never shown — it is a link, not a statistic. */
   context_event_id?: string;
+  likely_cause?: string;
+  confidence?: number;
+  trust_score?: {
+    level?: string;
+    reason?: string;
+    contradictions?: unknown[];
+  };
+  memory_units?: OrgMemoryUnit[];
+  related_entities?: string[];
+  updates?: unknown[];
+  conflicts?: unknown[];
+  safe_actions?: string[];
+  approval_required?: string[];
+  retrieval_trace?: {
+    engine?: string;
+    graph_paths?: unknown[];
+    source_projects?: string[];
+    scope_mode?: string;
+    context_selection_policy?: string;
+    security_trimmed?: boolean;
+  };
+  context_envelope?: {
+    id?: string;
+    memory_ids?: string[];
+    evidence_ids?: string[];
+  };
 };
 type Run = {
   id: string;
@@ -139,16 +171,6 @@ const starters = [
   "What should I know before editing this?",
 ];
 
-/* The status line names what is happening in plain language. It deliberately
-   exposes no counts, ids, or scores — the mechanics belong in the trace, not in
-   front of someone waiting for an answer. */
-const stages = [
-  "Reading your company's memory",
-  "Following the trail across sources",
-  "Weighing the answers against each other",
-  "Writing it up",
-];
-
 export default function WorkspaceChat({ user }: { user: any }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [project, setProject] = useState("");
@@ -158,7 +180,6 @@ export default function WorkspaceChat({ user }: { user: any }) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
-  const [stage, setStage] = useState(0);
   const [loadError, setLoadError] = useState("");
   const [copied, setCopied] = useState("");
   const [restored, setRestored] = useState(false);
@@ -181,10 +202,15 @@ export default function WorkspaceChat({ user }: { user: any }) {
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviting, setInviting] = useState(false);
   const [filter, setFilter] = useState("");
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [agentActivityEnabled, setAgentActivityEnabled] = useState(true);
+  const [followOrb, setFollowOrb] = useState(false);
+
+  const command = useCommandMenu();
 
   const picker = useRef<HTMLDivElement>(null);
   const thread = useRef<HTMLDivElement>(null);
-  const stageTimer = useRef<number | undefined>(undefined);
+  const composer = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     api<Project[]>("/api/projects")
@@ -205,7 +231,18 @@ export default function WorkspaceChat({ user }: { user: any }) {
         if (preferred) setModel(preferred.id);
       })
       .catch(() => undefined);
-    return () => window.clearInterval(stageTimer.current);
+  }, []);
+
+  useEffect(() => {
+    const activityPreference = window.localStorage.getItem("orgmemory.agent-activity");
+    const followPreference = window.localStorage.getItem("orgmemory.follow-orb");
+    if (activityPreference !== null) setAgentActivityEnabled(activityPreference !== "off");
+    if (followPreference !== null) setFollowOrb(followPreference === "on");
+    const pendingQuestion = window.sessionStorage.getItem("orgmemory.pending-question");
+    if (pendingQuestion) {
+      setDraft(pendingQuestion);
+      window.sessionStorage.removeItem("orgmemory.pending-question");
+    }
   }, []);
 
   useEffect(() => {
@@ -267,15 +304,10 @@ export default function WorkspaceChat({ user }: { user: any }) {
       if (busy) throw new Error("OrgMemory is already answering another question.");
       setDraft("");
       setBusy(true);
-      setStage(0);
       /* Captured before the new turn is appended, so the thread sent is what came
          before this question rather than including it. */
       const history = threadHistory(turns);
       setTurns((current) => [...current, { question }]);
-      stageTimer.current = window.setInterval(
-        () => setStage((value) => Math.min(value + 1, stages.length - 1)),
-        2200,
-      );
       try {
         const response = await api<Answer>("/api/ask", {
           method: "POST",
@@ -300,7 +332,6 @@ export default function WorkspaceChat({ user }: { user: any }) {
         );
         throw error;
       } finally {
-        window.clearInterval(stageTimer.current);
         setBusy(false);
       }
     },
@@ -312,6 +343,39 @@ export default function WorkspaceChat({ user }: { user: any }) {
       api<OrgMemoryChangeSet[]>(
         `/api/memory/change-sets?project_id=${encodeURIComponent(projectId)}&limit=${limit}`,
       ),
+    [],
+  );
+
+  /* The pre-action briefing: the one retrieval surface that answers an intent
+     rather than a question. Serving it opens a row in the outcome ledger, so
+     the briefing_id an agent gets back is also how it reports what happened. */
+  const briefApi = useCallback(
+    (input: OrgMemoryBriefingInput) =>
+      api<OrgMemoryBriefing>("/api/briefings", {
+        method: "POST",
+        body: JSON.stringify({
+          task: input.task,
+          service: input.service || "",
+          project_id: input.projectId || "",
+          surface: input.surface || "webmcp",
+        }),
+      }),
+    [],
+  );
+
+  const recordOutcomeApi = useCallback(
+    (input: OrgMemoryOutcomeInput) =>
+      api<OrgMemoryOutcomeReceipt>("/api/briefings/outcome", {
+        method: "POST",
+        body: JSON.stringify({
+          briefing_id: input.briefingId,
+          action: input.action,
+          outcome: input.outcome,
+          target: input.target || "",
+          surface: input.surface || "webmcp",
+          reason: input.reason || "",
+        }),
+      }),
     [],
   );
 
@@ -518,6 +582,8 @@ export default function WorkspaceChat({ user }: { user: any }) {
       return ask(question, projectId, "webmcp", requestedScope);
     },
     inspectChanges,
+    brief: briefApi,
+    recordOutcome: recordOutcomeApi,
     searchMemory: searchMemoryApi,
     getMemory: getMemoryApi,
     getRelatedMemories: getRelatedMemoriesApi,
@@ -663,7 +729,7 @@ export default function WorkspaceChat({ user }: { user: any }) {
   const noProjects = !projects.length && !loadError;
 
   return (
-    <div className="om-home ws-app" data-webmcp-status={webMCP.status}>
+    <div className="om-home ws-app agentic-workspace" data-webmcp-status={webMCP.status}>
       <header className="ws-bar">
         <Link href="/workspace" className="ws-id" aria-label="OrgMemory">
           <RunbookMark />
@@ -674,8 +740,14 @@ export default function WorkspaceChat({ user }: { user: any }) {
         </Link>
 
         <div className="ws-controls" ref={picker}>
+          <WebMCPStatusButton
+            status={webMCP.status}
+            toolCount={webMCP.toolCount}
+            activity={webMCP.activity}
+            onClick={() => setActivityOpen(true)}
+          />
           {projects.length > 1 && (
-            <div className="ws-pick">
+            <div className="ws-pick" data-orb-target="spaces">
               <button className="ws-pill" aria-expanded={menu === "space"} onClick={() => setMenu(menu === "space" ? "" : "space")}>
                 <small>Memory</small>
                 <span>{scope === "workspace" ? "All memory" : activeProject?.name || "Select"}</span>
@@ -782,20 +854,26 @@ export default function WorkspaceChat({ user }: { user: any }) {
               </span>
             </Link>
           )}
-          <Link className="ws-pill ws-role" href="/account" title="Your workspace role">
-            <small>Role</small>
-            <span>{user?.role || "member"}</span>
-          </Link>
-          <Link className="ws-pill quiet" href="/ingest">
-            <span>＋ Knowledge</span>
-          </Link>
-          <Link className="ws-avatar" href="/account" title="Account and workspace">
+          <button
+            type="button"
+            className="ws-pill ws-jump"
+            onClick={() => command.setOpen(true)}
+            title="Jump anywhere, add knowledge, or ask a question"
+          >
+            <span>Jump to…</span>
+            <kbd>⌘K</kbd>
+          </button>
+          <Link
+            className="ws-avatar"
+            href="/account"
+            title={`${user?.display_name || "Account"} · ${user?.role || "member"}`}
+          >
             {initials}
           </Link>
         </div>
       </header>
 
-      <main className="ws-workspace">
+      <main className="ws-workspace" data-orb-target="canvas">
         <section className="ws-thread" ref={thread}>
           <div className="ws-thread-inner">
           {loadError && <div className="ws-alert">{loadError}</div>}
@@ -818,13 +896,11 @@ export default function WorkspaceChat({ user }: { user: any }) {
           )}
 
           {!noProjects && !turns.length && (
-            <section className="ws-rest">
-              <span className="ws-orb" aria-hidden="true">
-                <i />
-                <RunbookMark />
-              </span>
-              <h1>What do you need to know?</h1>
-              <p>Ask about your company, or about anything else. I&rsquo;ll tell you which one I answered from.</p>
+            <section className="ws-rest" data-orb-target="memory">
+              <span className="ws-orb command" aria-hidden="true"><i />✦</span>
+              <p className="ws-rest-kicker">Memory for the Agentic Web.</p>
+              <h1>Your organization remembers.</h1>
+              <p>Ask what happened. Understand why. Give agents context before action.</p>
               <div className="ws-starters">
                 {starters.map((item) => (
                   <button key={item} onClick={() => void ask(item).catch(() => undefined)}>
@@ -843,16 +919,28 @@ export default function WorkspaceChat({ user }: { user: any }) {
 
               {turn.error && <div className="ws-alert">{turn.error}</div>}
 
-              {turn.answer && <AnswerBlock answer={turn.answer} onCopy={copyHandoff} copied={copied} turnKey={String(index)} project={project} onPick={(projectId) => void ask(turn.question, projectId).catch(() => undefined)} />}
+              {turn.answer && <AnswerBlock
+                answer={turn.answer}
+                question={turn.question}
+                onCopy={copyHandoff}
+                copied={copied}
+                turnKey={String(index)}
+                project={project}
+                onPick={(projectId) => void ask(turn.question, projectId).catch(() => undefined)}
+                onFollow={() => {
+                  setFollowOrb(true);
+                  window.localStorage.setItem("orgmemory.follow-orb", "on");
+                  document.querySelector<HTMLElement>("[data-investigation-trail]")?.scrollIntoView({ behavior: "smooth", block: "center" });
+                }}
+              />}
 
               {!turn.answer && !turn.error && busy && index === turns.length - 1 && (
-                <div className="ws-working">
-                  <span className="ws-working-dots" aria-hidden="true">
-                    <i />
-                    <i />
-                    <i />
-                  </span>
-                  <p>{stages[stage]}…</p>
+                <div className="ws-working" role="status" aria-live="polite">
+                  <span className="ws-working-orb" aria-hidden="true">✦</span>
+                  <div>
+                    <strong>Orb is searching organizational memory</strong>
+                    <p>Real results will appear as soon as retrieval returns.</p>
+                  </div>
                 </div>
               )}
             </article>
@@ -860,6 +948,7 @@ export default function WorkspaceChat({ user }: { user: any }) {
           </div>
         </section>
 
+        <div className="ws-rail-wrap" data-orb-target="approval">
         <WorkspaceControlRail
           workspaceName={workspace?.name || "Company memory"}
           role={user?.role || "member"}
@@ -885,6 +974,7 @@ export default function WorkspaceChat({ user }: { user: any }) {
           onDecide={(request, approved) => void decide(request, approved)}
           onDecideProposal={(proposal, approved) => void decideProposal(proposal, approved)}
         />
+        </div>
       </main>
 
       <footer className="ws-compose-wrap">
@@ -892,10 +982,11 @@ export default function WorkspaceChat({ user }: { user: any }) {
           <div>
             <div className="ws-compose">
               <textarea
+                ref={composer}
                 rows={1}
                 value={draft}
                 disabled={noProjects}
-                placeholder={noProjects ? "Connect a source to start asking…" : "Ask anything…"}
+                placeholder={noProjects ? "Connect a source to start asking…" : "Ask OrgMemory anything…"}
                 onChange={(event) => setDraft(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey) {
@@ -910,13 +1001,39 @@ export default function WorkspaceChat({ user }: { user: any }) {
               </button>
             </div>
             <p className="ws-foot">
-              {webMCPLabel && <span className="ws-agent-ready" title={`${webMCP.toolCount} browser-native WebMCP tools are available`}><i />{webMCPLabel}</span>}
-              Answers cite the company sources behind them.
-              <Link href="/memories">Browse memory</Link>
+              <button type="button" className="ws-command-hint" onClick={() => command.setOpen(true)}><kbd>⌘K</kbd> Jump anywhere</button>
+              {webMCPLabel && <button type="button" className="ws-agent-ready" title={`${webMCP.toolCount} browser-native WebMCP tools are available`} onClick={() => setActivityOpen(true)}><i />{webMCPLabel}</button>}
+              <Link href="/memories">Inspect evidence</Link>
             </p>
           </div>
         </div>
       </footer>
+
+      <CommandMenu
+        open={command.open}
+        onClose={command.close}
+        isAdmin={isAdmin}
+        pendingApprovals={pendingApprovals.length + pendingProposals.length}
+        onAsk={(question) => void ask(question).catch(() => undefined)}
+      />
+
+      <AgentActivityLayer
+        status={webMCP.status}
+        toolCount={webMCP.toolCount}
+        activities={webMCP.activityLog}
+        open={activityOpen}
+        onClose={() => setActivityOpen(false)}
+        enabled={agentActivityEnabled}
+        onEnabledChange={(enabled) => {
+          setAgentActivityEnabled(enabled);
+          window.localStorage.setItem("orgmemory.agent-activity", enabled ? "on" : "off");
+        }}
+        follow={followOrb}
+        onFollowChange={(enabled) => {
+          setFollowOrb(enabled);
+          window.localStorage.setItem("orgmemory.follow-orb", enabled ? "on" : "off");
+        }}
+      />
     </div>
   );
 }
@@ -1251,18 +1368,22 @@ function readable(answer: string, sources: Source[]) {
 
 function AnswerBlock({
   answer,
+  question,
   onCopy,
   copied,
   turnKey,
   project,
   onPick,
+  onFollow,
 }: {
   answer: Answer;
+  question: string;
   onCopy: (handoff: Handoff, key: string, contextEventId?: string) => void;
   copied: string;
   turnKey: string;
   project: string;
   onPick: (projectId: string) => void;
+  onFollow: () => void;
 }) {
   const [openSources, setOpenSources] = useState(false);
   const [rated, setRated] = useState<"" | "succeeded" | "failed">("");
@@ -1379,9 +1500,114 @@ function AnswerBlock({
     );
   }
 
+  const memories = answer.memory_units || [];
+  const relatedEntities = answer.related_entities || [];
+  const supportCount = memories.length || sources.length;
+  const conflictCount = answer.conflicts?.length || 0;
+  const confidenceLabel = answer.trust_score?.level
+    ? `${answer.trust_score.level.replace(/_/g, " ")} confidence`
+    : "Source-backed answer";
+  const trail = [
+    { type: "Question", label: question },
+    ...relatedEntities.slice(0, 2).map((entity) => ({ type: "Service context", label: entity })),
+    ...memories.slice(0, 3).map((memory) => ({ type: memory.type, label: memory.subject })),
+    ...(answer.likely_cause ? [{ type: "Conclusion", label: answer.likely_cause }] : []),
+  ];
+
   return (
     <div className="ws-answer">
-      <MarkdownAnswer>{readable(answer.answer, sources)}</MarkdownAnswer>
+      <section className="intelligence-canvas" data-orb-target="canvas">
+        <header className="intelligence-head">
+          <div>
+            <p>Intelligence Canvas</p>
+            <h2>{answer.likely_cause || "Answer from current organizational memory"}</h2>
+          </div>
+          <div className="intelligence-badges">
+            <span className="confidence"><i />{confidenceLabel}</span>
+            {supportCount > 0 && <span>{supportCount} supporting record{supportCount === 1 ? "" : "s"}</span>}
+            {conflictCount > 0 && <span className="conflict">{conflictCount} conflicting source{conflictCount === 1 ? "" : "s"}</span>}
+          </div>
+        </header>
+
+        {(memories.length > 0 || sources.length > 0) && (
+          <div className="memory-convergence" data-orb-target="memory" aria-label="Retrieved evidence converging into the answer">
+            <div className="convergence-query"><span>✦</span><strong>Evidence assembled</strong></div>
+            <div className="convergence-nodes">
+              {memories.slice(0, 5).map((memory, index) => (
+                <article key={memory.id} style={{ "--memory-index": index } as CSSProperties}>
+                  <i />
+                  <span>{memory.type}</span>
+                  <strong>{memory.subject}</strong>
+                </article>
+              ))}
+              {!memories.length && sources.slice(0, 5).map((source, index) => (
+                <article key={source.chunk_id} style={{ "--memory-index": index } as CSSProperties}>
+                  <i />
+                  <span>{source.source_type.replace(/_/g, " ")}</span>
+                  <strong>{source.source_title}</strong>
+                </article>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="intelligence-grid">
+          <article className="intelligence-reading">
+            <p className="intelligence-label">Grounded answer</p>
+            <MarkdownAnswer>{readable(answer.answer, sources)}</MarkdownAnswer>
+          </article>
+
+          <aside className="intelligence-evidence">
+            <section>
+              <p className="intelligence-label">Observed facts</p>
+              {memories.length ? (
+                <ul>
+                  {memories.slice(0, 4).map((memory) => (
+                    <li key={memory.id}><span>{memory.type}</span>{memory.content}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p>No atomic memories were promoted for this answer; inspect the cited source evidence.</p>
+              )}
+            </section>
+            {answer.safe_actions && answer.safe_actions.length > 0 && (
+              <section>
+                <p className="intelligence-label">Safe next actions</p>
+                <ul>{answer.safe_actions.slice(0, 4).map((action) => <li key={action}>{action}</li>)}</ul>
+              </section>
+            )}
+            {answer.approval_required && answer.approval_required.length > 0 && (
+              <section className="intelligence-approval">
+                <p className="intelligence-label">Approval required</p>
+                <ul>{answer.approval_required.slice(0, 4).map((action) => <li key={action}>{action}</li>)}</ul>
+              </section>
+            )}
+          </aside>
+        </div>
+
+        {trail.length > 1 && (
+          <section className="investigation-trail" data-orb-target="trail" data-investigation-trail>
+            <header>
+              <div><p>Observable actions and evidence</p><h3>Investigation Trail</h3></div>
+              <span>{trail.length} steps</span>
+            </header>
+            <ol>
+              {trail.map((item, index) => (
+                <li key={`${item.type}-${item.label}-${index}`}>
+                  <span>{String(index + 1).padStart(2, "0")}</span>
+                  <div><small>{item.type}</small><strong>{item.label}</strong></div>
+                </li>
+              ))}
+            </ol>
+          </section>
+        )}
+
+        <footer className="intelligence-actions">
+          <button type="button" onClick={() => setOpenSources(true)}>Inspect Evidence</button>
+          <button type="button" className="quiet" onClick={onFollow}>Follow Orb</button>
+          {answer.retrieval_trace?.security_trimmed && <span>Permission-trimmed before ranking</span>}
+        </footer>
+      </section>
 
       {answer.resolved_subject && (
         /* A follow-up was bound to an earlier subject. Saying which one turns a

@@ -1,38 +1,82 @@
 # OrgMemory
 
-> **The long-term memory layer for browser AI agents.** The authenticated
-> workspace registers itself as a browser-native Model Context Provider, so an
-> AI agent can discover and call the company's memory directly — previous
-> incidents, architecture decisions, service dependencies, and verified facts —
-> through `document.modelContext.registerTool()`. Open **[localhost:3000/webmcp](http://localhost:3000/webmcp)**
-> for the explainer and a live demo of the
+> **The memory layer for engineering organizations — and for the AI agents
+> working alongside them.** OrgMemory holds what your org already learned:
+> every incident, decision, owner, dependency, and runbook, tied to its source.
+> The authenticated workspace registers itself as a browser-native Model Context
+> Provider, so an agent about to change something can ask what this company
+> knows **before** it acts — through `document.modelContext.registerTool()`.
+> Open **[localhost:3000/webmcp](http://localhost:3000/webmcp)** for the live
+> briefing demo and the
 > [challenge walkthrough](docs/webmcp-challenge.md).
 
-> The source-backed operating brain for your company.
+## The loop this product is
 
-OrgMemory learns how a company works from code, conversations, documents, tickets,
-decisions, and uploaded knowledge. It turns that evidence into a living company
-memory graph that employees and internal AI agents can query without asking people
-to re-explain the company, repository, service, or prior decision.
+```text
+agent is about to change something
+→ get_orgmemory_briefing      constraints, prior incidents, blast radius, verdict
+→ a person approves           nothing enters memory without one
+→ agent acts
+→ record_orgmemory_outcome    what it did, and whether it worked
+→ better briefing next time
+```
+
+That last leg is the point. Anyone can ingest the same Slack and the same
+repositories. What only your workspace accumulates is the record of *which
+context actually produced correct action here* — visible at
+[`/loop`](http://localhost:3000/loop), and the one asset a better model cannot
+copy.
 
 ## WebMCP: organizational memory for browser agents
 
-The workspace page registers 19 browser-native tools. Read-only retrieval runs
-automatically; every write is a proposal that waits for an explicit human
-approval in the workspace rail:
+The workspace page registers 21 browser-native tools across three permission
+tiers, and an agent can tell them apart from the annotations alone:
 
 ```text
-list_orgmemory_spaces          ask_orgmemory
-search_orgmemory               get_orgmemory_memory
-get_orgmemory_related_memories get_orgmemory_incidents
-get_orgmemory_runbook          get_orgmemory_service_context
-get_orgmemory_dependencies     get_orgmemory_decisions
-inspect_orgmemory_changes      propose_repository_refresh
-list_orgmemory_approvals       resolve_orgmemory_approval (admin)
-propose_orgmemory_memory       propose_orgmemory_incident
-propose_orgmemory_decision     list_orgmemory_proposals
-resolve_orgmemory_proposal (admin)
+read-only (14)      ledger-append (1)          approval-gated (6)
+──────────────      ─────────────────          ───────────────────
+get_orgmemory_briefing    record_orgmemory_outcome    propose_orgmemory_memory
+ask_orgmemory                                         propose_orgmemory_incident
+search_orgmemory                                      propose_orgmemory_decision
+get_orgmemory_memory                                  propose_repository_refresh
+get_orgmemory_related_memories                        resolve_orgmemory_proposal  (admin)
+get_orgmemory_incidents                               resolve_orgmemory_approval  (admin)
+get_orgmemory_runbook
+get_orgmemory_service_context
+get_orgmemory_dependencies
+get_orgmemory_decisions
+inspect_orgmemory_changes
+list_orgmemory_spaces
+list_orgmemory_approvals
+list_orgmemory_proposals
 ```
+
+Reads are permission-trimmed on the server. An outcome report appends to the
+ledger and changes no knowledge. The only path for a single fact into company
+memory is a proposal a person approves.
+
+### The tool the product exists for
+
+`get_orgmemory_briefing` answers an *intent* rather than a question. An agent
+says what it is about to do; OrgMemory returns the decisions that constrain it,
+the incidents that started the same way, the components a change there reaches,
+the established procedure, and whether a person has to agree first:
+
+```json
+{
+  "verdict": "requires_approval",
+  "headline": "This changes production state for payments. Get an explicit human decision.",
+  "prior_incidents": [{ "memory_id": "mem_018f", "subject": "payments outage: pool exhaustion" }],
+  "constraints":     [{ "memory_id": "mem_0110", "subject": "cap payments worker concurrency" }],
+  "blast_radius":    [{ "memory_id": "mem_79fc", "subject": "payments shares the PostgreSQL cluster" }],
+  "requires_approval": ["This request involves restarting. A person has to agree before it happens."],
+  "briefing_id": "ctx_d543"
+}
+```
+
+No model runs in that path. The same intent returns the same verdict twice, and
+every line carries a memory id a person can open — because an agent standing in
+front of a production change needs a control, not a summary.
 
 Example: ask a WebMCP-capable browser agent *"Why is the payments service
 failing again?"* — it searches remembered incidents, retrieves the related
@@ -48,6 +92,14 @@ and only enter company memory after a person approves them. Tool availability
 is a capability, not authorization: search is server-trimmed to the signed-in
 person's team scope, and anything an agent reads is treated as data, never as
 instructions.
+
+## Finding your way around
+
+One keystroke, everywhere: **⌘K** opens the command menu, which lists every
+destination in the product and answers a typed question against company memory.
+There is no second navigation model to learn. Every route is registered in
+`frontend/lib/workspaceMap.ts`; the command menu, the page title bar, and the
+tests all read that one file.
 
 ## What OrgMemory is
 

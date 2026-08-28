@@ -93,16 +93,23 @@ from app.memory import (
     CompanyBrainService,
     CompanyMemoryService,
     OperationalMemoryService,
+    briefing,
 )
 from app.memory.change_intelligence import github_diff
 from app.memory.company import MEMORY_TYPES
-from app.outcomes import export_training_records, record_action, record_outcome
+from app.outcomes import (
+    export_training_records,
+    record_action,
+    record_context,
+    record_outcome,
+)
 from app.outcomes import stats as outcome_stats
 from app.reliability import ChangeImpactService, OperationalAssertionService
 from app.retrieval import RetrievalService
 from app.runbooks import RunbookService
 from app.skills import get as get_learned_skill
 from app.skills import list_skills as list_learned_skills
+from app.skills import matches as learned_skill_matches
 from app.skills import retire as retire_learned_skill_record
 from app.webmcp_agent import AgentSessionStore, WebMCPAgentRunner
 from app.work import MemoryWorkService
@@ -114,6 +121,8 @@ from .schemas import (
     ArtifactSaveRequest,
     AskRequest,
     AssertionDecisionRequest,
+    BriefingOutcomeRequest,
+    BriefingRequest,
     BulkAssertionReviewRequest,
     ChangeImpactAnalyzeRequest,
     ConnectorSyncRequest,
@@ -1677,6 +1686,156 @@ def outcome_training_export(
         limit=limit,
     )
     return {"records": records, "count": len(records)}
+
+
+@router.post("/briefings")
+def create_briefing(
+    request: BriefingRequest,
+    authorization: str | None = Header(default=None),
+):
+    """What this company already knows about a change an agent is about to make.
+
+    Every other retrieval endpoint answers a question. This one answers an
+    intent, and returns the constraints that intent is about to run into:
+    decisions that bind it, incidents that started the same way, the components
+    a change here reaches, and whether a person has to agree first.
+
+    It is deliberately model-free. An agent standing in front of a production
+    change needs the same answer twice, and it needs every line to carry a
+    memory id somebody can open. Serving the briefing also opens a row in the
+    outcome ledger, so what the agent does next can be attributed back to the
+    context that informed it.
+    """
+    principal = _authenticate(authorization)
+    if request.project_id:
+        _authorize_project_for_principal(principal, request.project_id)
+    team_ids = _principal_team_ids(principal)
+
+    def search(task: str, project_id: str = "", limit: int = 12) -> dict:
+        return _memory_search_core(principal, task, project_id=project_id, limit=limit)
+
+    def list_by_kind(kind: str, project_id: str) -> list[dict]:
+        scoped = [project_id] if project_id else _briefing_project_ids(principal)
+        found: list[dict] = []
+        project_names = {item["id"]: item["name"] for item in rows("SELECT id,name FROM projects")}
+        for candidate in scoped:
+            for unit in company_memory.list(
+                candidate,
+                latest=True,
+                kind=kind,
+                limit=400,
+                allowed_team_ids=team_ids,
+            ):
+                found.append(
+                    {
+                        **_public_memory_unit(unit),
+                        "project_name": project_names.get(candidate, ""),
+                    }
+                )
+        return found
+
+    def precedents(task: str) -> list[dict]:
+        # Precedent is per-project, and a briefing without a project has no
+        # place to look for one. That is a real absence, not an error.
+        if not request.project_id:
+            return []
+        return learned_skill_matches(request.project_id, task)
+
+    brief = briefing.build(
+        task=request.task,
+        service=request.service,
+        project_id=request.project_id,
+        search=search,
+        list_by_kind=list_by_kind,
+        precedents=precedents,
+    )
+
+    # The ledger row is what lets record_briefing_outcome close this loop later.
+    # It is best-effort by design: a briefing must still be served if the
+    # instrumentation behind it fails.
+    briefing_id = record_context(
+        project_id=request.project_id,
+        query=f"[briefing] {request.task}",
+        result={
+            "answer": brief["headline"],
+            "answer_scope": "briefing",
+            "answer_kind": brief["verdict"],
+            "answer_sufficient": brief["verdict"] != "no_memory",
+            "evidence": [],
+            "confidence": 0.0,
+            "context_envelope": {},
+        },
+        workspace_id=principal.get("active_workspace_id", ""),
+        principal_id=str(principal.get("id") or ""),
+        surface=request.surface or "webmcp",
+    )
+    audit.record(
+        "briefing.served",
+        f"Briefing ({brief['verdict']}): {request.task[:80]}",
+        request.project_id or None,
+        actor=str(principal["id"]),
+        payload={"briefing_id": briefing_id, "verdict": brief["verdict"]},
+    )
+    return {**brief, "briefing_id": briefing_id or None}
+
+
+@router.post("/briefings/outcome")
+def record_briefing_outcome(
+    request: BriefingOutcomeRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Close the loop a briefing opened: what was done, and whether it worked.
+
+    Both legs are written together because an agent reporting back from another
+    site gets one round trip, not two. Nothing here touches company memory —
+    this appends an observation to the ledger, which is why it needs no
+    approval while proposing a memory does.
+    """
+    principal = _authorize_workspace(authorization)
+    workspace_id = principal["active_workspace_id"]
+    try:
+        action = record_action(
+            context_event_id=request.briefing_id,
+            action_type=request.action,
+            workspace_id=workspace_id,
+            actor=str(principal.get("display_name") or principal["id"]),
+            surface=request.surface,
+            target=request.target,
+            detail=request.detail,
+        )
+        outcome = record_outcome(
+            context_event_id=request.briefing_id,
+            outcome=request.outcome,
+            workspace_id=workspace_id,
+            action_event_id=action["id"],
+            signal="agent",
+            reason=request.reason,
+            detail=request.detail,
+        )
+    except LookupError:
+        raise HTTPException(404, "Unknown briefing") from None
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return {
+        "briefing_id": request.briefing_id,
+        "action": action,
+        "outcome": outcome,
+        "recorded": True,
+    }
+
+
+def _briefing_project_ids(principal: dict) -> list[str]:
+    """Every project a briefing may draw on, newest first."""
+    visible = _visible_project_ids(principal)
+    if visible is not None:
+        return sorted(visible)
+    return [
+        item["project_id"]
+        for item in rows(
+            "SELECT project_id FROM workspace_projects WHERE workspace_id=?",
+            (principal.get("active_workspace_id", ""),),
+        )
+    ]
 
 
 @router.post("/work")

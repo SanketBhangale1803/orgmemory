@@ -108,6 +108,113 @@ The workspace mirrors both sides automatically: it polls the approvals queue
 and the memory-proposal queue, renders both inline with approve/deny actions
 for admins, and folds any agent-made resolution into the same visible state.
 
+## Phase 5: from retrieval surface to a control on real work
+
+Phases 1–4 made organizational memory *reachable* by a browser agent. Phase 5
+answers the question that was still open: an agent can now read everything —
+what should it read, and when?
+
+### `get_orgmemory_briefing` — answering an intent, not a question
+
+Every other tool on the surface answers a question. This one answers an intent:
+*"I am about to do X to service Y."* That is a different shape of request, and
+it needs a different shape of answer — a question wants the best passage, an
+intent wants the constraints it is about to violate.
+
+```text
+get_orgmemory_briefing({ task: "restart the payments connection pool",
+                         service: "payments" })
+
+→ verdict: "requires_approval"
+  headline: "This changes production state for payments. Get an explicit human decision."
+  must_read:        the remembered first-response procedure, the shared-cluster dependency
+  constraints:      "cap payments worker concurrency"          (decision, mem_0110)
+  prior_incidents:  "payments outage: pool exhaustion"          (incident, mem_018f)
+  blast_radius:     "payments shares the PostgreSQL cluster"    (dependency, mem_79fc)
+  requires_approval: ["This request involves restarting. A person has to agree first."]
+  briefing_id: "ctx_d543"
+```
+
+Four properties make it safe to gate real work on, and each one was a decision:
+
+1. **No model runs in this path.** A briefing that returns a different verdict
+   for the same intent on two consecutive calls is not a control. Retrieval is
+   deterministic and every line carries a memory id a person can open.
+2. **Each memory appears in exactly one group.** An earlier build repeated the
+   same decision under both `must_read` and `constraints`, which made one
+   finding look like two and cost the agent tokens to discover otherwise.
+3. **An unnamed service pulls no constraints at all.** Kind-scoped retrieval is
+   workspace-wide when unscoped, and another team's postmortem presented under
+   "this has gone wrong before" is indistinguishable from a real warning. With
+   no service the briefing falls back to relevance and says so in
+   `open_questions`.
+4. **`no_memory` is a distinct verdict.** "Nothing is known" and "nothing to
+   worry about" are opposite instructions, and collapsing them is the failure
+   that gets production restarted.
+
+The verdict ladder is `no_memory` → `proceed` → `proceed_with_context` →
+`requires_approval`. Consequential intent is detected from an explicit,
+inspectable verb list that deliberately includes "raise" and "bump" — changing a
+limit is the move behind most capacity incidents — and deliberately excludes
+"change" and "update", which match almost any sentence and would collapse every
+verdict into the same one.
+
+### `record_orgmemory_outcome` — closing the loop the briefing opened
+
+Serving a briefing opens a row in the outcome ledger. The agent closes it after
+acting, from wherever it acted:
+
+```text
+record_orgmemory_outcome({ briefing_id: "ctx_d543",
+                           action: "followed_procedure",
+                           outcome: "succeeded",
+                           surface: "github.com" })
+```
+
+This introduced a **third permission tier**, and it is the honest one. Calling
+an outcome report "read-only" understates it: it writes. Calling it
+"approval-gated" overstates it: it changes no company knowledge. So it is
+annotated `ledger-append` — an agent may report back freely, and still cannot
+put a single fact into memory without a person. The three tiers are legible to
+an agent from the annotations alone:
+
+```text
+read-only (14)        permission-trimmed on the server
+ledger-append (1)     writes an observation, changes no knowledge
+approval-gated (6)    the only path into company memory, via a human decision
+```
+
+`outcome` is a closed vocabulary (`succeeded` / `failed` / `partial` /
+`abandoned` / `unknown`) validated on both sides, because reward is derived from
+it and one invented sixth value quietly corrupts the corpus.
+
+### Why this is the product and not a feature
+
+The ledger behind these two tools was being written from day one and had no
+surface, which meant the thing that compounds was invisible. `/loop` now shows
+it: contexts served, actions taken, outcomes observed, the closed rate, and the
+precedent distilled from runs that verifiably worked.
+
+That record — which context actually produced correct action *inside this
+company* — is the only asset here that a competitor with a better model cannot
+copy. It is obtainable only by instrumenting the loop while it runs, and it
+compounds per customer. WebMCP is what makes it collectable at all: the agent is
+working on GitHub, or PagerDuty, or a dashboard, and the page it came from is
+the only thing that knows what the company already learned.
+
+## Navigation: one model, not two
+
+A side effect of Phase 5 was fixing what the product had become to a newcomer.
+Twenty-six routes existed; the header knew six domains, the shell knew
+twenty-three titles, and nothing knew all of it, so several pages could only be
+reached by typing a URL.
+
+Everything now reads one registry (`frontend/lib/workspaceMap.ts`): the ⌘K
+command menu, the page title bar, and the tests. The legacy multi-domain header
+is deleted — a second navigation model *was* the maze. Adding a route makes it
+reachable everywhere at once, and forgetting to register one is visible
+immediately, because the page loses its title.
+
 ## Security boundary
 
 - Tools register only inside the authenticated workspace.
@@ -118,6 +225,12 @@ for admins, and folds any agent-made resolution into the same visible state.
 - Read-only tools are annotated as non-destructive, and workspace-wide search is
   trimmed server-side against the caller's team scope — the client check is a
   convenience, never the boundary.
+- The `ledger-append` tier writes observations, never knowledge. An agent can
+  report an outcome without approval precisely because doing so cannot change
+  what the company believes.
+- A briefing never authorizes the change it describes. `requires_approval` is
+  advice returned to the agent, and the approval queue is where a person
+  actually decides.
 - The write tools are annotated as non-destructive, approval-required writes:
   proposing is idempotent, has no memory side effect, and returns the next
   human step instead of pretending something was saved.

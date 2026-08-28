@@ -1,0 +1,95 @@
+1
+00:00:00,000 --> 00:00:07,000
+Browser agents see the page now, but not what the organization learned yesterday.
+
+2
+00:00:07,000 --> 00:00:14,000
+OrgMemory supplies durable, source-backed company context before action.
+
+3
+00:00:14,000 --> 00:00:21,000
+Without WebMCP: inspect the DOM, guess controls, navigate, and parse.
+
+4
+00:00:21,000 --> 00:00:28,000
+With WebMCP: call a structured capability and receive authorized evidence.
+
+5
+00:00:28,000 --> 00:00:33,000
+The authenticated workspace preserves the signed-in person's access boundary.
+
+6
+00:00:33,000 --> 00:00:38,000
+19 tools: 13 read-only and 6 human-governed.
+
+7
+00:00:38,000 --> 00:00:45,000
+This is a real page-defined WebMCP invocation, not decorative playback.
+
+8
+00:00:45,000 --> 00:00:52,000
+Tool, arguments, results, and latency remain observable.
+
+9
+00:00:52,000 --> 00:01:01,000
+Payments is failing again. The agent asks for remembered incidents.
+
+10
+00:01:01,000 --> 00:01:10,000
+It recovers pool exhaustion, checkout timeouts, and the surrounding service context.
+
+11
+00:01:10,000 --> 00:01:18,000
+Payments shares PostgreSQL with ledger, defining the blast radius.
+
+12
+00:01:18,000 --> 00:01:26,000
+A prior decision capped worker concurrency to protect that shared pool.
+
+13
+00:01:26,000 --> 00:01:35,000
+OrgMemory turns precedent, dependencies, procedures, and decisions into action.
+
+14
+00:01:35,000 --> 00:01:44,000
+Check connection count and the worker cap before improvising a new fix.
+
+15
+00:01:44,000 --> 00:01:51,000
+The agent can propose verified knowledge, but nothing is saved yet.
+
+16
+00:01:51,000 --> 00:01:58,000
+A human reviews and decides. Capability is not authorization.
+
+17
+00:01:58,000 --> 00:02:07,000
+Approved knowledge becomes durable company memory, not another trapped chat.
+
+18
+00:02:07,000 --> 00:02:16,000
+That creates a clean handoff across agents, sessions, and tools.
+
+19
+00:02:16,000 --> 00:02:25,000
+Session two is a brand-new agent: no shared chat, no carried context.
+
+20
+00:02:25,000 --> 00:02:34,000
+It still retrieves the procedure, incidents, service context, and prior decision.
+
+21
+00:02:34,000 --> 00:02:41,000
+Read tools operate automatically inside the user's authorized scope.
+
+22
+00:02:41,000 --> 00:02:48,000
+Writes remain proposals; approval remains a distinct human decision.
+
+23
+00:02:48,000 --> 00:02:54,000
+One governed company brain across every browser-agent session.
+
+24
+00:02:54,000 --> 00:03:00,000
+Understand what happened before acting on what is happening now.
