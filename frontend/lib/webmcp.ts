@@ -1,3 +1,5 @@
+import { ORG_TOOLS } from "@/lib/orgTools";
+
 export const ORGMEMORY_WEBMCP_TOOLS = [
   "list_orgmemory_spaces",
   "ask_orgmemory",
@@ -20,6 +22,25 @@ export const ORGMEMORY_WEBMCP_TOOLS = [
   "resolve_orgmemory_approval",
   "list_orgmemory_proposals",
   "resolve_orgmemory_proposal",
+  /* Organizational operations: the cross-space reads an agent needs to
+     reconstruct a project, trace reasoning, and find what is actually blocking,
+     plus the write path that always stops at a person. */
+  "get_orgmemory_project_context",
+  "get_orgmemory_recent_changes",
+  "get_orgmemory_tasks",
+  "get_orgmemory_task_dependencies",
+  "get_orgmemory_dependency_graph",
+  "find_orgmemory_blockers",
+  "find_orgmemory_conflicts",
+  "find_orgmemory_stale",
+  "get_orgmemory_readiness",
+  "get_orgmemory_reasoning_chain",
+  "get_orgmemory_provenance",
+  "get_orgmemory_people",
+  "get_orgmemory_owner",
+  "propose_orgmemory_changes",
+  "create_orgmemory_task",
+  "update_orgmemory_task",
 ] as const;
 
 export type WebMCPToolName = (typeof ORGMEMORY_WEBMCP_TOOLS)[number];
@@ -1783,6 +1804,26 @@ export async function registerOrgMemoryWebMCP(
       registration,
     )]
     : []),
+  /* One registration per organizational operation. The handler an agent
+     receives is the same object the page's own console calls, so there is no
+     second, friendlier code path that only the demo takes. */
+  ...Object.values(ORG_TOOLS).map((tool) =>
+    modelContext.registerTool(
+      {
+        name: tool.name,
+        title: tool.title,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+        annotations: tool.kind === "read" ? READ_ONLY : APPROVAL_REQUIRED_WRITE,
+        execute: (input) =>
+          tracked(tool.name as WebMCPToolName, options.onActivity, input, async () => {
+            const result = await tool.run(input as Record<string, unknown>);
+            return toolResult(result.summary, result.data);
+          }),
+      },
+      registration,
+    ),
+  ),
 ];
 
   try {

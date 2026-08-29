@@ -17,18 +17,36 @@ const activityLayer = readFileSync(
   new URL("../components/AgentActivityLayer.tsx", import.meta.url),
   "utf8",
 );
-const commandCenter = readFileSync(
-  new URL("../components/WebMCPDemo.tsx", import.meta.url),
+const console_ = readFileSync(
+  new URL("../components/AgentOperations.tsx", import.meta.url),
   "utf8",
 );
+const orgTools = readFileSync(new URL("../lib/orgTools.ts", import.meta.url), "utf8");
 const catalog = readFileSync(new URL("../lib/webmcpCatalog.ts", import.meta.url), "utf8");
 
-const compiled = ts.transpileModule(webmcp, {
-  compilerOptions: {
-    module: ts.ModuleKind.ESNext,
-    target: ts.ScriptTarget.ES2022,
-  },
-}).outputText;
+const compilerOptions = {
+  module: ts.ModuleKind.ESNext,
+  target: ts.ScriptTarget.ES2022,
+};
+
+function dataModule(source) {
+  const output = ts.transpileModule(source, { compilerOptions }).outputText;
+  return `data:text/javascript;base64,${Buffer.from(output).toString("base64")}`;
+}
+
+/* Modules load here as data URLs, which have no notion of the "@/" path alias.
+   The organizational tool map is compiled the same way and linked in by URL, so
+   registration is exercised against the real definitions rather than a stub;
+   only the HTTP transport underneath it is replaced. */
+const orgToolsUrl = dataModule(
+  orgTools.replace(
+    /^import \{ api \} from "@\/lib\/api";$/m,
+    "const api = async () => ({ spaces: [], plans: [], results: [] });",
+  ),
+);
+const webmcpStandalone = webmcp.replace('"@/lib/orgTools"', JSON.stringify(orgToolsUrl));
+
+const compiled = ts.transpileModule(webmcpStandalone, { compilerOptions }).outputText;
 const runtime = await import(
   `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`
 );
@@ -106,17 +124,40 @@ test("WebMCP activity is sourced from real tool execution and persisted as a bou
   assert.doesNotMatch(activityLayer, /setInterval|Math\.random/);
 });
 
-test("the WebMCP command center documents the executable surface and never plays a fake trace", () => {
-  assert.match(commandCenter, /WebMCP live trace/);
-  assert.match(commandCenter, /recentActivity\.map/);
-  assert.match(commandCenter, /there is no decorative playback/);
-  assert.match(commandCenter, /document\.modelContext\.registerTool/);
-  assert.match(commandCenter, /Without WebMCP/);
-  assert.match(commandCenter, /With WebMCP/);
-  assert.match(commandCenter, /WEBMCP_TOOL_CATALOG/);
+test("the agent console calls the registered tools rather than replaying a script", () => {
+  // The console must go through the same handler map the page hands to WebMCP.
+  // A second, friendlier code path just for the demo is the failure mode here.
+  assert.match(console_, /ORG_TOOLS\[tool\]/);
+  assert.match(console_, /await spec\.run\(args\)/);
+  assert.match(console_, /Math\.round\(performance\.now\(\) - started\)/);
+  assert.doesNotMatch(console_, /Math\.random/);
+  // Durations shown must be measured, never invented.
+  assert.doesNotMatch(console_, /ms: \d{2,}/);
+});
+
+test("organizational operations are registered as real tools, with writes gated", () => {
+  assert.match(webmcp, /Object\.values\(ORG_TOOLS\)\.map/);
+  assert.match(webmcp, /tool\.kind === "read" \? READ_ONLY : APPROVAL_REQUIRED_WRITE/);
+  for (const tool of [
+    "get_orgmemory_project_context",
+    "get_orgmemory_reasoning_chain",
+    "get_orgmemory_dependency_graph",
+    "find_orgmemory_blockers",
+    "find_orgmemory_conflicts",
+    "get_orgmemory_readiness",
+    "get_orgmemory_provenance",
+    "propose_orgmemory_changes",
+  ]) {
+    assert.match(orgTools, new RegExp(`name: "${tool}"`));
+    assert.ok(runtime.ORGMEMORY_WEBMCP_TOOLS.includes(tool), `${tool} missing from the name list`);
+  }
+  // Nothing may approve its own plan: approval is a person, not a tool.
+  assert.doesNotMatch(orgTools, /name: "approve_/);
+});
+
+test("the tool catalog stays derived from the executable definitions", () => {
   assert.match(catalog, /Structured result example|resultExample/);
-  const manifestEntries = catalog.match(/name: "[a-z_]+"/g) || [];
-  assert.equal(manifestEntries.length, 21);
+  assert.match(catalog, /Object\.values\(ORG_TOOLS\)\.map/);
 });
 
 test("browser-agent questions reuse the secure API and update the visible conversation", () => {
@@ -188,8 +229,8 @@ test("employees cannot receive the browser-agent approval-decision tools", async
       async listApprovals() { return []; },
       canResolveApprovals: false,
     });
-    // 21 registered in total; the two human-decision tools are admin-only.
-    assert.equal(registration.toolCount, 19);
+    // Everything except the two human-decision tools, which are admin-only.
+    assert.equal(registration.toolCount, runtime.ORGMEMORY_WEBMCP_TOOLS.length - 2);
     assert.equal(registered.has("resolve_orgmemory_approval"), false);
     assert.equal(registered.has("resolve_orgmemory_proposal"), false);
     registration.dispose();
@@ -429,29 +470,36 @@ test("the real WebMCP implementation registers, invokes, and unregisters all too
     });
 
     assert.equal(registration.supported, true);
-    assert.equal(registration.toolCount, 21);
-    assert.deepEqual([...registered.keys()], [
-      "list_orgmemory_spaces",
+    assert.equal(registration.toolCount, runtime.ORGMEMORY_WEBMCP_TOOLS.length);
+    // The exported list is the documented surface; registration order is an
+    // implementation detail, so the two are compared as sets.
+    assert.deepEqual(
+      [...registered.keys()].sort(),
+      [...runtime.ORGMEMORY_WEBMCP_TOOLS].sort(),
+    );
+    // The original memory-tool family must all still be there.
+    assert.deepEqual([...registered.keys()].slice(0, 21).sort(), [
       "ask_orgmemory",
       "get_orgmemory_briefing",
-      "record_orgmemory_outcome",
-      "inspect_orgmemory_changes",
-      "search_orgmemory",
+      "get_orgmemory_decisions",
+      "get_orgmemory_dependencies",
+      "get_orgmemory_incidents",
       "get_orgmemory_memory",
       "get_orgmemory_related_memories",
-      "get_orgmemory_incidents",
       "get_orgmemory_runbook",
       "get_orgmemory_service_context",
-      "get_orgmemory_dependencies",
-      "get_orgmemory_decisions",
-      "propose_repository_refresh",
+      "inspect_orgmemory_changes",
       "list_orgmemory_approvals",
-      "resolve_orgmemory_approval",
-      "propose_orgmemory_memory",
-      "propose_orgmemory_incident",
-      "propose_orgmemory_decision",
       "list_orgmemory_proposals",
+      "list_orgmemory_spaces",
+      "propose_orgmemory_decision",
+      "propose_orgmemory_incident",
+      "propose_orgmemory_memory",
+      "propose_repository_refresh",
+      "record_orgmemory_outcome",
+      "resolve_orgmemory_approval",
       "resolve_orgmemory_proposal",
+      "search_orgmemory",
     ]);
 
     // A briefing answers an intent, and its id is what closes the loop later.

@@ -91,6 +91,8 @@ class Settings(BaseSettings):
     connector_manifest_public_keys_json: str = "{}"
     connector_sync_worker_enabled: bool = True
     connector_sync_poll_seconds: int = 2
+    # How often standing organizational watches are re-evaluated.
+    org_watch_poll_seconds: int = 120
     connector_custom_mcp_enabled: bool = True
     connector_custom_mcp_allow_private_networks: bool = False
 

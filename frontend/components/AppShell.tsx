@@ -14,10 +14,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const isLanding = pathname === "/";
   const isDocs = pathname === "/docs" || pathname.startsWith("/docs/");
-  const isWebMCP = pathname === "/webmcp";
-  const isPublic = isLanding || isDocs || isWebMCP || pathname === "/login";
+  const isPublic = isLanding || isDocs || pathname === "/login";
   const isLogin = pathname === "/login";
-  const isChat = pathname === "/workspace";
+  // The agent-operations console works against the signed-in workspace and
+  // carries its own header, so it sits behind the same gate as the chat.
+  const isChat = pathname === "/workspace" || pathname === "/webmcp";
   const title = isChat ? "" : titleFor(pathname);
   const [user, setUser] = useState<any>();
   const [ready, setReady] = useState(false);

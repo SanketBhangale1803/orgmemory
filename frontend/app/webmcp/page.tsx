@@ -1,12 +1,12 @@
 import type { Metadata } from "next";
-import WebMCPDemo from "@/components/WebMCPDemo";
+import AgentOperations from "@/components/AgentOperations";
 
 export const metadata: Metadata = {
-  title: "WebMCP — OrgMemory",
+  title: "Agent operations — OrgMemory",
   description:
-    "OrgMemory gives browser AI agents organizational memory: they discover the page tools, search what happened before, combine it with live context, and answer with evidence.",
+    "Reconstruct a project, trace why a decision was made, find what is blocking a launch, and reconcile a contradiction — as WebMCP tool calls against organizational memory.",
 };
 
 export default function WebMCPPage() {
-  return <WebMCPDemo />;
+  return <AgentOperations />;
 }

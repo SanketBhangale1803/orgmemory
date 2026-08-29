@@ -105,8 +105,10 @@ test("public landing, docs, login, and authenticated workspace are separate rout
   const map = readFileSync(new URL("../lib/workspaceMap.ts", import.meta.url), "utf8");
   assert.match(shell, /const isLanding = pathname === "\/"/);
   assert.match(shell, /pathname\.startsWith\("\/docs\/"\)/);
-  assert.match(shell, /const isWebMCP = pathname === "\/webmcp"/);
-  assert.match(shell, /const isPublic = isLanding \|\| isDocs \|\| isWebMCP \|\| pathname === "\/login"/);
+  // /webmcp operates on the signed-in workspace, so it sits behind the gate
+  // with the chat rather than alongside the landing page.
+  assert.match(shell, /const isPublic = isLanding \|\| isDocs \|\| pathname === "\/login"/);
+  assert.match(shell, /pathname === "\/workspace" \|\| pathname === "\/webmcp"/);
   assert.match(shell, /router\.replace\("\/workspace"\)/);
   assert.match(map, /href: "\/workspace"/);
 });
@@ -151,12 +153,11 @@ test("the post-login surface is a chat, not a dashboard", () => {
   const chat = readFileSync(new URL("../components/WorkspaceChat.tsx", import.meta.url), "utf8");
   const shell = readFileSync(new URL("../components/AppShell.tsx", import.meta.url), "utf8");
   assert.match(workspace, /<WorkspaceChat/);
-  assert.match(shell, /const isChat = pathname === "\/workspace"/);
+  assert.match(shell, /const isChat = pathname === "\/workspace" \|\| pathname === "\/webmcp"/);
   // Same model picker and composer the signed-out landing page shows.
   assert.match(chat, /\/api\/models/);
   assert.match(chat, /\/api\/ask/);
-  assert.match(chat, /Memory for the Agentic Web/);
-  assert.match(chat, /Your organization remembers/);
+  assert.match(chat, /Ask your company memory/);
   assert.match(chat, /Ask OrgMemory anything/);
 });
 

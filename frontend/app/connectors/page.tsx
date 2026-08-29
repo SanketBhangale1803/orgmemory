@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import IdeAccess from "@/components/IdeAccess";
 import Page from "@/components/Page";
 import { API, api, formatDate } from "@/lib/api";
 
@@ -131,6 +132,8 @@ export default function Connectors() {
         <small className="provider-note">Manifest {String(manifest.signature || "").slice(0, 12)}… · connector content is isolated as untrusted data.</small>
       </section>;
     })}</div>
+
+    <IdeAccess />
 
     <section className="card card-pad stack" style={{ marginTop: 18 }}>
       <div className="section-head"><div><span className="panel-label">Third connector category</span><h2>Register a remote MCP server</h2></div><span className="badge warning">Admin</span></div>

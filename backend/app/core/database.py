@@ -557,9 +557,48 @@ CREATE INDEX IF NOT EXISTS idx_context_activation_runs_project
   ON context_activation_runs(project_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_artifacts_project ON artifacts(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_skill_specs_project ON skill_specs(project_id, status);
+CREATE TABLE IF NOT EXISTS org_tasks (
+  id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL DEFAULT '', project_id TEXT NOT NULL,
+  title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'open', owner TEXT NOT NULL DEFAULT '',
+  priority TEXT NOT NULL DEFAULT 'normal', kind TEXT NOT NULL DEFAULT 'task',
+  source_memory_ids_json TEXT NOT NULL DEFAULT '[]',
+  depends_on_json TEXT NOT NULL DEFAULT '[]',
+  external_key TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS org_watches (
+  id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL,
+  space_ids_json TEXT NOT NULL DEFAULT '[]', checks_json TEXT NOT NULL DEFAULT '[]',
+  interval_seconds INTEGER NOT NULL DEFAULT 900, status TEXT NOT NULL DEFAULT 'active',
+  created_by TEXT NOT NULL DEFAULT '', last_run_at TEXT, last_error TEXT NOT NULL DEFAULT '',
+  runs INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS org_watch_findings (
+  id TEXT PRIMARY KEY, watch_id TEXT NOT NULL, workspace_id TEXT NOT NULL,
+  kind TEXT NOT NULL, headline TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT '{}', fingerprint TEXT NOT NULL,
+  plan_id TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'open',
+  created_at TEXT NOT NULL, resolved_at TEXT,
+  UNIQUE(watch_id, fingerprint),
+  FOREIGN KEY(watch_id) REFERENCES org_watches(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS org_action_plans (
+  id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, project_id TEXT NOT NULL DEFAULT '',
+  created_by TEXT NOT NULL DEFAULT '', origin TEXT NOT NULL DEFAULT 'webmcp',
+  summary TEXT NOT NULL DEFAULT '', operations_json TEXT NOT NULL DEFAULT '[]',
+  results_json TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'pending_approval',
+  created_at TEXT NOT NULL, resolved_at TEXT, resolved_by TEXT NOT NULL DEFAULT ''
+);
 CREATE INDEX IF NOT EXISTS idx_memory_work_project ON memory_work(project_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_memory_work_steps ON memory_work_steps(work_id, position);
 CREATE INDEX IF NOT EXISTS idx_memory_work_events ON memory_work_events(work_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_org_tasks_project ON org_tasks(project_id, status);
+CREATE INDEX IF NOT EXISTS idx_org_tasks_external ON org_tasks(project_id, external_key);
+CREATE INDEX IF NOT EXISTS idx_org_action_plans ON org_action_plans(workspace_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_org_watches ON org_watches(workspace_id, status);
+CREATE INDEX IF NOT EXISTS idx_org_watch_findings ON org_watch_findings(watch_id, status, created_at);
 """
 
 

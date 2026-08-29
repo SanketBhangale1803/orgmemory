@@ -1,10 +1,13 @@
+import { ORG_TOOLS } from "@/lib/orgTools";
 import type { WebMCPToolName } from "@/lib/webmcp";
 
 export type WebMCPToolCatalogEntry = {
   name: WebMCPToolName;
   title: string;
   description: string;
-  group: "Discover" | "Retrieve" | "Investigate" | "Brief" | "Report" | "Propose" | "Decide";
+  group: "Discover" | "Retrieve" | "Investigate" | "Brief" | "Report" | "Propose" | "Decide" | "Operate";
+  /** What a person does instead when this tool does not exist. */
+  manualEquivalent?: string;
   permission: "read-only" | "ledger-append" | "approval-required" | "admin-decision";
   inputSchema: Record<string, unknown>;
   resultExample: Record<string, unknown>;
@@ -362,6 +365,21 @@ export const WEBMCP_TOOL_CATALOG: WebMCPToolCatalogEntry[] = [
     },
     resultExample: { status: "approved", memory_id: "mem_new" },
   },
+  /* The organizational operations share their definitions with the executable
+     map in orgTools.ts. Restating name, description, and schema here by hand is
+     how a catalog drifts from the tools it claims to document. */
+  ...Object.values(ORG_TOOLS).map((tool) => ({
+    name: tool.name as WebMCPToolName,
+    title: tool.title,
+    description: tool.description,
+    group: (tool.kind === "read" ? "Operate" : "Propose") as WebMCPToolCatalogEntry["group"],
+    permission: (tool.kind === "read"
+      ? "read-only"
+      : "approval-required") as WebMCPToolCatalogEntry["permission"],
+    manualEquivalent: tool.manualEquivalent,
+    inputSchema: tool.inputSchema,
+    resultExample: {},
+  })),
 ];
 
 export const WEBMCP_READ_TOOL_COUNT = WEBMCP_TOOL_CATALOG.filter(

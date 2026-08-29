@@ -35,6 +35,11 @@ export default function Ingest() {
   const [phase, setPhase] = useState(0);
   const [error, setError] = useState("");
   const [result, setResult] = useState<any>();
+  /* Indexing every repository at once is the normal first move after
+     connecting GitHub, so it belongs beside the one-repository picker rather
+     than only in the API. */
+  const [bulk, setBulk] = useState<{ queued: number } | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   useEffect(() => {
     api<any[]>("/api/projects").then(items => {
@@ -110,6 +115,22 @@ export default function Ingest() {
     }
   }
 
+  async function indexEverything() {
+    setBulkBusy(true);
+    setError("");
+    try {
+      const response = await api<{ repositories_queued: number }>("/api/ingest/github/all", {
+        method: "POST",
+        body: JSON.stringify({ include_archived: false }),
+      });
+      setBulk({ queued: response.repositories_queued });
+    } catch (cause: any) {
+      setError(cause.message);
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
   const canBuild = kind === "paste" ? Boolean(content.trim() && (project !== "__new__" || newProject.trim())) : kind === "github" ? Boolean(repo && (repoName || selectedRepo)) : Boolean(channel && (project !== "__new__" || newProject.trim()));
   const memoryCount = result?.memory_units_created ?? result?.memory_unit_ids?.length ?? 0;
 
@@ -143,7 +164,20 @@ export default function Ingest() {
 
           {kind === "github" && <div className="quick-memory-form">
             <div className="builder-title"><span className="source-hero-icon"><GitHubIcon size={27}/></span><div><h2>Choose a repository</h2><p>OrgMemory reads the repository and builds its project memory automatically.</p></div></div>
-            {!connected("github") ? <div className="builder-connect"><strong>Connect GitHub once</strong><p>Authorize the repositories you want OrgMemory to remember.</p><Link className="button" href="/connectors">Connect GitHub →</Link></div> : <><select aria-label="GitHub repository" value={repo} onChange={event => {setRepo(event.target.value);const match=repositories.find(item=>item.clone_url===event.target.value);setRepoName(match?.full_name || match?.name || "");}}><option value="">Select a repository…</option>{repositories.map(item => <option key={item.id} value={item.clone_url}>{item.full_name}{item.private ? " · Private" : ""}</option>)}</select><p className="privacy-note"><i/> Private repositories supported. Existing source permissions are preserved.</p></>}
+            {!connected("github") ? <div className="builder-connect"><strong>Connect GitHub once</strong><p>Authorize the repositories you want OrgMemory to remember.</p><Link className="button" href="/connectors">Connect GitHub →</Link></div> : <><select aria-label="GitHub repository" value={repo} onChange={event => {setRepo(event.target.value);const match=repositories.find(item=>item.clone_url===event.target.value);setRepoName(match?.full_name || match?.name || "");}}><option value="">Select a repository…</option>{repositories.map(item => <option key={item.id} value={item.clone_url}>{item.full_name}{item.private ? " · Private" : ""}</option>)}</select><p className="privacy-note"><i/> Private repositories supported. Existing source permissions are preserved.</p>
+              <div className="bulk-index">
+                <div>
+                  <strong>Or index everything you have access to</strong>
+                  <span>
+                    {bulk
+                      ? `${bulk.queued} repositor${bulk.queued === 1 ? "y" : "ies"} queued. Each becomes its own memory space as it finishes.`
+                      : `${repositories.length} repositor${repositories.length === 1 ? "y" : "ies"} visible to this workspace's GitHub grant.`}
+                  </span>
+                </div>
+                <button className="button secondary" disabled={bulkBusy || !repositories.length} onClick={indexEverything}>
+                  {bulkBusy ? "Queueing…" : bulk ? "Queue again" : "Index all repositories"}
+                </button>
+              </div></>}
           </div>}
 
           {kind === "slack" && <div className="quick-memory-form">

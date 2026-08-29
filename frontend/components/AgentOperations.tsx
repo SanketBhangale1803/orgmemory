@@ -1,0 +1,1063 @@
+"use client";
+
+import Link from "next/link";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { RunbookMark } from "@/components/RunbookLogo";
+import { api } from "@/lib/api";
+import {
+  ORG_READ_TOOLS,
+  ORG_TOOLS,
+  ORG_WRITE_TOOLS,
+  orgApi,
+  type OrgBlocker,
+  type OrgConflict,
+  type OrgPlan,
+  type OrgProjectContext,
+  type OrgReadiness,
+  type OrgReasoningChain,
+  type OrgSpace,
+  type OrgWatch,
+} from "@/lib/orgTools";
+
+/* The console for organizational operations.
+ *
+ * Every row in the activity panel is a real call into the same tool map the
+ * page registers with WebMCP, against the signed-in workspace. The walkthrough
+ * chooses which tools to call and in what order; it does not choose what they
+ * return. */
+
+type CallState = "running" | "done" | "error";
+
+type ToolCall = {
+  tool: string;
+  args: Record<string, unknown>;
+  state: CallState;
+  summary: string;
+  ms: number;
+  kind: "read" | "gated-write";
+};
+
+type ViewKind = "briefing" | "chain" | "readiness" | "reconcile";
+
+type Turn = {
+  id: string;
+  question: string;
+  calls: ToolCall[];
+  view: ViewKind | null;
+  data: Record<string, any>;
+  plan: OrgPlan | null;
+  error: string;
+  done: boolean;
+};
+
+/* The scenario's own spaces. A workspace usually holds far more than these —
+   every connected repository is a space too — so the console scopes its calls
+   to the launch program rather than sweeping the whole workspace. Passing the
+   scope explicitly is also what a real agent does once it knows what it was
+   asked about. */
+const SCENARIO_SPACES = [
+  "Product",
+  "Engineering",
+  "Design",
+  "Security",
+  "Infrastructure",
+  "Launch",
+  "Customer Support",
+];
+
+const REQUESTS = [
+  {
+    key: "catch-up",
+    label: "Catch me up",
+    question: "I just joined this launch. Tell me what matters, what changed, and what is unresolved.",
+  },
+  {
+    key: "why",
+    label: "Why is this the priority?",
+    question: "Why is the security review the thing holding this up?",
+  },
+  {
+    key: "ready",
+    label: "Are we ready to launch?",
+    question: "Are we ready to launch tomorrow?",
+  },
+  {
+    key: "reconcile",
+    label: "Reconcile it",
+    question: "Reconcile it and prepare us for launch.",
+  },
+] as const;
+
+type RequestKey = (typeof REQUESTS)[number]["key"];
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function relative(value?: string) {
+  if (!value) return "";
+  const then = new Date(value).getTime();
+  const hours = Math.round((Date.now() - then) / 3600000);
+  if (hours < 1) return "just now";
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  return `${days}d ago`;
+}
+
+export default function AgentOperations() {
+  const [user, setUser] = useState<any>();
+  const [spaces, setSpaces] = useState<OrgSpace[]>([]);
+  const [readiness, setReadiness] = useState<OrgReadiness | null>(null);
+  const [turns, setTurns] = useState<Turn[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [preparing, setPreparing] = useState(false);
+  const [webmcp, setWebmcp] = useState<"checking" | "ready" | "absent">("checking");
+  const [evidence, setEvidence] = useState<any>(null);
+  const [flash, setFlash] = useState(false);
+  const [watch, setWatch] = useState<OrgWatch | null>(null);
+  const [watching, setWatching] = useState(false);
+  const transcript = useRef<HTMLDivElement>(null);
+
+  const isAdmin = user?.role === "owner" || user?.role === "admin";
+  const scenario = useMemo(
+    () => spaces.filter((space) => SCENARIO_SPACES.includes(space.name)),
+    [spaces],
+  );
+  const ready = scenario.length >= SCENARIO_SPACES.length - 1;
+  const scope = useMemo(() => scenario.map((space) => space.id), [scenario]);
+  const toolCount = ORG_READ_TOOLS.length + ORG_WRITE_TOOLS.length;
+
+  const refresh = useCallback(async () => {
+    const spaceList = await orgApi.spaces().catch(() => ({ spaces: [] as OrgSpace[] }));
+    const all = spaceList.spaces || [];
+    setSpaces(all);
+    const ids = all.filter((space) => SCENARIO_SPACES.includes(space.name)).map((s) => s.id);
+    setReadiness(ids.length ? await orgApi.readiness(ids).catch(() => null) : null);
+    const existing = await orgApi.watches().catch(() => ({ watches: [] as OrgWatch[] }));
+    setWatch(existing.watches[0] || null);
+  }, []);
+
+  useEffect(() => {
+    api("/api/auth/me")
+      .then((principal) => {
+        setUser(principal);
+        return refresh();
+      })
+      .catch((cause) => setError(cause instanceof Error ? cause.message : "Sign in to continue."));
+    setWebmcp(
+      typeof document !== "undefined" && (document as any).modelContext ? "ready" : "absent",
+    );
+  }, [refresh]);
+
+  useEffect(() => {
+    // The transcript grows the page rather than scrolling inside a box, so the
+    // newest question has to be brought into view rather than a container.
+    transcript.current?.lastElementChild?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [turns.length]);
+
+  async function prepare(reset: boolean) {
+    setPreparing(true);
+    setError("");
+    try {
+      await orgApi.seedScenario(reset);
+      await refresh();
+      if (reset) setTurns([]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not prepare the scenario.");
+    } finally {
+      setPreparing(false);
+    }
+  }
+
+  /** Run one tool and record it, exactly as an external agent's call would appear. */
+  async function call(
+    turnId: string,
+    tool: string,
+    args: Record<string, unknown>,
+  ): Promise<any> {
+    const spec = ORG_TOOLS[tool];
+    setTurns((current) =>
+      current.map((turn) =>
+        turn.id === turnId
+          ? {
+              ...turn,
+              calls: [
+                ...turn.calls,
+                { tool, args, state: "running", summary: "", ms: 0, kind: spec.kind },
+              ],
+            }
+          : turn,
+      ),
+    );
+    const started = performance.now();
+    try {
+      const result = await spec.run(args);
+      const ms = Math.round(performance.now() - started);
+      setTurns((current) =>
+        current.map((turn) =>
+          turn.id === turnId
+            ? {
+                ...turn,
+                calls: turn.calls.map((entry, index) =>
+                  index === turn.calls.length - 1
+                    ? { ...entry, state: "done", summary: result.summary, ms }
+                    : entry,
+                ),
+              }
+            : turn,
+        ),
+      );
+      return result.data;
+    } catch (cause) {
+      const ms = Math.round(performance.now() - started);
+      const message = cause instanceof Error ? cause.message : "Tool call failed";
+      setTurns((current) =>
+        current.map((turn) =>
+          turn.id === turnId
+            ? {
+                ...turn,
+                calls: turn.calls.map((entry, index) =>
+                  index === turn.calls.length - 1
+                    ? { ...entry, state: "error", summary: message, ms }
+                    : entry,
+                ),
+              }
+            : turn,
+        ),
+      );
+      throw cause;
+    }
+  }
+
+  function finish(turnId: string, view: ViewKind, data: Record<string, any>, plan: OrgPlan | null = null) {
+    setTurns((current) =>
+      current.map((turn) =>
+        turn.id === turnId ? { ...turn, view, data, plan, done: true } : turn,
+      ),
+    );
+  }
+
+  async function run(key: RequestKey) {
+    if (busy) return;
+    const request = REQUESTS.find((entry) => entry.key === key)!;
+    const turnId = `turn_${Date.now()}`;
+    setBusy(true);
+    setError("");
+    setTurns((current) => [
+      ...current,
+      { id: turnId, question: request.question, calls: [], view: null, data: {}, plan: null, error: "", done: false },
+    ]);
+
+    try {
+      if (key === "catch-up") {
+        const context = (await call(turnId, "get_orgmemory_project_context", { space_ids: scope })) as OrgProjectContext;
+        await wait(160);
+        const changes = await call(turnId, "get_orgmemory_recent_changes", {
+          since: new Date(Date.now() - 7 * 86400000).toISOString(),
+          space_ids: scope,
+        });
+        await wait(160);
+        const people = await call(turnId, "get_orgmemory_people", { space_ids: scope });
+        await wait(160);
+        const blockers = await call(turnId, "find_orgmemory_blockers", { space_ids: scope });
+        finish(turnId, "briefing", { context, changes, people, blockers });
+      }
+
+      if (key === "why") {
+        const chain = (await call(turnId, "get_orgmemory_reasoning_chain", {
+          topic: "why the security review blocks the production deploy and the launch",
+          space_ids: scope,
+        })) as OrgReasoningChain;
+        await wait(160);
+        const anchor = chain.steps[0]?.memory.id;
+        const trace = anchor ? await call(turnId, "get_orgmemory_provenance", { memory_id: anchor }) : null;
+        finish(turnId, "chain", { chain, trace });
+      }
+
+      if (key === "ready") {
+        const board = (await call(turnId, "get_orgmemory_readiness", { space_ids: scope })) as OrgReadiness;
+        await wait(160);
+        const graph = await call(turnId, "get_orgmemory_dependency_graph", { space_ids: scope });
+        await wait(160);
+        const blockers = await call(turnId, "find_orgmemory_blockers", { space_ids: scope });
+        await wait(160);
+        const conflicts = await call(turnId, "find_orgmemory_conflicts", { space_ids: scope });
+        setReadiness(board);
+        finish(turnId, "readiness", { board, graph, blockers, conflicts });
+      }
+
+      if (key === "reconcile") {
+        const conflicts = (await call(turnId, "find_orgmemory_conflicts", { space_ids: scope })) as {
+          count: number;
+          conflicts: OrgConflict[];
+        };
+        const conflict = conflicts.conflicts[0];
+        if (!conflict) {
+          finish(turnId, "reconcile", { conflicts, nothing: true });
+          return;
+        }
+        await wait(160);
+        const trace = await call(turnId, "get_orgmemory_provenance", {
+          memory_id: conflict.source.id,
+        });
+        await wait(160);
+        const owner = await call(turnId, "get_orgmemory_owner", {
+          object_id: conflict.task.id,
+        });
+        await wait(160);
+        const plan = (await call(turnId, "propose_orgmemory_changes", {
+          summary: `Reconcile “${conflict.task.title}” with the record that already settled it`,
+          space_id: conflict.task.space_id,
+          operations: [conflict.resolution],
+        })) as OrgPlan;
+        finish(turnId, "reconcile", { conflict, trace, owner }, plan);
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Something went wrong.");
+      setTurns((current) =>
+        current.map((turn) => (turn.id === turnId ? { ...turn, done: true } : turn)),
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function approve(turnId: string, plan: OrgPlan) {
+    try {
+      const applied = await orgApi.approvePlan(plan.id);
+      setTurns((current) =>
+        current.map((turn) => (turn.id === turnId ? { ...turn, plan: applied } : turn)),
+      );
+      const board = await orgApi.readiness(scope);
+      setReadiness(board);
+      setFlash(true);
+      setTimeout(() => setFlash(false), 1600);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not apply the changes.");
+    }
+  }
+
+  async function reject(turnId: string, plan: OrgPlan) {
+    const denied = await orgApi.rejectPlan(plan.id).catch(() => null);
+    if (denied) {
+      setTurns((current) =>
+        current.map((turn) => (turn.id === turnId ? { ...turn, plan: denied } : turn)),
+      );
+    }
+  }
+
+  async function startWatch() {
+    setWatching(true);
+    setError("");
+    try {
+      const created = await orgApi.createWatch(
+        "Checkout OAuth launch",
+        scope,
+        ["blockers", "conflicts", "stale"],
+        900,
+      );
+      setWatch(await orgApi.runWatch(created.id));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not start the watch.");
+    } finally {
+      setWatching(false);
+    }
+  }
+
+  async function runWatchNow() {
+    if (!watch) return;
+    setWatching(true);
+    try {
+      setWatch(await orgApi.runWatch(watch.id));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The watch could not run.");
+    } finally {
+      setWatching(false);
+    }
+  }
+
+  async function approveFinding(finding: { id: string; plan_id: string }) {
+    if (!watch) return;
+    try {
+      await orgApi.approvePlan(finding.plan_id);
+      await orgApi.resolveFinding(watch.id, finding.id);
+      const [board, refreshed] = await Promise.all([
+        orgApi.readiness(scope),
+        orgApi.runWatch(watch.id),
+      ]);
+      setReadiness(board);
+      setWatch(refreshed);
+      setFlash(true);
+      setTimeout(() => setFlash(false), 1600);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not apply the drafted fix.");
+    }
+  }
+
+  async function openEvidence(memoryId: string) {
+    setEvidence({ loading: true });
+    try {
+      setEvidence(await orgApi.provenance(memoryId));
+    } catch {
+      setEvidence(null);
+    }
+  }
+
+  return (
+    <div className="ag-page">
+      <header className="ag-bar">
+        <Link href="/workspace" className="ag-id">
+          <RunbookMark />
+          <span>
+            <strong>OrgMemory</strong>
+            <small>Agent operations</small>
+          </span>
+        </Link>
+        <div className="ag-bar-right">
+          <span className={`ag-webmcp ${webmcp}`}>
+            <i />
+            {webmcp === "ready"
+              ? `WebMCP connected · ${toolCount} tools`
+              : `WebMCP surface · ${toolCount} tools`}
+          </span>
+          <Link className="ag-link" href="/docs">
+            Tool reference
+          </Link>
+          <Link className="ag-link" href="/workspace">
+            Back to chat
+          </Link>
+        </div>
+      </header>
+
+      <main className="ag-main">
+        <section className="ag-column">
+          <div className="ag-intro">
+            <h1>Agents operate on organizational memory.</h1>
+            <p>
+              This launch is spread across {(ready ? scenario : spaces).length || "several"} spaces. The
+              answer to any of the questions below sits in four of them at once. Each request runs
+              real tool calls against this workspace — the same tools this page registers with
+              WebMCP, so a browser agent can call them without touching the interface.
+            </p>
+          </div>
+
+          {!ready && (
+            <div className="ag-setup">
+              <div>
+                <strong>The scenario is not loaded in this workspace.</strong>
+                <span>
+                  Creates seven spaces, twenty source-backed memories, and six linked work items.
+                </span>
+              </div>
+              <button className="ag-primary" onClick={() => prepare(false)} disabled={preparing || !isAdmin}>
+                {preparing ? "Preparing…" : isAdmin ? "Load the scenario" : "Ask an admin to load it"}
+              </button>
+            </div>
+          )}
+
+          {error && <div className="ag-error">{error}</div>}
+
+          <div className="ag-transcript" ref={transcript}>
+            {!turns.length && ready && (
+              <div className="ag-empty">
+                <p>Pick a request. Every tool call, argument, and result below is live.</p>
+              </div>
+            )}
+            {turns.map((turn) => (
+              <TurnBlock
+                key={turn.id}
+                turn={turn}
+                onApprove={approve}
+                onReject={reject}
+                onEvidence={openEvidence}
+              />
+            ))}
+          </div>
+
+          <div className="ag-compose">
+            {REQUESTS.map((request) => (
+              <button
+                key={request.key}
+                className="ag-request"
+                onClick={() => void run(request.key)}
+                disabled={busy || !ready}
+              >
+                {request.label}
+              </button>
+            ))}
+            {isAdmin && ready && (
+              <button className="ag-reset" onClick={() => prepare(true)} disabled={preparing || busy}>
+                Reset
+              </button>
+            )}
+          </div>
+        </section>
+
+        <aside className="ag-rail">
+          <ReadinessBoard board={readiness} flash={flash} />
+          <WatchCard
+            watch={watch}
+            busy={watching}
+            canStart={ready && isAdmin}
+            onStart={startWatch}
+            onRun={runWatchNow}
+            onApprove={approveFinding}
+          />
+          <SpacesCard spaces={ready ? scenario : spaces} />
+          <div className="ag-card ag-surface-card">
+            <p className="ag-eyebrow">WebMCP surface</p>
+            <dl>
+              <div>
+                <dt>Read</dt>
+                <dd>{ORG_READ_TOOLS.length} tools, no approval</dd>
+              </div>
+              <div>
+                <dt>Write</dt>
+                <dd>{ORG_WRITE_TOOLS.length} tools, approval required</dd>
+              </div>
+              <div>
+                <dt>Approve</dt>
+                <dd>No tool. A person only.</dd>
+              </div>
+            </dl>
+          </div>
+        </aside>
+      </main>
+
+      {evidence && <EvidencePanel evidence={evidence} onClose={() => setEvidence(null)} />}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- a turn */
+
+function TurnBlock({
+  turn,
+  onApprove,
+  onReject,
+  onEvidence,
+}: {
+  turn: Turn;
+  onApprove: (turnId: string, plan: OrgPlan) => void;
+  onReject: (turnId: string, plan: OrgPlan) => void;
+  onEvidence: (memoryId: string) => void;
+}) {
+  return (
+    <article className="ag-turn">
+      <p className="ag-asked">{turn.question}</p>
+
+      <div className="ag-activity">
+        <div className="ag-activity-head">
+          <span>Agent activity</span>
+          <small>{turn.calls.length} tool calls</small>
+        </div>
+        {turn.calls.map((entry, index) => (
+          <div className={`ag-call ${entry.state}`} key={`${entry.tool}-${index}`}>
+            <code>{entry.tool}({formatArgs(entry.args)})</code>
+            <span className="ag-call-meta">
+              {entry.kind === "gated-write" && <b className="ag-gate">approval required</b>}
+              {entry.state === "done" && <em>{entry.ms} ms</em>}
+              {entry.state === "running" && <em className="ag-running">running</em>}
+            </span>
+            {entry.summary && <p>{entry.summary}</p>}
+          </div>
+        ))}
+      </div>
+
+      {turn.view === "briefing" && <Briefing data={turn.data} onEvidence={onEvidence} />}
+      {turn.view === "chain" && <ReasoningChainView data={turn.data} onEvidence={onEvidence} />}
+      {turn.view === "readiness" && <LaunchVerdict data={turn.data} onEvidence={onEvidence} />}
+      {turn.view === "reconcile" && (
+        <Reconcile
+          data={turn.data}
+          plan={turn.plan}
+          onApprove={(plan) => onApprove(turn.id, plan)}
+          onReject={(plan) => onReject(turn.id, plan)}
+          onEvidence={onEvidence}
+        />
+      )}
+    </article>
+  );
+}
+
+function formatArgs(args: Record<string, unknown>) {
+  const entries = Object.entries(args).filter(([, value]) => value !== undefined && value !== "");
+  if (!entries.length) return "";
+  return entries
+    .slice(0, 2)
+    .map(([key, value]) => {
+      const rendered =
+        typeof value === "string"
+          ? `"${value.length > 44 ? `${value.slice(0, 41)}…` : value}"`
+          : Array.isArray(value)
+            ? `[${value.length}]`
+            : JSON.stringify(value);
+      return `${key}: ${rendered}`;
+    })
+    .join(", ");
+}
+
+/* --------------------------------------------------------------- results */
+
+function Cite({ id, onEvidence }: { id: string; onEvidence: (id: string) => void }) {
+  return (
+    <button className="ag-cite" onClick={() => onEvidence(id)} title="Open the evidence behind this">
+      {id.slice(0, 12)}
+    </button>
+  );
+}
+
+function Briefing({ data, onEvidence }: { data: any; onEvidence: (id: string) => void }) {
+  const context: OrgProjectContext = data.context;
+  const people = (data.people?.people || []).filter((person: any) => person.owns?.length);
+  const changes = data.changes?.changes || [];
+  const next = context.next_best_action;
+
+  return (
+    <div className="ag-result">
+      <section>
+        <h3>Current focus</h3>
+        <ul>
+          {context.open_tasks.slice(0, 4).map((task) => (
+            <li key={task.id}>
+              <span>{task.title}</span>
+              <small>
+                {task.space_name} · {task.owner || "unassigned"} · {task.priority}
+              </small>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <section>
+        <h3>Decisions on record</h3>
+        <ul>
+          {context.decisions.slice(0, 4).map((decision) => (
+            <li key={decision.id}>
+              <span>{decision.title}</span>
+              <small>
+                {decision.space_name} · {relative(decision.updated_at)}{" "}
+                <Cite id={decision.id} onEvidence={onEvidence} />
+              </small>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <section>
+        <h3>Unresolved</h3>
+        <ul>
+          {context.unresolved.slice(0, 4).map((item) => (
+            <li key={item.id}>
+              <span>{item.title}</span>
+              <small>
+                {item.space_name} <Cite id={item.id} onEvidence={onEvidence} />
+              </small>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <section>
+        <h3>People</h3>
+        <ul className="ag-people">
+          {people.slice(0, 5).map((person: any) => (
+            <li key={person.id}>
+              <span>{person.name}</span>
+              <small>{person.owns.join(", ").replace(/ ownership/g, "")}</small>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <section className="ag-changes">
+        <h3>Changed in the last seven days</h3>
+        <p>
+          {changes.length} records across{" "}
+          {new Set(changes.map((item: any) => item.space_name)).size} spaces.
+        </p>
+      </section>
+
+      <section className="ag-next">
+        <h3>Next best action</h3>
+        <strong>{next.action}</strong>
+        <p>
+          {next.why} Owner: {next.owner || "unassigned"}.
+        </p>
+      </section>
+    </div>
+  );
+}
+
+function ReasoningChainView({ data, onEvidence }: { data: any; onEvidence: (id: string) => void }) {
+  const chain: OrgReasoningChain = data.chain;
+  return (
+    <div className="ag-result">
+      <section>
+        <h3>The recorded chain</h3>
+        <p className="ag-note">
+          Ordered by the relationships between these records, not by how well they match the
+          question.
+        </p>
+        <ol className="ag-chain">
+          {chain.steps.map((step, index) => (
+            <li key={step.memory.id} style={{ ["--i" as string]: index }}>
+              <span className="ag-chain-role">{step.role}</span>
+              <div className="ag-chain-body">
+                <strong>{step.memory.title}</strong>
+                <p>{step.memory.content}</p>
+                <small>
+                  {step.memory.space_name} · {relative(step.memory.updated_at)}{" "}
+                  <Cite id={step.memory.id} onEvidence={onEvidence} />
+                </small>
+              </div>
+            </li>
+          ))}
+        </ol>
+      </section>
+      {data.trace?.sources?.length ? (
+        <section className="ag-next">
+          <h3>Where the first link comes from</h3>
+          <strong>{data.trace.sources[0].title}</strong>
+          <p>Captured as a {data.trace.sources[0].type}.</p>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+function LaunchVerdict({ data, onEvidence }: { data: any; onEvidence: (id: string) => void }) {
+  const board: OrgReadiness = data.board;
+  const blockers: OrgBlocker[] = data.blockers?.blockers || [];
+  const conflicts: OrgConflict[] = data.conflicts?.conflicts || [];
+  const blocker = blockers[0];
+
+  return (
+    <div className="ag-result">
+      <section className={`ag-verdict ${board.ready ? "ok" : "stop"}`}>
+        <h3>{board.status}</h3>
+        <p>
+          {board.blocker_count} blocker{board.blocker_count === 1 ? "" : "s"} ·{" "}
+          {data.graph.node_count} work items · {data.graph.edge_count} dependencies across{" "}
+          {new Set(board.checklist.map((item) => item.space_name)).size} spaces.
+        </p>
+      </section>
+
+      {blocker && (
+        <section>
+          <h3>The blocker</h3>
+          <div className="ag-blocker">
+            <strong>{blocker.task.title}</strong>
+            <small>
+              {blocker.task.space_name} · {blocker.task.owner || "unassigned"} ·{" "}
+              {blocker.severity}
+            </small>
+            <div className="ag-flow">
+              {blocker.chain.map((node, index) => (
+                <span key={node.id} style={{ ["--i" as string]: index }}>
+                  {node.label}
+                </span>
+              ))}
+            </div>
+            <p className="ag-note">
+              Evidence:{" "}
+              {blocker.evidence.map((id) => (
+                <Cite key={id} id={id} onEvidence={onEvidence} />
+              ))}
+            </p>
+          </div>
+        </section>
+      )}
+
+      <section>
+        <h3>Current state</h3>
+        <ul className="ag-state">
+          {board.checklist.map((item) => (
+            <li key={item.id} className={item.state}>
+              <span>{item.label}</span>
+              <b>{item.state}</b>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      {conflicts.length > 0 && (
+        <section className="ag-conflict-flag">
+          <h3>Contradiction found while checking</h3>
+          <p>
+            “{conflicts[0].task.title}” is tracked as {conflicts[0].tracked_state} in{" "}
+            {conflicts[0].tracked_source.space_name}, but {conflicts[0].source.space_name} recorded{" "}
+            “{conflicts[0].source.title}” {relative(conflicts[0].recorded_at)}.
+          </p>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function Reconcile({
+  data,
+  plan,
+  onApprove,
+  onReject,
+  onEvidence,
+}: {
+  data: any;
+  plan: OrgPlan | null;
+  onApprove: (plan: OrgPlan) => void;
+  onReject: (plan: OrgPlan) => void;
+  onEvidence: (id: string) => void;
+}) {
+  if (data.nothing) {
+    return (
+      <div className="ag-result">
+        <section>
+          <h3>Nothing to reconcile</h3>
+          <p>No tracked item disagrees with a newer record right now.</p>
+        </section>
+      </div>
+    );
+  }
+  const conflict: OrgConflict = data.conflict;
+  return (
+    <div className="ag-result">
+      <section>
+        <h3>What disagrees</h3>
+        <div className="ag-versus">
+          <div>
+            <small>{conflict.tracked_source.space_name} tracker</small>
+            <strong>{conflict.tracked_state}</strong>
+            <p>{conflict.tracked_source.title}</p>
+            <Cite id={conflict.tracked_source.id} onEvidence={onEvidence} />
+          </div>
+          <i aria-hidden="true">vs</i>
+          <div>
+            <small>
+              {conflict.source.space_name} · {relative(conflict.recorded_at)}
+            </small>
+            <strong>settled</strong>
+            <p>{conflict.source.content}</p>
+            <Cite id={conflict.source.id} onEvidence={onEvidence} />
+          </div>
+        </div>
+        <p className="ag-note">
+          Linked by a recorded <code>{conflict.basis}</code> relationship, not by wording.
+          {data.owner?.owner ? ` Owner on record: ${data.owner.owner}.` : ""}
+        </p>
+      </section>
+
+      {plan && (
+        <section className={`ag-plan ${plan.status}`}>
+          <h3>
+            {plan.status === "pending_approval"
+              ? "Proposed changes — nothing applied yet"
+              : plan.status === "approved"
+                ? "Applied"
+                : "Declined"}
+          </h3>
+          <ul>
+            {plan.operations.map((operation, index) => (
+              <li key={index}>
+                <span>{operation.preview as string}</span>
+                {operation.reason ? <small>{operation.reason as string}</small> : null}
+              </li>
+            ))}
+          </ul>
+          {plan.status === "pending_approval" ? (
+            <div className="ag-plan-actions">
+              <button className="ag-primary" onClick={() => onApprove(plan)}>
+                Approve these changes
+              </button>
+              <button className="ag-secondary" onClick={() => onReject(plan)}>
+                Decline
+              </button>
+            </div>
+          ) : (
+            <p className="ag-note">
+              {plan.status === "approved"
+                ? "Applied by a person in this workspace. The board on the right recomputed from stored state."
+                : "Declined. Nothing changed."}
+            </p>
+          )}
+        </section>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ rail */
+
+function ReadinessBoard({ board, flash }: { board: OrgReadiness | null; flash: boolean }) {
+  return (
+    <div className={`ag-card ag-board ${flash ? "flash" : ""}`}>
+      <p className="ag-eyebrow">Launch readiness</p>
+      {!board ? (
+        <p className="ag-note">Not computed yet.</p>
+      ) : (
+        <>
+          <strong className={board.ready ? "ok" : "stop"}>{board.status}</strong>
+          <small>{board.goal?.label || "No goal recorded"}</small>
+          <ul>
+            {board.checklist.map((item) => (
+              <li key={item.id} className={item.state}>
+                <span>{item.label}</span>
+                <b>{item.state}</b>
+              </li>
+            ))}
+          </ul>
+          <p className="ag-note">Computed from the dependency graph on every read.</p>
+        </>
+      )}
+    </div>
+  );
+}
+
+function WatchCard({
+  watch,
+  busy,
+  canStart,
+  onStart,
+  onRun,
+  onApprove,
+}: {
+  watch: OrgWatch | null;
+  busy: boolean;
+  canStart: boolean;
+  onStart: () => void;
+  onRun: () => void;
+  onApprove: (finding: { id: string; plan_id: string }) => void;
+}) {
+  const open = (watch?.findings || []).filter((finding) => finding.status === "open");
+  return (
+    <div className="ag-card ag-watch">
+      <p className="ag-eyebrow">Standing watch</p>
+      {!watch ? (
+        <>
+          <p className="ag-note">
+            Runs the same blocker, contradiction, and staleness checks on an interval, with nobody
+            asking. Findings arrive here; a contradiction arrives with the fix already drafted.
+          </p>
+          <button className="ag-primary ag-watch-start" onClick={onStart} disabled={!canStart || busy}>
+            {busy ? "Starting…" : canStart ? "Start watching" : "Load the scenario first"}
+          </button>
+        </>
+      ) : (
+        <>
+          <div className="ag-watch-head">
+            <strong>{watch.name}</strong>
+            <button className="ag-watch-run" onClick={onRun} disabled={busy}>
+              {busy ? "Checking…" : "Check now"}
+            </button>
+          </div>
+          <small>
+            {watch.runs} run{watch.runs === 1 ? "" : "s"} · every{" "}
+            {Math.round(watch.interval_seconds / 60)} min · {open.length} open
+          </small>
+          {open.length === 0 ? (
+            <p className="ag-note">Nothing outstanding at the last check.</p>
+          ) : (
+            <ul className="ag-findings">
+              {open.slice(0, 4).map((finding) => (
+                <li key={finding.id} className={finding.kind}>
+                  <span className="ag-finding-kind">{finding.kind}</span>
+                  <strong>{finding.headline}</strong>
+                  {finding.detail && <small>{finding.detail}</small>}
+                  {finding.plan_id && (
+                    <button
+                      className="ag-finding-approve"
+                      onClick={() => onApprove({ id: finding.id, plan_id: finding.plan_id })}
+                    >
+                      Approve the drafted fix
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="ag-note">A watch drafts and reports. Applying anything is still a person.</p>
+        </>
+      )}
+    </div>
+  );
+}
+
+function SpacesCard({ spaces }: { spaces: OrgSpace[] }) {
+  const total = useMemo(
+    () => spaces.reduce((sum, space) => sum + space.memory_count, 0),
+    [spaces],
+  );
+  return (
+    <div className="ag-card">
+      <p className="ag-eyebrow">Spaces</p>
+      <ul className="ag-spaces">
+        {spaces.map((space) => (
+          <li key={space.id}>
+            <span>{space.name}</span>
+            <small>{space.memory_count}</small>
+          </li>
+        ))}
+      </ul>
+      <p className="ag-note">{total} memories in scope for this session.</p>
+    </div>
+  );
+}
+
+function EvidencePanel({ evidence, onClose }: { evidence: any; onClose: () => void }) {
+  return (
+    <div className="ag-evidence" role="dialog" aria-label="Evidence">
+      <div className="ag-evidence-card">
+        <button className="ag-evidence-close" onClick={onClose} aria-label="Close">
+          ×
+        </button>
+        {evidence.loading ? (
+          <p className="ag-note">Loading…</p>
+        ) : (
+          <>
+            <p className="ag-eyebrow">{evidence.memory.type}</p>
+            <h4>{evidence.memory.title}</h4>
+            <p>{evidence.memory.content}</p>
+            <dl>
+              <div>
+                <dt>Space</dt>
+                <dd>{evidence.memory.space_name}</dd>
+              </div>
+              <div>
+                <dt>Recorded</dt>
+                <dd>{relative(evidence.memory.updated_at)}</dd>
+              </div>
+              <div>
+                <dt>Confidence</dt>
+                <dd>{Math.round((evidence.memory.confidence || 0) * 100)}%</dd>
+              </div>
+            </dl>
+            {evidence.sources?.length > 0 && (
+              <>
+                <p className="ag-eyebrow">Sources</p>
+                <ul className="ag-evidence-list">
+                  {evidence.sources.map((source: any) => (
+                    <li key={source.id}>
+                      <span>{source.title}</span>
+                      <small>{source.type}</small>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+            {evidence.relations?.length > 0 && (
+              <>
+                <p className="ag-eyebrow">Relationships</p>
+                <ul className="ag-evidence-list">
+                  {evidence.relations.map((relation: any) => (
+                    <li key={relation.target_id}>
+                      <span>{relation.target_title}</span>
+                      <small>{relation.type.toLowerCase()}</small>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}

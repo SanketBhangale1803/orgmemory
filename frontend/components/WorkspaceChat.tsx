@@ -898,9 +898,11 @@ export default function WorkspaceChat({ user }: { user: any }) {
           {!noProjects && !turns.length && (
             <section className="ws-rest" data-orb-target="memory">
               <span className="ws-orb command" aria-hidden="true"><i />✦</span>
-              <p className="ws-rest-kicker">Memory for the Agentic Web.</p>
-              <h1>Your organization remembers.</h1>
-              <p>Ask what happened. Understand why. Give agents context before action.</p>
+              <h1>Ask your company memory.</h1>
+              <p>
+                Every repository, decision, incident, and owner this workspace has indexed,
+                answerable in one place and cited back to its source.
+              </p>
               <div className="ws-starters">
                 {starters.map((item) => (
                   <button key={item} onClick={() => void ask(item).catch(() => undefined)}>
@@ -1264,11 +1266,11 @@ function WorkspaceControlRail({
         <strong>{webMCPLabel || "Browser tools unavailable"}</strong>
         <p className="ws-rail-copy">
           {webMCPLabel
-            ? `${webMCPToolCount} page-native tools let a browser agent search incidents, decisions, service context, and runbooks — and propose memory that waits for your approval.${isAdmin ? " Admin tools can also record your decision." : ""}`
+            ? `${webMCPToolCount} tools are registered on this page: search, incidents, decisions, service context, dependencies, blockers, contradictions, and provenance. Writes stop at a proposal${isAdmin ? " that you can approve here." : " and wait for an admin."}`
             : "Open this workspace in a WebMCP-capable browser agent to use the page-native tools."}
         </p>
         <Link className="ws-rail-link" href="/webmcp">
-          Try the agent demo <span aria-hidden="true">→</span>
+          Open agent operations <span aria-hidden="true">→</span>
         </Link>
       </section>
     </aside>

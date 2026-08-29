@@ -873,6 +873,12 @@ def runtime_settings():
             and (settings.auth_dev_mode or settings.smtp_host and settings.email_from)
         ),
         "models_configured": sum(1 for item in model_catalog() if item["configured"]),
+        # Where an IDE or desktop agent connects. The setup instructions are
+        # generated from this rather than written into the docs by hand, so a
+        # self-hosted deployment shows its own URLs instead of localhost.
+        "mcp_http_url": settings.mcp_public_url.rstrip("/") + "/mcp",
+        "mcp_oauth_issuer": settings.mcp_oauth_issuer_url.rstrip("/"),
+        "api_url": settings.api_url.rstrip("/"),
     }
 
 
