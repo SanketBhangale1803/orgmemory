@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable
+from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from app.core.database import connect, new_id, row, rows, utcnow
 
@@ -40,11 +41,50 @@ _PENDING_RE = re.compile(
 )
 
 _STOPWORDS = {
-    "the", "and", "for", "with", "from", "that", "this", "into", "onto", "over",
-    "our", "your", "their", "its", "was", "were", "are", "has", "have", "had",
-    "not", "but", "all", "any", "can", "will", "must", "should", "does", "did",
-    "complete", "completed", "update", "updates", "task", "tasks",
-    "still", "before", "after", "team", "teams", "please", "need", "needs",
+    "the",
+    "and",
+    "for",
+    "with",
+    "from",
+    "that",
+    "this",
+    "into",
+    "onto",
+    "over",
+    "our",
+    "your",
+    "their",
+    "its",
+    "was",
+    "were",
+    "are",
+    "has",
+    "have",
+    "had",
+    "not",
+    "but",
+    "all",
+    "any",
+    "can",
+    "will",
+    "must",
+    "should",
+    "does",
+    "did",
+    "complete",
+    "completed",
+    "update",
+    "updates",
+    "task",
+    "tasks",
+    "still",
+    "before",
+    "after",
+    "team",
+    "teams",
+    "please",
+    "need",
+    "needs",
 }
 
 
@@ -63,7 +103,7 @@ def _parse_ts(value: str | None) -> datetime | None:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except ValueError:
         return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def _decode_json(value: Any, fallback: Any) -> Any:
@@ -156,7 +196,7 @@ class OrgOpsService:
         }
 
     def get_recent_changes(self, space_ids: list[str], since: str = "", limit: int = 40) -> dict:
-        cutoff = _parse_ts(since) or (datetime.now(timezone.utc) - timedelta(days=7))
+        cutoff = _parse_ts(since) or (datetime.now(UTC) - timedelta(days=7))
         changes: list[dict] = []
         for space_id in space_ids:
             for unit in self._units(space_id):
@@ -267,7 +307,9 @@ class OrgOpsService:
             "relations": relations,
             "derived_tasks": [
                 self.public_task(task)
-                for task in rows("SELECT * FROM org_tasks WHERE project_id=?", (unit["project_id"],))
+                for task in rows(
+                    "SELECT * FROM org_tasks WHERE project_id=?", (unit["project_id"],)
+                )
                 if memory_id in _decode_json(task.get("source_memory_ids_json"), [])
             ],
         }
@@ -328,12 +370,8 @@ class OrgOpsService:
         # not a step in the reasoning — provided a real chain survives without it.
         linked = {edge["from"] for edge in edges} | {edge["to"] for edge in edges}
         if len(linked) >= 3:
-            by_id = {
-                memory_id: unit for memory_id, unit in by_id.items() if memory_id in linked
-            }
-            edges = [
-                edge for edge in edges if edge["from"] in by_id and edge["to"] in by_id
-            ]
+            by_id = {memory_id: unit for memory_id, unit in by_id.items() if memory_id in linked}
+            edges = [edge for edge in edges if edge["from"] in by_id and edge["to"] in by_id]
         ordered = self._order_chain(by_id, edges)
         return {
             "topic": topic,
@@ -401,7 +439,9 @@ class OrgOpsService:
         ownership: dict[str, list[dict]] = {}
         for space_id in space_ids:
             for unit in self._units(space_id, kind="ownership"):
-                ownership.setdefault(unit["subject"].casefold(), []).append(self.public_memory(unit))
+                ownership.setdefault(unit["subject"].casefold(), []).append(
+                    self.public_memory(unit)
+                )
 
         tasks = self.get_open_tasks(space_ids).get("tasks", [])
         people: list[dict] = []
@@ -687,9 +727,7 @@ class OrgOpsService:
         the case a person misses: the meeting happened, the tracker never moved.
         """
         topic_terms = _terms(topic) if topic else set()
-        memories = {
-            unit["id"]: unit for space_id in space_ids for unit in self._units(space_id)
-        }
+        memories = {unit["id"]: unit for space_id in space_ids for unit in self._units(space_id)}
 
         conflicts: list[dict] = []
         for task in self._tasks(space_ids):
@@ -747,6 +785,21 @@ class OrgOpsService:
             )
         return {"count": len(conflicts), "conflicts": conflicts}
 
+    def get_conflict(self, space_ids: list[str], conflict_id: str) -> dict:
+        """One conflict by id, with its recorded resolution verbatim.
+
+        Agents reconcile through this reference instead of retyping a
+        resolution from a truncated observation: the plan a person is asked to
+        approve is the exact resolution the system computed, not a model's
+        transcription of it.
+        """
+        if not conflict_id:
+            raise ValueError("conflict_id is required")
+        for conflict in self.find_conflicts(space_ids)["conflicts"]:
+            if conflict["id"] == conflict_id:
+                return conflict
+        raise ValueError(f"No open conflict {conflict_id} in the authorized spaces")
+
     def _contradicting(
         self, evidence: dict, memories: dict[str, dict]
     ) -> list[tuple[dict, str, list[str]]]:
@@ -793,7 +846,7 @@ class OrgOpsService:
     def find_stale_information(
         self, space_ids: list[str], topic: str = "", max_age_days: int = 90
     ) -> dict:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, max_age_days))
+        cutoff = datetime.now(UTC) - timedelta(days=max(1, max_age_days))
         terms = _terms(topic) if topic else set()
         stale: list[dict] = []
         for space_id in space_ids:
@@ -803,7 +856,7 @@ class OrgOpsService:
                 stamp = _parse_ts(unit.get("updated_at"))
                 if stamp and stamp < cutoff:
                     entry = self.public_memory(unit)
-                    entry["age_days"] = (datetime.now(timezone.utc) - stamp).days
+                    entry["age_days"] = (datetime.now(UTC) - stamp).days
                     entry["superseded_by"] = self._superseded_by(unit["id"])
                     stale.append(entry)
         stale.sort(key=lambda item: item["age_days"], reverse=True)
@@ -842,9 +895,7 @@ class OrgOpsService:
             top = blockers[0]
             return {
                 "action": top["task"]["title"],
-                "why": (
-                    f"{len(top['blocks'])} other item(s) cannot proceed until this closes."
-                ),
+                "why": (f"{len(top['blocks'])} other item(s) cannot proceed until this closes."),
                 "task_id": top["task"]["id"],
                 "owner": top["task"]["owner"],
             }
@@ -911,11 +962,7 @@ class OrgOpsService:
         unmet_by_task: dict[str, list[str]] = {}
         for task_id in order:
             task = tasks[task_id]
-            deps = [
-                dep
-                for dep in _decode_json(task.get("depends_on_json"), [])
-                if dep in tasks
-            ]
+            deps = [dep for dep in _decode_json(task.get("depends_on_json"), []) if dep in tasks]
             unmet = [dep for dep in deps if state.get(dep, "open") in {"open", "blocked"}]
             unmet_by_task[task_id] = unmet
             if task.get("status") in {"done", "cancelled"}:
@@ -951,12 +998,8 @@ class OrgOpsService:
         return {
             "ready": not outstanding,
             "status": "READY" if not outstanding else "NOT READY",
-            "goal": (
-                {"id": goals[0]["id"], "label": goals[0]["title"]} if goals else None
-            ),
-            "blocker_count": len(
-                [item for item in blockers if item["task"]["id"] in closure]
-            ),
+            "goal": ({"id": goals[0]["id"], "label": goals[0]["title"]} if goals else None),
+            "blocker_count": len([item for item in blockers if item["task"]["id"] in closure]),
             "outstanding": [entry["label"] for entry in outstanding],
             "checklist": checklist,
             "blockers": [item for item in blockers if item["task"]["id"] in closure],
@@ -1086,7 +1129,9 @@ class OrgOpsService:
                 return f"Set “{title}” to {operation['status']}"
             return f"Update “{title}”"
         if operation["op"] == "create_task":
-            return f"Create {operation.get('priority', 'normal')}-priority task “{operation['title']}”"
+            return (
+                f"Create {operation.get('priority', 'normal')}-priority task “{operation['title']}”"
+            )
         return f"Record {operation['type']} “{operation['title']}” in company memory"
 
     def list_plans(self, workspace_id: str, status: str = "") -> list[dict]:

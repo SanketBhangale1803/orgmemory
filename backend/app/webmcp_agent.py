@@ -22,8 +22,8 @@ from typing import Any
 
 from app.llm.providers import configured_model, generate_grounded_json
 
-MAX_STEPS = 6
-MAX_OBSERVATION_CHARS = 1400
+MAX_STEPS = 8
+MAX_OBSERVATION_CHARS = 2200
 RATE_LIMIT_ATTEMPTS = 2
 RATE_LIMIT_BACKOFF_SECONDS = 1.5
 
@@ -237,14 +237,51 @@ class WebMCPAgentRunner:
             )
             if on_step:
                 on_step(steps[-1])
+            if tool_name == "propose_orgmemory_changes" and "waiting for a person" in summary:
+                # The write path's contract is to stop at a person. Once a plan
+                # is filed, the session's work is done whether or not the model
+                # spends its next turn saying so — answer now, grounded in the
+                # observations, instead of risking the step budget.
+                findings = [
+                    step["summary"]
+                    for step in steps[:-1]
+                    if step["tool"] != "propose_orgmemory_changes" and step.get("summary")
+                ]
+                basis = " Basis: " + " ".join(findings[-2:]).rstrip(".") + "." if findings else ""
+                memory_ids = list(
+                    dict.fromkeys(
+                        match.group(0) for match in re.finditer(r"mem_[a-z0-9]+", transcript)
+                    )
+                )[:6]
+                return {
+                    "answer": (
+                        f"{summary}{basis} The proposed changes are shown below — approving "
+                        "or declining them is a person's call, not the agent's."
+                    ),
+                    "memory_ids": memory_ids,
+                    "steps": steps,
+                    "proposal": structured if isinstance(structured, dict) else None,
+                    "thoughts": [step.get("thought") for step in steps] + [thought],
+                    "mode": mode,
+                    "elapsed_ms": int((time.monotonic() - started) * 1000),
+                }
+        # Budget exhausted without an answer. If the run did real work, report
+        # what it actually found rather than claiming nothing was grounded.
+        summaries = [step["summary"] for step in steps if step.get("summary")]
+        if any(step["tool"] == "propose_orgmemory_changes" for step in steps):
+            answer = " ".join(summaries[-2:]) + " The changes are waiting for a person to approve."
+        else:
+            answer = (
+                "I could not ground a complete answer within the tool budget. "
+                + ("What the tools did find: " + " ".join(summaries[-2:]))
+                if summaries
+                else "I could not ground an answer within the tool budget. The observations above show exactly what was searched."
+            )
         return {
-            "answer": (
-                "I could not ground an answer within the tool budget. The observations "
-                "above show exactly what was searched."
-            ),
+            "answer": answer,
             "memory_ids": [],
             "steps": steps,
-            "proposal": proposal,
+            "proposal": None,
             "thoughts": [step.get("thought") for step in steps],
             "mode": mode,
             "elapsed_ms": 0,
@@ -379,6 +416,9 @@ Decide the single next step. Reply with ONLY one JSON object:
 Rules:
 - Ground every claim in the observations. Name the memory_ids you used.
 - You have at most {max_steps} tool calls total. Start with the most specific tool.
+- To reconcile a conflict found by find_orgmemory_conflicts, call propose_orgmemory_changes with that conflict's id as conflict_id. Never retype a resolution's operations yourself.
+- If you must pass explicit operations, each op is exactly one of create_task, update_task, add_memory. Nothing else is valid.
+- The moment propose_orgmemory_changes succeeds, give your final answer: say the changes are proposed and waiting for a person to approve. Do not re-verify or call more tools.
 - Never invent spaces, memory ids, or facts. If evidence is missing, say so.
 - Proposing saves nothing by itself; a person approves it on the page."""
 

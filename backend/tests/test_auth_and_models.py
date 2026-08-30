@@ -59,6 +59,10 @@ def test_email_code_login_issues_one_time_session(graph, monkeypatch):
 
 
 def test_google_login_uses_pkce_and_redirects_to_workspace(graph, monkeypatch):
+    # A deployment may pin PUBLIC_BASE_URL/FRONTEND_URL to its production
+    # domain; these tests assert request-origin behavior, so pin them local.
+    monkeypatch.setattr(settings, "frontend_url", "http://localhost:3000")
+    monkeypatch.setattr(settings, "public_base_url", "")
     monkeypatch.setattr(settings, "google_client_id", "google-client")
     monkeypatch.setattr(settings, "google_client_secret", "google-secret")
     monkeypatch.setattr(

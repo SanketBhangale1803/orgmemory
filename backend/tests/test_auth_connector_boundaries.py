@@ -95,6 +95,10 @@ def test_oauth_state_preserves_intent_and_cannot_be_reused(graph):
 
 
 def test_github_login_callback_redirects_to_authenticated_workspace(graph, monkeypatch):
+    # Pin to a local config: a deployment may set PUBLIC_BASE_URL/FRONTEND_URL
+    # to its production domain, and these tests assert request-origin behavior.
+    monkeypatch.setattr(settings, "frontend_url", "http://localhost:3000")
+    monkeypatch.setattr(settings, "public_base_url", "")
     flow = OAuthStateStore().create("github", intent="login", use_pkce=True)
     monkeypatch.setattr(
         GitHubConnector,
@@ -124,6 +128,8 @@ def test_github_login_callback_redirects_to_authenticated_workspace(graph, monke
 
 
 def test_github_connector_callback_exchanges_code_only_in_runtime(graph, monkeypatch):
+    monkeypatch.setattr(settings, "frontend_url", "http://localhost:3000")
+    monkeypatch.setattr(settings, "public_base_url", "")
     flow = OAuthStateStore().create(
         "github", intent="connect", workspace_id="wsp_test", user_id="usr_test"
     )

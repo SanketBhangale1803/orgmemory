@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 # Tool descriptions are written for the model, not for a docs page: each says
 # what the tool answers and when to reach for it, because a vague description is
@@ -112,11 +113,13 @@ ORG_AGENT_TOOLS: list[dict[str, Any]] = [
     {
         "name": "propose_orgmemory_changes",
         "description": (
-            "Submit changes for human approval. Applies NOTHING. Use only after a read "
-            "tool has shown the change is warranted; pass the operations verbatim from "
-            "a conflict's `resolution` when reconciling one."
+            "Submit changes for human approval. Applies NOTHING. To reconcile a "
+            "conflict, pass its conflict_id — the recorded resolution is copied "
+            "by reference, never retyped. Otherwise pass explicit operations: "
+            "each op must be exactly create_task, update_task, or add_memory "
+            "(never update_task_status or close_memory)."
         ),
-        "arguments": ["summary", "operations"],
+        "arguments": ["summary", "operations (or conflict_id)"],
     },
 ]
 
@@ -229,9 +232,9 @@ def build_org_executor(
             return f"{data['count']} decision(s) on record.", data
 
         if name == "get_orgmemory_recent_changes":
-            since = _text(arguments.get("since")) or (
-                datetime.now(timezone.utc) - timedelta(days=7)
-            ).isoformat()
+            since = (
+                _text(arguments.get("since")) or (datetime.now(UTC) - timedelta(days=7)).isoformat()
+            )
             data = orgops.get_recent_changes(spaces, since=since)
             return f"{data['count']} change(s) on record.", data
 
@@ -270,6 +273,16 @@ def build_org_executor(
 
         if name == "propose_orgmemory_changes":
             operations = arguments.get("operations")
+            conflict_id = _text(arguments.get("conflict_id"))
+            if conflict_id:
+                # Reconciliation by reference: copy the system-computed
+                # resolution verbatim rather than trusting a model to retype
+                # it from a truncated observation. This is what keeps the
+                # plan a person approves identical to the evidence found.
+                conflict = orgops.get_conflict(spaces, conflict_id)
+                operations = [conflict["resolution"]]
+                if isinstance(operations[0], dict) and not operations[0].get("space_id"):
+                    operations[0] = {**operations[0], "space_id": conflict["task"]["space_id"]}
             if isinstance(operations, str):
                 # Models sometimes hand back JSON as a string. Accepting it is
                 # kinder than failing a step the agent got substantially right.
@@ -280,7 +293,9 @@ def build_org_executor(
             if isinstance(operations, dict):
                 operations = [operations]
             if not isinstance(operations, list) or not operations:
-                raise ValueError("operations must be a non-empty list")
+                raise ValueError(
+                    "operations must be a non-empty list, or pass conflict_id to reconcile"
+                )
             plan = propose(
                 principal,
                 _text(arguments.get("summary")) or "Agent-proposed changes",
@@ -319,7 +334,7 @@ _SEQUENCES: dict[str, list[str]] = {
         "get_orgmemory_recent_changes",
         "get_orgmemory_people",
     ],
-    "reconcile": ["find_orgmemory_conflicts", "get_orgmemory_readiness"],
+    "reconcile": ["find_orgmemory_conflicts", "propose_orgmemory_changes"],
     "blockers": ["find_orgmemory_blockers", "get_orgmemory_readiness"],
     "search": ["search_orgmemory_records", "get_orgmemory_project_context"],
 }
@@ -360,6 +375,24 @@ def org_guided_decider(question: str, spaces: list[dict], default_project: str =
                 arguments = {"topic": question[:160]}
             elif tool == "search_orgmemory_records":
                 arguments = {"query": question[:120], "limit": 8}
+            elif tool == "propose_orgmemory_changes":
+                match = re.search(r'"id": "(conflict_[a-z0-9_]+)"', prompt)
+                if not match:
+                    # Nothing to reconcile: the conflicts step already said so,
+                    # so finalize from what the tools found instead of filing
+                    # an empty plan.
+                    summaries = re.findall(r"SUMMARY \d+: (.+)", prompt)
+                    return {
+                        "thought": "Guided: no conflict remains to reconcile.",
+                        "answer": " ".join(part.strip() for part in summaries if part.strip())
+                        or "Nothing to reconcile.",
+                        "memory_ids": [],
+                        "propose": None,
+                    }
+                arguments = {
+                    "summary": "Reconcile the tracked state with the record that settled it",
+                    "conflict_id": match.group(1),
+                }
             return {
                 "thought": f"No model reachable — guided {intent} sequence: {tool}.",
                 "tool": tool,

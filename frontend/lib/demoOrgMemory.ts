@@ -584,3 +584,32 @@ export async function demoAgentSession(
   emit();
   return structuredClone(session);
 }
+
+/* Offline follow-ups: derived from the fixture's live state — the open
+   contradiction, the blocker chain, the readiness board — never a script. */
+export async function demoFollowups(
+  question: string,
+  _summaries: string[],
+): Promise<{ suggestions: string[]; source: string }> {
+  await pause();
+  const ideas: string[] = [];
+  const currentConflict = conflictResolved ? null : conflict();
+  const board = readiness();
+  if (currentConflict) {
+    ideas.push(`Reconcile “${currentConflict.task.title}”`);
+    ideas.push(`Who owns “${currentConflict.task.title}”?`);
+  }
+  if (board.blockers.length) {
+    ideas.push(`What unblocks “${board.blockers[0].task.title}”?`);
+  }
+  if (board.outstanding.length) {
+    ideas.push("Are we ready to launch yet?");
+  }
+  if (!conflictResolved && !AGENT_RE.reconcile.test(question)) {
+    ideas.push("Reconcile it and prepare us for launch.");
+  }
+  if (!ideas.length) {
+    ideas.push("What changed recently?", "What is still unresolved?");
+  }
+  return { suggestions: [...new Set(ideas)].slice(0, 3), source: "workspace" };
+}

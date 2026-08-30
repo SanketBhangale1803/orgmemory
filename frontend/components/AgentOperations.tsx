@@ -124,6 +124,8 @@ export default function AgentOperations() {
   const [watch, setWatch] = useState<OrgWatch | null>(null);
   const [watching, setWatching] = useState(false);
   const [draft, setDraft] = useState("");
+  const [followups, setFollowups] = useState<{ items: string[]; source: string } | null>(null);
+  const [loadingFollowups, setLoadingFollowups] = useState(false);
   const transcript = useRef<HTMLDivElement>(null);
 
   const isAdmin = user?.role === "owner" || user?.role === "admin";
@@ -225,7 +227,7 @@ export default function AgentOperations() {
     turnId: string,
     tool: string,
     args: Record<string, unknown>,
-  ): Promise<any> {
+  ): Promise<{ data: any; summary: string }> {
     const spec = ORG_TOOLS[tool];
     setTurns((current) =>
       current.map((turn) =>
@@ -258,7 +260,7 @@ export default function AgentOperations() {
             : turn,
         ),
       );
-      return result.data;
+      return { data: result.data, summary: result.summary };
     } catch (cause) {
       const ms = Math.round(performance.now() - started);
       const message = cause instanceof Error ? cause.message : "Tool call failed";
@@ -288,6 +290,21 @@ export default function AgentOperations() {
     );
   }
 
+  /** The next questions, drafted from what this turn actually found. */
+  async function loadFollowups(question: string, answer: string, summaries: string[]) {
+    setLoadingFollowups(true);
+    try {
+      const result = await orgApi.followups(question, answer, summaries, scope);
+      if (result.suggestions?.length) {
+        setFollowups({ items: result.suggestions, source: result.source });
+      }
+    } catch {
+      // The current suggestions stay; a failed draft is invisible.
+    } finally {
+      setLoadingFollowups(false);
+    }
+  }
+
   async function run(key: RequestKey) {
     if (busy) return;
     const request = REQUESTS.find((entry) => entry.key === key)!;
@@ -301,7 +318,7 @@ export default function AgentOperations() {
 
     try {
       if (key === "catch-up") {
-        const context = (await call(turnId, "get_orgmemory_project_context", { space_ids: scope })) as OrgProjectContext;
+        const contextResult = await call(turnId, "get_orgmemory_project_context", { space_ids: scope });
         await wait(160);
         const changes = await call(turnId, "get_orgmemory_recent_changes", {
           since: new Date(Date.now() - 7 * 86400000).toISOString(),
@@ -311,40 +328,74 @@ export default function AgentOperations() {
         const people = await call(turnId, "get_orgmemory_people", { space_ids: scope });
         await wait(160);
         const blockers = await call(turnId, "find_orgmemory_blockers", { space_ids: scope });
-        finish(turnId, "briefing", { context, changes, people, blockers });
+        const context = contextResult.data as OrgProjectContext;
+        finish(turnId, "briefing", {
+          context,
+          changes: changes.data,
+          people: people.data,
+          blockers: blockers.data,
+        });
+        void loadFollowups(
+          request.question,
+          context.next_best_action
+            ? `${context.next_best_action.action} — ${context.next_best_action.why}`
+            : contextResult.summary,
+          [contextResult.summary, changes.summary, people.summary, blockers.summary],
+        );
       }
 
       if (key === "why") {
-        const chain = (await call(turnId, "get_orgmemory_reasoning_chain", {
+        const chainResult = await call(turnId, "get_orgmemory_reasoning_chain", {
           topic: "why the security review blocks the production deploy and the launch",
           space_ids: scope,
-        })) as OrgReasoningChain;
+        });
         await wait(160);
+        const chain = chainResult.data as OrgReasoningChain;
         const anchor = chain.steps[0]?.memory.id;
-        const trace = anchor ? await call(turnId, "get_orgmemory_provenance", { memory_id: anchor }) : null;
-        finish(turnId, "chain", { chain, trace });
+        const trace = anchor
+          ? await call(turnId, "get_orgmemory_provenance", { memory_id: anchor })
+          : null;
+        finish(turnId, "chain", { chain, trace: trace?.data });
+        void loadFollowups(
+          request.question,
+          chain.steps.map((step) => `${step.role}: ${step.memory.title}`).join("; "),
+          [chainResult.summary, trace?.summary || ""].filter(Boolean),
+        );
       }
 
       if (key === "ready") {
-        const board = (await call(turnId, "get_orgmemory_readiness", { space_ids: scope })) as OrgReadiness;
+        const boardResult = await call(turnId, "get_orgmemory_readiness", { space_ids: scope });
         await wait(160);
         const graph = await call(turnId, "get_orgmemory_dependency_graph", { space_ids: scope });
         await wait(160);
         const blockers = await call(turnId, "find_orgmemory_blockers", { space_ids: scope });
         await wait(160);
         const conflicts = await call(turnId, "find_orgmemory_conflicts", { space_ids: scope });
+        const board = boardResult.data as OrgReadiness;
         setReadiness(board);
-        finish(turnId, "readiness", { board, graph, blockers, conflicts });
+        finish(turnId, "readiness", {
+          board,
+          graph: graph.data,
+          blockers: blockers.data,
+          conflicts: conflicts.data,
+        });
+        void loadFollowups(
+          request.question,
+          `${board.status} — ${board.outstanding.join(", ") || "nothing outstanding"}`,
+          [boardResult.summary, graph.summary, blockers.summary, conflicts.summary],
+        );
       }
 
       if (key === "reconcile") {
-        const conflicts = (await call(turnId, "find_orgmemory_conflicts", { space_ids: scope })) as {
-          count: number;
-          conflicts: OrgConflict[];
+        const conflictsResult = (await call(turnId, "find_orgmemory_conflicts", { space_ids: scope })) as {
+          data: { count: number; conflicts: OrgConflict[] };
+          summary: string;
         };
+        const conflicts = conflictsResult.data;
         const conflict = conflicts.conflicts[0];
         if (!conflict) {
           finish(turnId, "reconcile", { conflicts, nothing: true });
+          void loadFollowups(request.question, conflictsResult.summary, [conflictsResult.summary]);
           return;
         }
         await wait(160);
@@ -360,8 +411,13 @@ export default function AgentOperations() {
           summary: `Reconcile “${conflict.task.title}” with the record that already settled it`,
           space_id: conflict.task.space_id,
           operations: [conflict.resolution],
-        })) as OrgPlan;
-        finish(turnId, "reconcile", { conflict, trace, owner }, plan);
+        })) as { data: OrgPlan; summary: string };
+        finish(turnId, "reconcile", { conflict, trace: trace.data, owner: owner.data }, plan.data);
+        void loadFollowups(
+          request.question,
+          `${plan.summary} Owner on record: ${owner.data.owner || "unassigned"}.`,
+          [conflictsResult.summary, trace.summary, owner.summary, plan.summary],
+        );
       }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Something went wrong.");
@@ -404,6 +460,11 @@ export default function AgentOperations() {
       );
       // The board may have moved if the agent proposed and a person approved.
       setReadiness(await orgApi.readiness(scope).catch(() => readiness));
+      void loadFollowups(
+        text,
+        session.answer,
+        session.steps.map((step) => step.summary),
+      );
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The agent could not finish.");
       setTurns((current) =>
@@ -571,16 +632,37 @@ export default function AgentOperations() {
 
           <div className="ag-compose">
             <div className="ag-suggestions">
-              {REQUESTS.map((request) => (
-                <button
-                  key={request.key}
-                  className="ag-request"
-                  onClick={() => void run(request.key)}
-                  disabled={busy || !ready}
-                >
-                  {request.label}
+              {followups
+                ? followups.items.map((item) => (
+                    <button
+                      key={item}
+                      className="ag-request"
+                      title={
+                        followups.source === "model"
+                          ? "Drafted from what this session found"
+                          : "Drafted from the workspace's current state"
+                      }
+                      onClick={() => void askAgent(item)}
+                      disabled={busy || loadingFollowups}
+                    >
+                      {item}
+                    </button>
+                  ))
+                : REQUESTS.map((request) => (
+                    <button
+                      key={request.key}
+                      className="ag-request"
+                      onClick={() => void run(request.key)}
+                      disabled={busy || !ready}
+                    >
+                      {request.label}
+                    </button>
+                  ))}
+              {loadingFollowups && (
+                <button className="ag-request ag-request-loading" disabled>
+                  drafting…
                 </button>
-              ))}
+              )}
             </div>
             <div className="ag-input">
               <textarea
@@ -688,6 +770,14 @@ function TurnBlock({
       </div>
 
       {turn.view === "agent" && <AgentAnswer data={turn.data} onEvidence={onEvidence} />}
+      {turn.view === "agent" && (
+        <AgentPlanCard
+          proposal={turn.data?.session?.proposal}
+          plan={turn.plan}
+          onApprove={(plan) => onApprove(turn.id, plan)}
+          onReject={(plan) => onReject(turn.id, plan)}
+        />
+      )}
       {turn.view === "briefing" && <Briefing data={turn.data} onEvidence={onEvidence} />}
       {turn.view === "chain" && <ReasoningChainView data={turn.data} onEvidence={onEvidence} />}
       {turn.view === "readiness" && <LaunchVerdict data={turn.data} onEvidence={onEvidence} />}
@@ -759,6 +849,56 @@ const MODEL_LABELS: Record<string, string> = {
   grok: "Grok",
   kimi: "Kimi",
 };
+
+/** The plan an agent proposed, shown where the answer is. Approving is a
+ * person's action in the workspace — the agent view makes that stop visible
+ * instead of sending anyone hunting for an approvals page. */
+function AgentPlanCard({
+  proposal,
+  plan,
+  onApprove,
+  onReject,
+}: {
+  proposal: unknown;
+  plan: OrgPlan | null;
+  onApprove: (plan: OrgPlan) => void;
+  onReject: (plan: OrgPlan) => void;
+}) {
+  const active = plan || (proposal as OrgPlan | undefined);
+  if (!active || active.status === "denied") return null;
+  return (
+    <div className={`ag-plan ${active.status}`}>
+      <h3>
+        {active.status === "pending_approval"
+          ? "Proposed changes — nothing applied yet"
+          : "Applied"}
+      </h3>
+      <ul>
+        {active.operations.map((operation, index) => (
+          <li key={index}>
+            <span>{operation.preview as string}</span>
+            {operation.reason ? <small>{operation.reason as string}</small> : null}
+          </li>
+        ))}
+      </ul>
+      {active.status === "pending_approval" ? (
+        <div className="ag-plan-actions">
+          <button className="ag-primary" onClick={() => onApprove(active)}>
+            Approve these changes
+          </button>
+          <button className="ag-secondary" onClick={() => onReject(active)}>
+            Decline
+          </button>
+        </div>
+      ) : (
+        <p className="ag-note">
+          Applied by a person in this workspace. The board on the right recomputed from stored
+          state.
+        </p>
+      )}
+    </div>
+  );
+}
 
 function formatArgs(args: Record<string, unknown>) {
   const entries = Object.entries(args).filter(([, value]) => value !== undefined && value !== "");

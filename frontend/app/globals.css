@@ -3176,6 +3176,7 @@ input:focus, textarea:focus, select:focus { border-color: #914d5e; box-shadow: 0
 .ag-perm.approval-required, .ag-perm.admin-decision { color: var(--accent); border-color: #e9ccd4; }
 .ag-perm.ledger-append { color: #8a6d1a; border-color: #ead9ae; }
 .ag-error-text { color: var(--accent); }
+.ag-request-loading { color: var(--muted-2); font-style: italic; }
 .ag-gate { padding: 3px 7px; border-radius: 4px; background: var(--accent-soft); color: var(--accent-strong); font: 650 9px/1 ui-monospace, monospace; letter-spacing: .04em; text-transform: uppercase; }
 .ag-call.running code { color: var(--accent); }
 .ag-call.error code { color: var(--danger); }

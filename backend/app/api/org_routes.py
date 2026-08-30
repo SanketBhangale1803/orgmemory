@@ -17,7 +17,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.core.database import row
-from app.llm.providers import configured_model
+from app.llm.providers import configured_model, generate_grounded_json
 from app.orgops import OrgOpsService, WatchService
 from app.orgops.agent import build_org_executor, org_guided_decider, org_tool_catalog
 from app.orgops.seed import reset_launch_scenario, seed_launch_scenario
@@ -86,6 +86,13 @@ class AskRequest(BaseModel):
     question: str = Field(min_length=3, max_length=2000)
     space_ids: list[str] = Field(default_factory=list)
     model: str | None = None
+
+
+class FollowupsRequest(BaseModel):
+    question: str = ""
+    answer: str = ""
+    summaries: list[str] = Field(default_factory=list)
+    space_ids: list[str] = Field(default_factory=list)
 
 
 class WatchRequest(BaseModel):
@@ -663,3 +670,88 @@ def ask_org_stream(request: AskRequest, authorization: str | None = Header(defau
         media_type="application/x-ndjson",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
     )
+
+
+_FOLLOWUP_PROMPT = """You suggest the next question for an operator of an organizational-memory console.
+
+THEY JUST ASKED: {question}
+THE AGENT ANSWERED: {answer}
+THE AGENT'S TOOLS FOUND:
+{findings}
+
+Draft exactly 3 follow-up questions this operator would realistically ask next,
+given these specific findings. Rules:
+- Under 60 characters each, phrased as a request or question to the console.
+- Name the actual task, person, service, or decision from the findings.
+- Never generic ("tell me more"), never about topics the findings do not cover.
+- At most one question may be about approving or reconciling a proposed change.
+
+Reply with ONLY: {{"suggestions": ["...", "...", "..."]}}"""
+
+
+@org_router.post("/followups")
+def org_followups(request: FollowupsRequest, authorization: str | None = Header(default=None)):
+    """The next questions, drafted from what this session actually found.
+
+    Progressive on purpose: the suggestions come from the model reading the
+    live findings, and when no model is reachable they are derived from the
+    workspace's own state — blockers, contradictions, owners — so the console
+    never falls back to a fixed script.
+    """
+    principal = _authenticate(authorization)
+    space_ids = _spaces(principal, ",".join(request.space_ids))
+    findings = "\n".join(f"- {item}" for item in request.summaries[-6:] if item.strip()) or (
+        "- (no tool findings recorded)"
+    )
+    try:
+        result = generate_grounded_json(
+            _FOLLOWUP_PROMPT.format(
+                question=request.question[:400],
+                answer=(request.answer or "(none)")[:600],
+                findings=findings,
+            )
+        )
+    except Exception:  # noqa: BLE001 - suggestions must never break the console
+        result = None
+    suggestions: list[str] = []
+    if result and isinstance(result[0], dict):
+        raw = result[0].get("suggestions")
+        if isinstance(raw, list):
+            suggestions = [str(item).strip()[:80] for item in raw if str(item).strip()][:3]
+    if len(suggestions) < 3:
+        fallback = _deterministic_followups(space_ids, request.question)
+        for item in fallback:
+            if item not in suggestions:
+                suggestions.append(item)
+            if len(suggestions) == 3:
+                break
+    return {"suggestions": suggestions, "source": "model" if result else "workspace"}
+
+
+def _deterministic_followups(space_ids: list[str], question: str) -> list[str]:
+    """Follow-ups derived from the workspace's own state, not a script."""
+    ideas: list[str] = []
+    conflicts = orgops.find_conflicts(space_ids).get("conflicts", [])
+    if conflicts:
+        task_title = conflicts[0]["task"]["title"]
+        ideas.append(f"Reconcile “{task_title}”")
+        ideas.append(f"Who owns “{task_title}”?")
+    blockers = orgops.find_blockers(space_ids).get("blockers", [])
+    if blockers:
+        blocker = blockers[0]["task"]
+        ideas.append(f"What unblocks “{blocker['title']}”?")
+        if blocker.get("owner"):
+            ideas.append(f"What is {blocker['owner']} waiting on?")
+    readiness = orgops.get_readiness(space_ids)
+    if readiness.get("outstanding"):
+        ideas.append("Are we ready to launch yet?")
+    # People come from workspace membership; with no workspace bound here the
+    # people branch simply contributes nothing.
+    people = orgops.get_people_context("", space_ids).get("people", [])
+    if people:
+        owner = people[0]
+        if owner.get("open_tasks"):
+            ideas.append(f"What is on {owner['name']}'s plate?")
+    if not ideas:
+        ideas = ["What changed recently?", "What is unresolved?"]
+    return ideas[:3]

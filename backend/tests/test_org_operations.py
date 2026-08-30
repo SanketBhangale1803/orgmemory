@@ -10,6 +10,9 @@ import pytest
 from fastapi import HTTPException
 
 from app.api.org_routes import (
+    PlanOperation,
+    PlanRequest,
+    SeedRequest,
     approve_plan,
     blockers,
     conflicts,
@@ -18,12 +21,9 @@ from app.api.org_routes import (
     project_context,
     propose_plan,
     provenance,
-    reasoning_chain,
     readiness,
+    reasoning_chain,
     seed_scenario,
-    PlanOperation,
-    PlanRequest,
-    SeedRequest,
 )
 from app.auth.app_auth import create_dev_session, create_workspace, issue_session
 
@@ -227,3 +227,61 @@ def test_a_watch_finds_the_contradiction_and_drafts_a_fix_without_applying_it(sc
         assert second["new_findings"] == 0
     assert len(list_plans(authorization=header)["plans"]) == before
     assert len(list_watches(authorization=header)["watches"]) == 1
+
+
+def test_conflict_reconciliation_by_reference_proposes_the_recorded_resolution(scenario):
+    """`propose_orgmemory_changes(conflict_id=...)` copies the recorded
+    resolution verbatim.
+
+    A model that retypes a resolution from a truncated observation invents
+    ops like `update_task_status` and `close_memory` — the exact failure that
+    made "fix it" burn its step budget live. Reconciliation goes by reference
+    so the plan a person approves is the one the system computed.
+    """
+    from app.api.org_routes import _org_executor, orgops
+    from app.auth.app_auth import me_from_token
+
+    header, seed = scenario
+    principal = me_from_token(header.removeprefix("Bearer "))
+    space_ids = list(seed["space_ids"].values())
+    conflict = orgops.find_conflicts(space_ids)["conflicts"][0]
+
+    executor = _org_executor(principal, space_ids)
+    summary, plan = executor(
+        principal,
+        "propose_orgmemory_changes",
+        {"summary": "fix it", "conflict_id": conflict["id"]},
+    )
+
+    assert "waiting for a person" in summary
+    assert plan["status"] == "pending_approval"
+    stored = plan["operations"][0]
+    assert stored["op"] == conflict["resolution"]["op"]
+    assert stored["task_id"] == conflict["resolution"]["task_id"]
+    assert stored["status"] == conflict["resolution"]["status"]
+    assert stored["source_memory_ids"] == conflict["resolution"]["source_memory_ids"]
+
+    # Same boundary as any other plan: proposing changes nothing, approving
+    # resolves the conflict and clears the blocker.
+    assert readiness(authorization=header)["status"] == "NOT READY"
+    approved = approve_plan(plan["id"], authorization=header)
+    assert approved["status"] == "approved"
+    assert readiness(authorization=header)["status"] == "READY"
+
+
+def test_conflict_reference_rejects_unknown_ids(scenario):
+    import pytest
+
+    from app.api.org_routes import _org_executor
+    from app.auth.app_auth import me_from_token
+
+    header, seed = scenario
+    principal = me_from_token(header.removeprefix("Bearer "))
+    space_ids = list(seed["space_ids"].values())
+    executor = _org_executor(principal, space_ids)
+    with pytest.raises(ValueError, match="No open conflict"):
+        executor(
+            principal,
+            "propose_orgmemory_changes",
+            {"summary": "fix it", "conflict_id": "conflict_does_not_exist"},
+        )

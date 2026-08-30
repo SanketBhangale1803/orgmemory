@@ -1,5 +1,10 @@
 import { api, API } from "@/lib/api";
-import { demoAgentSession, demoOrgRequest, WEBMCP_DEMO_MODE } from "@/lib/demoOrgMemory";
+import {
+  demoAgentSession,
+  demoFollowups,
+  demoOrgRequest,
+  WEBMCP_DEMO_MODE,
+} from "@/lib/demoOrgMemory";
 
 /**
  * Organizational operations, as tools.
@@ -299,6 +304,21 @@ export const orgApi = {
   ask: (question: string, spaceIds: string[]) =>
     post<OrgAgentSession>("/ask", { question, space_ids: spaceIds }),
   askStatus: (runId: string) => get<OrgAgentSession>(`/ask/${runId}`),
+  /** The next questions, drafted from what the last turn actually found. */
+  followups: (
+    question: string,
+    answer: string,
+    summaries: string[],
+    spaceIds: string[],
+  ) =>
+    WEBMCP_DEMO_MODE
+      ? demoFollowups(question, summaries)
+      : post<{ suggestions: string[]; source: string }>("/followups", {
+          question,
+          answer,
+          summaries,
+          space_ids: spaceIds,
+        }),
   /** Free-text question, answered by a model driving the tool surface.
    *
    * Streams one NDJSON request so the run, its tool calls, and its trace stay
@@ -726,6 +746,11 @@ export const ORG_TOOLS: Record<string, OrgTool> = {
       properties: {
         summary: { type: "string", description: "What this set of changes accomplishes." },
         space_id: { type: "string" },
+        conflict_id: {
+          type: "string",
+          description:
+            "Reconcile a conflict from find_orgmemory_conflicts by reference: its recorded resolution is copied verbatim, never retyped.",
+        },
         operations: {
           type: "array",
           minItems: 1,
@@ -749,15 +774,26 @@ export const ORG_TOOLS: Record<string, OrgTool> = {
           },
         },
       },
-      required: ["summary", "operations"],
+      required: ["summary"],
       additionalProperties: false,
     },
     run: async (input) => {
-      const plan = await orgApi.proposePlan(
-        input.summary,
-        input.operations,
-        input.space_id || "",
-      );
+      let summary = input.summary;
+      let operations = input.operations;
+      let spaceId = input.space_id || "";
+      if (input.conflict_id) {
+        // Reconciliation by reference: the exact resolution the system
+        // computed, not a transcription of it.
+        const { conflicts } = await orgApi.conflicts(input.space_ids || undefined);
+        const conflict = conflicts.find((item) => item.id === input.conflict_id);
+        if (!conflict) {
+          throw new Error(`No open conflict ${input.conflict_id} in the authorized spaces.`);
+        }
+        operations = [conflict.resolution as Record<string, unknown>];
+        spaceId = spaceId || conflict.task.space_id;
+        summary = summary || `Reconcile “${conflict.task.title}” with the record that settled it`;
+      }
+      const plan = await orgApi.proposePlan(summary, operations || [], spaceId);
       return {
         summary: `${plural(plan.operations.length, "change")} proposed and waiting for a person. Nothing applied.`,
         data: plan as any,

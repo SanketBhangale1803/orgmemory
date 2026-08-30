@@ -45,8 +45,8 @@ const orgToolsUrl = dataModule(
       "const api = async () => ({ spaces: [], plans: [], results: [] }); const API = '';",
     )
     .replace(
-      /^import \{ demoAgentSession, demoOrgRequest, WEBMCP_DEMO_MODE \} from "@\/lib\/demoOrgMemory";$/m,
-      "const WEBMCP_DEMO_MODE = false; const demoOrgRequest = async () => ({}); const demoAgentSession = async () => ({});",
+      /import \{[^}]*\} from "@\/lib\/demoOrgMemory";/m,
+      "const WEBMCP_DEMO_MODE = false; const demoOrgRequest = async () => ({}); const demoAgentSession = async () => ({}); const demoFollowups = async () => ({ suggestions: [] });",
     ),
 );
 const webmcpStandalone = webmcp.replace('"@/lib/orgTools"', JSON.stringify(orgToolsUrl));
