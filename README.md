@@ -545,7 +545,7 @@ This repository intentionally has no GitHub Actions or Dependabot update workflo
 make ci
 ```
 
-When the Vercel project is connected to this GitHub repository, a push or merged pull request to `main` automatically creates the production deployment. CLI deployments remain available with `vercel --prod`.
+The `orgmemory` Vercel project is connected to this GitHub repository. A push or merged pull request to `main` automatically creates the production deployment; pushes to other branches create preview deployments. This Vercel build hook is separate from GitHub Actions, which remains disabled. CLI deployments remain available with `vercel --prod`.
 
 ---
 
