@@ -224,7 +224,9 @@ def test_oauth_state_and_sessions_survive_container_loss(graph, monkeypatch):
     assert flow["intent"] == "login"
     assert flow["code_verifier"]
 
-    monkeypatch.setattr(settings, "public_demo_mode", True)
+    # Real production profile: the provider identity gets its own workspace,
+    # and the session still resolves after every local session row is gone.
+    monkeypatch.setattr(settings, "public_demo_mode", False)
     session = issue_real_session(
         "github",
         "github-user-42",
@@ -233,13 +235,19 @@ def test_oauth_state_and_sessions_survive_container_loss(graph, monkeypatch):
         "Owner workspace",
     )
     assert session["token"].startswith("omr_")
+    assert session["user"]["active_workspace_id"] != PUBLIC_DEMO_WORKSPACE_ID
 
-    # Simulate the next request landing on a fresh container: no sessions row.
+    # Simulate the next request landing on a fresh container: no sessions row,
+    # no user row, no workspace membership.
     with connect() as conn:
         conn.execute("DELETE FROM sessions")
+        conn.execute("DELETE FROM workspace_members")
+        conn.execute("DELETE FROM workspaces")
+        conn.execute("DELETE FROM users")
     principal = me_from_token(session["token"])
     assert principal and principal["email"] == "owner@example.com"
     assert principal["active_workspace_id"]
+    assert principal["role"] == "owner"
 
     # A tampered token resolves to nothing.
     assert me_from_token("omr_" + session["token"].removeprefix("omr_")[:-1] + "x") is None

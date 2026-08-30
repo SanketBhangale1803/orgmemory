@@ -513,7 +513,13 @@ def _set_session_cookie(response: Response, token: str) -> None:
         token,
         max_age=7 * 24 * 60 * 60,
         httponly=True,
-        secure=settings.environment.casefold() == "production",
+        # Secure wherever the product is served over HTTPS — production or a
+        # staging deployment on a real domain — not only when the environment
+        # string says "production".
+        secure=(
+            settings.environment.casefold() == "production"
+            or settings.frontend_url.startswith("https://")
+        ),
         samesite="lax",
         domain=settings.session_cookie_domain or None,
         path="/",
