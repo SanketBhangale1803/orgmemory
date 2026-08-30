@@ -7,12 +7,12 @@ import httpx
 from app.core.config import settings
 
 
-def google_oauth_url(flow: dict[str, str]) -> str:
+def google_oauth_url(flow: dict[str, str], redirect_uri: str = "") -> str:
     if not (settings.google_client_id and settings.google_client_secret):
         raise ValueError("Google OAuth is not configured")
     params = {
         "client_id": settings.google_client_id,
-        "redirect_uri": settings.google_redirect_uri,
+        "redirect_uri": redirect_uri or settings.google_redirect_uri,
         "response_type": "code",
         "scope": "openid email profile",
         "state": flow["state"],
@@ -29,13 +29,13 @@ def google_oauth_url(flow: dict[str, str]) -> str:
     return "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
 
 
-def complete_google_oauth(code: str, flow: dict) -> dict[str, str]:
+def complete_google_oauth(code: str, flow: dict, redirect_uri: str = "") -> dict[str, str]:
     exchange = {
         "client_id": settings.google_client_id,
         "client_secret": settings.google_client_secret,
         "code": code,
         "grant_type": "authorization_code",
-        "redirect_uri": settings.google_redirect_uri,
+        "redirect_uri": redirect_uri or flow.get("redirect_uri") or settings.google_redirect_uri,
     }
     if flow.get("code_verifier"):
         exchange["code_verifier"] = flow["code_verifier"]

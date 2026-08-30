@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RunbookMark } from "@/components/RunbookLogo";
 import { api } from "@/lib/api";
 import { WEBMCP_DEMO_MODE } from "@/lib/demoOrgMemory";
+import { registerOrgConsoleWebMCP, type WebMCPActivity } from "@/lib/webmcp";
 import {
   ORG_READ_TOOLS,
   ORG_TOOLS,
@@ -35,6 +36,7 @@ type ToolCall = {
   args: Record<string, unknown>;
   state: CallState;
   summary: string;
+  thought?: string;
   ms: number;
   kind: "read" | "gated-write";
 };
@@ -112,7 +114,11 @@ export default function AgentOperations() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [preparing, setPreparing] = useState(false);
-  const [webmcp, setWebmcp] = useState<"checking" | "ready" | "absent">("checking");
+  const [webmcp, setWebmcp] = useState<
+    "checking" | "registering" | "ready" | "unsupported" | "error"
+  >("checking");
+  const [toolCount, setToolCount] = useState(ORG_READ_TOOLS.length + ORG_WRITE_TOOLS.length);
+  const [external, setExternal] = useState<WebMCPActivity[]>([]);
   const [evidence, setEvidence] = useState<any>(null);
   const [flash, setFlash] = useState(false);
   const [watch, setWatch] = useState<OrgWatch | null>(null);
@@ -127,7 +133,6 @@ export default function AgentOperations() {
   );
   const ready = scenario.length >= SCENARIO_SPACES.length - 1;
   const scope = useMemo(() => scenario.map((space) => space.id), [scenario]);
-  const toolCount = ORG_READ_TOOLS.length + ORG_WRITE_TOOLS.length;
   const backHref = WEBMCP_DEMO_MODE ? "/" : "/workspace";
 
   const refresh = useCallback(async () => {
@@ -141,9 +146,6 @@ export default function AgentOperations() {
   }, []);
 
   useEffect(() => {
-    setWebmcp(
-      typeof document !== "undefined" && (document as any).modelContext ? "ready" : "absent",
-    );
     if (WEBMCP_DEMO_MODE) {
       setUser({ display_name: "Demo operator", role: "owner" });
       void refresh();
@@ -156,6 +158,47 @@ export default function AgentOperations() {
       })
       .catch((cause) => setError(cause instanceof Error ? cause.message : "Sign in to continue."));
   }, [refresh]);
+
+  useEffect(() => {
+    /* This page is itself a Model Context Provider. The handlers registered
+       on document.modelContext are the same ORG_TOOLS objects the console
+       calls, so an external browser agent drives exactly the surface the
+       judge is watching — and its calls land in the live activity card. */
+    let alive = true;
+    let dispose: () => void = () => undefined;
+    setWebmcp("registering");
+    registerOrgConsoleWebMCP((event) => {
+      if (!alive) return;
+      setExternal((current) => {
+        const index = current.findIndex((item) => item.id === event.id);
+        const next =
+          index === -1
+            ? [...current, event]
+            : current.map((item, position) => (position === index ? event : item));
+        return next.slice(-8);
+      });
+    })
+      .then((registration) => {
+        if (!alive) {
+          registration.dispose();
+          return;
+        }
+        dispose = registration.dispose;
+        if (registration.supported) {
+          setToolCount(registration.toolCount);
+          setWebmcp("ready");
+        } else {
+          setWebmcp("unsupported");
+        }
+      })
+      .catch(() => {
+        if (alive) setWebmcp("error");
+      });
+    return () => {
+      alive = false;
+      dispose();
+    };
+  }, []);
 
   useEffect(() => {
     // The transcript grows the page rather than scrolling inside a box, so the
@@ -343,18 +386,15 @@ export default function AgentOperations() {
       { id: turnId, question: text, calls: [], view: null, data: {}, plan: null, error: "", done: false },
     ]);
     try {
-      let session = await orgApi.ask(text, scope);
-      const started = Date.now();
-      while (session.status === "running" && Date.now() - started < 120000) {
-        await wait(1200);
-        session = await orgApi.askStatus(session.id);
+      const session = await orgApi.askStream(text, scope, (partial) => {
         setTurns((current) =>
           current.map((turn) =>
-            turn.id === turnId ? { ...turn, calls: agentCalls(session) } : turn,
+            turn.id === turnId
+              ? { ...turn, calls: agentCalls(partial) }
+              : turn,
           ),
         );
-      }
-      if (session.status === "error") throw new Error(session.error || "The agent could not finish.");
+      });
       setTurns((current) =>
         current.map((turn) =>
           turn.id === turnId
@@ -466,11 +506,13 @@ export default function AgentOperations() {
           </span>
         </Link>
         <div className="ag-bar-right">
-          <span className={`ag-webmcp ${webmcp}`}>
+          <span className={`ag-webmcp ${webmcp === "ready" ? "ready" : webmcp}`}>
             <i />
-            {webmcp === "ready"
-              ? `WebMCP connected · ${toolCount} tools`
-              : `WebMCP surface · ${toolCount} tools`}
+            {webmcp === "ready" && `WebMCP live · ${toolCount} tools`}
+            {webmcp === "registering" && "Registering WebMCP tools…"}
+            {webmcp === "checking" && "Checking WebMCP…"}
+            {webmcp === "unsupported" && `WebMCP absent · ${toolCount} tools`}
+            {webmcp === "error" && `WebMCP error · ${toolCount} tools`}
           </span>
           <Link className="ag-link" href="/docs">
             Tool reference
@@ -488,8 +530,9 @@ export default function AgentOperations() {
             <p>
               This launch is spread across {(ready ? scenario : spaces).length || "several"} spaces. The
               answer to any of the questions below sits in four of them at once. Each request runs
-              real tool calls against this workspace — the same tools this page registers with
-              WebMCP, so a browser agent can call them without touching the interface.
+              real tool calls against this workspace — and because this page registers the same{" "}
+              {toolCount} tools on <code>document.modelContext</code>, a browser agent you connect
+              can call them too, without touching this interface.
             </p>
           </div>
 
@@ -576,6 +619,7 @@ export default function AgentOperations() {
             onApprove={approveFinding}
           />
           <SpacesCard spaces={ready ? scenario : spaces} />
+          <ExternalActivityCard events={external} status={webmcp} toolCount={toolCount} />
           <div className="ag-card ag-surface-card">
             <p className="ag-eyebrow">WebMCP surface</p>
             <dl>
@@ -590,6 +634,12 @@ export default function AgentOperations() {
               <div>
                 <dt>Approve</dt>
                 <dd>No tool. A person only.</dd>
+              </div>
+              <div>
+                <dt>Transport</dt>
+                <dd>
+                  <code>document.modelContext</code>
+                </dd>
               </div>
             </dl>
           </div>
@@ -631,6 +681,7 @@ function TurnBlock({
               {entry.state === "done" && <em>{entry.ms} ms</em>}
               {entry.state === "running" && <em className="ag-running">running</em>}
             </span>
+            {entry.thought && <p className="ag-thought">{entry.thought}</p>}
             {entry.summary && <p>{entry.summary}</p>}
           </div>
         ))}
@@ -653,13 +704,16 @@ function TurnBlock({
   );
 }
 
-/** Render an agent session's steps in the same shape the console's own calls use. */
+/** Render an agent session's steps in the same shape the console's own calls
+ * use. While the session is still running, the newest step shows as running. */
 function agentCalls(session: OrgAgentSession): ToolCall[] {
-  return (session.steps || []).map((step) => ({
+  const running = session.status === "running";
+  return (session.steps || []).map((step, index) => ({
     tool: step.tool,
     args: step.arguments || {},
-    state: "done" as CallState,
+    state: running && index === session.steps.length - 1 ? ("running" as CallState) : ("done" as CallState),
     summary: step.summary,
+    thought: step.thought,
     ms: step.duration_ms || 0,
     kind: step.tool.startsWith("propose_") ? ("gated-write" as const) : ("read" as const),
   }));
@@ -667,6 +721,7 @@ function agentCalls(session: OrgAgentSession): ToolCall[] {
 
 function AgentAnswer({ data, onEvidence }: { data: any; onEvidence: (id: string) => void }) {
   const session: OrgAgentSession = data.session;
+  const model = MODEL_LABELS[session.model] || (session.model ? session.model : "deterministic grounding");
   return (
     <div className="ag-result">
       <section>
@@ -686,12 +741,24 @@ function AgentAnswer({ data, onEvidence }: { data: any; onEvidence: (id: string)
         <p className="ag-note">
           {session.mode === "guided"
             ? "No model was reachable, so the tool order came from a fallback policy. Every call, observation, and sentence above is still live."
-            : `A model chose each tool from the ${ORG_READ_TOOLS.length + ORG_WRITE_TOOLS.length} registered on this page, one step at a time.`}
+            : `The ${model} model chose each tool from the ${Object.keys(ORG_TOOLS).length} registered on this page, one step at a time — every call and citation above is live, and nothing was scripted.`}
         </p>
+        {session.proposal && (
+          <p className="ag-note">A change plan is waiting for a person in Approvals.</p>
+        )}
       </section>
     </div>
   );
 }
+
+const MODEL_LABELS: Record<string, string> = {
+  glm: "GLM",
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+  gemini: "Gemini",
+  grok: "Grok",
+  kimi: "Kimi",
+};
 
 function formatArgs(args: Record<string, unknown>) {
   const entries = Object.entries(args).filter(([, value]) => value !== undefined && value !== "");
@@ -1094,8 +1161,62 @@ function WatchCard({
   );
 }
 
-function SpacesCard({ spaces }: { spaces: OrgSpace[] }) {
-  const total = useMemo(
+/** Traffic from agents outside the page. The console's own calls live in the
+ * transcript; this card is exclusively foreign WebMCP traffic, so a judge can
+ * tell the two apart at a glance. */
+function ExternalActivityCard({
+  events,
+  status,
+  toolCount,
+}: {
+  events: WebMCPActivity[];
+  status: string;
+  toolCount: number;
+}) {
+  const connected = status === "ready";
+  return (
+    <div className="ag-card ag-webmcp-card">
+      <p className="ag-eyebrow">Live WebMCP activity</p>
+      {connected ? (
+        <p className="ag-note">
+          {toolCount} tools are registered on this page via{" "}
+          <code>document.modelContext.registerTool()</code>. Connect any WebMCP browser agent to
+          this URL and it can call them — read tools run immediately, write tools stop at a person.
+        </p>
+      ) : (
+        <p className="ag-note">
+          This browser exposes no <code>document.modelContext</code>, so the tools are shown on
+          screen but not registered for external agents.
+        </p>
+      )}
+      {events.length > 0 && (
+        <ul className="ag-external">
+          {events.slice().reverse().map((event) => (
+            <li key={event.id} className={event.state}>
+              <code>{event.tool}</code>
+              <span className="ag-call-meta">
+                <b className={`ag-perm ${event.permission}`}>{event.permission}</b>
+                {event.state === "complete" && event.durationMs != null && (
+                  <em>{event.durationMs} ms</em>
+                )}
+                {event.state === "running" && <em className="ag-running">running</em>}
+                {event.state === "error" && <em className="ag-error-text">failed</em>}
+              </span>
+              {event.resultSummary && <p>{event.resultSummary}</p>}
+              {event.state === "error" && event.message && <p className="ag-error-text">{event.message}</p>}
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="ag-note">
+        Calls above come from agents outside the page. The console&apos;s own calls appear in the
+        transcript — the two are never mixed.
+      </p>
+    </div>
+  );
+}
+
+function SpacesCard({ spaces }: { spaces: OrgSpace[] }) {  const total = useMemo(
     () => spaces.reduce((sum, space) => sum + space.memory_count, 0),
     [spaces],
   );

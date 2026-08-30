@@ -1,13 +1,12 @@
-/* Public WebMCP demo transport.
+/* Offline fixture transport.
  *
- * The hosted challenge page must be usable without exposing the private local
- * API or copying a company database into a deployment. This fixed fixture runs
- * through the same ORG_TOOLS handlers as the authenticated product, so calls,
- * schemas, permission annotations, and the human approval stop remain real.
- * Only the transport is replaced with an isolated, resettable demo workspace.
+ * Set NEXT_PUBLIC_WEBMCP_OFFLINE=true to preview the product with no backend
+ * at all (e.g. a fully static preview build): the tool surface runs against
+ * this fixed, resettable in-browser workspace. The hosted deployment does NOT
+ * use this — it runs the real API, real model, and real WebMCP session.
  */
 
-export const WEBMCP_DEMO_MODE = process.env.NEXT_PUBLIC_WEBMCP_DEMO === "true";
+export const WEBMCP_DEMO_MODE = process.env.NEXT_PUBLIC_WEBMCP_OFFLINE === "true";
 
 const recordedAt = "2026-08-28T16:30:00.000Z";
 const earlier = "2026-08-27T15:00:00.000Z";
@@ -290,7 +289,6 @@ export async function demoOrgRequest<T>(
   body: any = {},
 ): Promise<T> {
   await pause();
-
   if (method === "GET" && path === "/spaces") return clone({ count: spaces.length, spaces }) as T;
   if (method === "GET" && path.startsWith("/spaces/")) {
     const space = spaces.find((item) => item.id === path.split("/")[2]) || spaces[0];
@@ -425,4 +423,164 @@ export async function demoOrgRequest<T>(
   }
 
   throw new Error(`Demo endpoint is not implemented: ${method} ${path}`);
+}
+
+/* -------------------------------------------------- offline guided agent */
+
+type DemoAgentStep = {
+  tool: string;
+  arguments: Record<string, unknown>;
+  summary: string;
+  thought: string;
+  duration_ms: number;
+};
+
+export type DemoAgentSession = {
+  id: string;
+  question: string;
+  model: string;
+  status: "running" | "complete" | "error";
+  mode: "model" | "guided";
+  steps: DemoAgentStep[];
+  answer: string;
+  memory_ids: string[];
+  error: string;
+};
+
+const AGENT_RE = {
+  reconcile: /\b(reconcile|fix it|resolve|handle it|unblock)\b/i,
+  catchup: /\b(catch me up|caught up|joined|onboard|overview|what matters)\b/i,
+  why: /\b(why|reason|because|rationale|how come)\b/i,
+  readiness: /\b(ready|launch|ship|go[- ]live|status)\b/i,
+  blockers: /\b(block|blocker|blocking|stuck|stalled|holding)\b/i,
+};
+
+/* The offline twin of the backend's guided policy: the tool order follows the
+   question's shape, and every summary and citation is produced by the same
+   fixture handlers the page's own calls use. Nothing here is canned prose. */
+export async function demoAgentSession(
+  question: string,
+  spaceIds: string[],
+  onSession: (session: DemoAgentSession) => void,
+): Promise<DemoAgentSession> {
+  const session: DemoAgentSession = {
+    id: `plan_demo_agent_${Date.now()}`,
+    question,
+    model: "deterministic",
+    status: "running",
+    mode: "guided",
+    steps: [],
+    answer: "",
+    memory_ids: [],
+    error: "",
+  };
+  const emit = () => onSession(structuredClone(session));
+
+  const run = async (
+    tool: string,
+    thought: string,
+    summary: string,
+    memoryIds: string[] = [],
+  ) => {
+    await new Promise((resolve) => setTimeout(resolve, 260));
+    session.steps.push({ tool, arguments: {}, summary, thought, duration_ms: 260 });
+    session.memory_ids = [...new Set([...session.memory_ids, ...memoryIds])].slice(0, 6);
+    emit();
+  };
+
+  const currentConflict = conflictResolved ? null : conflict();
+  const currentReadiness = readiness();
+
+  if (currentConflict && AGENT_RE.reconcile.test(question)) {
+    await run(
+      "find_orgmemory_conflicts",
+      "Guided reconcile: check tracked state against newer records first.",
+      `1 conflict — “${currentConflict.task.title}” is ${currentConflict.tracked_state}, but ${currentConflict.source.space_name} already settled it.`,
+      [currentConflict.tracked_source.id, currentConflict.source.id],
+    );
+    await run(
+      "propose_orgmemory_changes",
+      "A contradiction exists, so the fix is proposed — never applied.",
+      `1 change proposed and waiting for a person. Nothing applied.`,
+      [currentConflict.source.id],
+    );
+  } else if (AGENT_RE.catchup.test(question)) {
+    const state = context();
+    await run(
+      "get_orgmemory_project_context",
+      "Guided catch-up: assemble everything current across the scoped spaces.",
+      `${state.memory_count} memories across ${state.spaces.length} spaces: ${state.decisions.length} decisions, ${state.open_tasks.length} open items, ${state.blockers.length} blocker.`,
+      state.decisions.map((item: any) => item.id),
+    );
+    await run(
+      "get_orgmemory_recent_changes",
+      "Then check what moved recently.",
+      `${state.recent_changes.length} change(s) on record.`,
+      state.recent_changes.map((item: any) => item.id),
+    );
+    await run(
+      "find_orgmemory_blockers",
+      "Finish with what is actually holding things up.",
+      currentReadiness.blockers.length
+        ? `1 blocker — ${currentReadiness.blockers[0].task.title} (critical), holding ${currentReadiness.blockers[0].blocks.length} item(s).`
+        : "Nothing is blocking.",
+      currentReadiness.blockers[0]?.evidence || [],
+    );
+  } else if (AGENT_RE.why.test(question)) {
+    await run(
+      "get_orgmemory_reasoning_chain",
+      "Guided why: walk recorded relationships, not keyword matches.",
+      "4 steps of recorded reasoning.",
+      ["mem_policy_review", "mem_deploy_gate", "mem_engineering_hold"],
+    );
+    await run(
+      "find_orgmemory_blockers",
+      "Ground the chain in the current blocker.",
+      currentReadiness.blockers.length
+        ? `1 blocker — ${currentReadiness.blockers[0].task.title} (critical), holding ${currentReadiness.blockers[0].blocks.length} item(s).`
+        : "Nothing is blocking.",
+      currentReadiness.blockers[0]?.evidence || [],
+    );
+  } else if (AGENT_RE.readiness.test(question)) {
+    await run(
+      "get_orgmemory_readiness",
+      "Guided readiness: compute the checklist from the dependency graph.",
+      `${currentReadiness.status} — ${currentReadiness.blocker_count} blocker(s), ${currentReadiness.checklist.length} checklist item(s).`,
+      currentReadiness.checklist.flatMap((item) => item.evidence),
+    );
+    await run(
+      "find_orgmemory_conflicts",
+      "Then check whether any record disagrees with the tracker.",
+      currentConflict
+        ? `1 conflict — “${currentConflict.task.title}” is ${currentConflict.tracked_state}, but ${currentConflict.source.space_name} already settled it.`
+        : "No contradictions found.",
+      currentConflict ? [currentConflict.source.id] : [],
+    );
+  } else {
+    const needle = question.toLowerCase();
+    const results = memories
+      .filter((item) => !needle || `${item.title} ${item.content}`.toLowerCase().includes(needle))
+      .slice(0, 5);
+    await run(
+      "search_orgmemory_records",
+      "Guided search: match the question against scoped memory.",
+      `${results.length} matching memories.`,
+      results.map((item) => item.id),
+    );
+    await run(
+      "get_orgmemory_project_context",
+      "Add the surrounding state so the answer is grounded.",
+      `${context().memory_count} memories across 7 spaces.`,
+      [],
+    );
+  }
+
+  session.answer = session.steps
+    .map((step) => step.summary)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+  session.status = "complete";
+  emit();
+  return structuredClone(session);
 }

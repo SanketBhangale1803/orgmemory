@@ -269,13 +269,16 @@ class GitHubConnector(Connector):
             )
 
     def oauth_url(
-        self, flow: dict[str, str], scopes: str = "repo read:org read:user user:email"
+        self,
+        flow: dict[str, str],
+        scopes: str = "repo read:org read:user user:email",
+        redirect_uri: str = "",
     ) -> str:
         if not settings.github_client_id:
             raise ValueError("GitHub OAuth is not configured")
         params = {
             "client_id": settings.github_client_id,
-            "redirect_uri": settings.github_redirect_uri,
+            "redirect_uri": redirect_uri or settings.github_redirect_uri,
             "scope": scopes,
             "state": flow["state"],
             "prompt": "select_account",
@@ -286,12 +289,14 @@ class GitHubConnector(Connector):
             )
         return "https://github.com/login/oauth/authorize?" + urlencode(params)
 
-    def complete_oauth(self, code: str, flow: dict) -> dict:
+    def complete_oauth(self, code: str, flow: dict, redirect_uri: str = "") -> dict:
         exchange = {
             "client_id": settings.github_client_id,
             "client_secret": settings.github_client_secret,
             "code": code,
-            "redirect_uri": settings.github_redirect_uri,
+            "redirect_uri": redirect_uri
+            or flow.get("redirect_uri")
+            or settings.github_redirect_uri,
         }
         if flow.get("code_verifier"):
             exchange["code_verifier"] = flow["code_verifier"]

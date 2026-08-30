@@ -75,7 +75,7 @@ def test_google_login_uses_pkce_and_redirects_to_workspace(graph, monkeypatch):
 
     monkeypatch.setattr(
         "app.api.routes.complete_google_oauth",
-        lambda code, consumed_flow: {
+        lambda code, consumed_flow, redirect_uri="": {
             "external_id": "google-user-42",
             "email": "owner@example.com",
             "display_name": "Owner",
@@ -89,7 +89,10 @@ def test_google_login_uses_pkce_and_redirects_to_workspace(graph, monkeypatch):
     )
 
     assert response.status_code in {302, 307}
-    assert response.headers["location"] == f"{settings.frontend_url.rstrip('/')}/workspace"
+    # The callback redirects to the origin the request actually came from
+    # (the TestClient here), which is what makes a hosted deployment work
+    # without baking its domain into the environment.
+    assert response.headers["location"] == "http://testserver/workspace"
     assert response.cookies.get(settings.session_cookie_name)
 
 

@@ -54,6 +54,7 @@ from app.auth.app_auth import (
     workspace_members,
 )
 from app.auth.mcp_oauth import principal_from_mcp_token, register_mcp_client
+from app.auth.security import frontend_redirect, oauth_redirect_uri
 from app.company_context import CompanyContextService
 from app.connectors.application import OrgMemorySyncApplier
 from app.connectors.base import WebhookRequest
@@ -460,6 +461,7 @@ def auth_providers():
         "google": google,
         "email": email,
         "development": settings.auth_dev_mode,
+        "public_demo": settings.public_demo_mode,
         "details": {
             "github": {
                 "configured": github,
@@ -516,6 +518,27 @@ def _set_session_cookie(response: Response, token: str) -> None:
         domain=settings.session_cookie_domain or None,
         path="/",
     )
+
+
+def _seed_public_demo_for(session: dict) -> None:
+    """Land a real sign-in inside the shared public demo workspace.
+
+    On the hosted demo, a real identity still has to see the seeded launch
+    scenario — an empty personal workspace would make the deployment look
+    broken. The identity stays real (provider, external id, email); only the
+    destination workspace is shared. Production deployments without the
+    public-demo profile keep per-user workspaces.
+    """
+    if not settings.public_demo_mode:
+        return
+    try:
+        seed_launch_scenario(
+            session["user"]["active_workspace_id"],
+            ingestion.create_project,
+            company_memory,
+        )
+    except Exception:  # noqa: BLE001 - login must not fail on re-seeding
+        logger.exception("Public demo scenario seed after OAuth sign-in failed")
 
 
 @router.post("/auth/dev-login")
@@ -3669,30 +3692,51 @@ def create_mcp_oauth_client(
 
 
 @router.get("/auth/github/start")
-def github_auth_start():
+def github_auth_start(request: Request):
     try:
         flow = OAuthStateStore().create(
             "github", intent="login", use_pkce=settings.github_oauth_use_pkce
         )
-        return RedirectResponse(GitHubConnector().oauth_url(flow, scopes="read:user user:email"))
+        return RedirectResponse(
+            GitHubConnector().oauth_url(
+                flow,
+                scopes="read:user user:email",
+                redirect_uri=oauth_redirect_uri(
+                    request, settings.github_redirect_uri, "/api/auth/github/callback"
+                ),
+            )
+        )
     except Exception as exc:
         fail(exc)
 
 
 @router.get("/auth/google/start")
-def google_auth_start():
+def google_auth_start(request: Request):
     try:
         flow = OAuthStateStore().create("google", intent="login", use_pkce=True)
-        return RedirectResponse(google_oauth_url(flow))
+        return RedirectResponse(
+            google_oauth_url(
+                flow,
+                redirect_uri=oauth_redirect_uri(
+                    request, settings.google_redirect_uri, "/api/auth/google/callback"
+                ),
+            )
+        )
     except Exception as exc:
         fail(exc)
 
 
 @router.get("/auth/google/callback")
-def google_auth_callback(code: str, state: str):
+def google_auth_callback(code: str, state: str, request: Request):
     try:
         flow = OAuthStateStore().consume("google", state)
-        identity = complete_google_oauth(code, flow)
+        identity = complete_google_oauth(
+            code,
+            flow,
+            redirect_uri=oauth_redirect_uri(
+                request, settings.google_redirect_uri, "/api/auth/google/callback"
+            ),
+        )
         session = create_oauth_session(
             "google",
             identity["external_id"],
@@ -3700,12 +3744,13 @@ def google_auth_callback(code: str, state: str):
             identity["display_name"],
             f"{identity['email'].split('@')[-1]}'s workspace",
         )
-        response = RedirectResponse(f"{settings.frontend_url.rstrip('/')}/workspace")
+        _seed_public_demo_for(session)
+        response = RedirectResponse(frontend_redirect(request, "/workspace"))
         _set_session_cookie(response, session["token"])
         return response
     except Exception as exc:
         query = urlencode({"error": str(exc)})
-        return RedirectResponse(f"{settings.frontend_url}/login?{query}")
+        return RedirectResponse(frontend_redirect(request, f"/login?{query}"))
 
 
 @router.get("/connectors/{provider}/auth/start")
@@ -3732,12 +3777,17 @@ def connector_auth_start(
 
 
 @router.get("/auth/github/callback")
-def github_auth_callback(code: str, state: str, background_tasks: BackgroundTasks = None):
+def github_auth_callback(
+    code: str, state: str, request: Request, background_tasks: BackgroundTasks = None
+):
     flow = None
     try:
         flow = OAuthStateStore().consume("github", state)
+        redirect_uri = oauth_redirect_uri(
+            request, settings.github_redirect_uri, "/api/auth/github/callback"
+        )
         if flow["intent"] == "login":
-            identity = GitHubConnector().complete_oauth(code, flow)
+            identity = GitHubConnector().complete_oauth(code, flow, redirect_uri=redirect_uri)
             session = create_oauth_session(
                 "github",
                 identity["external_id"],
@@ -3745,18 +3795,19 @@ def github_auth_callback(code: str, state: str, background_tasks: BackgroundTask
                 identity["display_name"],
                 f"{identity['login']}'s workspace",
             )
-            response = RedirectResponse(f"{settings.frontend_url.rstrip('/')}/workspace")
+            _seed_public_demo_for(session)
+            response = RedirectResponse(frontend_redirect(request, "/workspace"))
             _set_session_cookie(response, session["token"])
             return response
         # The connector runtime performs the OAuth exchange and persists the
         # resulting token. A GitHub authorization code is single-use, so do
         # not exchange it here before passing it to the runtime.
         connector_runtime.complete_authorization("github", flow, code)
-        return RedirectResponse(f"{settings.frontend_url}/connectors?connected=github")
+        return RedirectResponse(frontend_redirect(request, "/connectors?connected=github"))
     except Exception as exc:
         query = urlencode({"error": str(exc)})
         destination = "connectors" if flow and flow.get("intent") == "connect" else "login"
-        return RedirectResponse(f"{settings.frontend_url}/{destination}?{query}")
+        return RedirectResponse(frontend_redirect(request, f"/{destination}?{query}"))
 
 
 @router.get("/connectors/{provider}/auth/callback")

@@ -1,5 +1,5 @@
-import { api } from "@/lib/api";
-import { demoOrgRequest, WEBMCP_DEMO_MODE } from "@/lib/demoOrgMemory";
+import { api, API } from "@/lib/api";
+import { demoAgentSession, demoOrgRequest, WEBMCP_DEMO_MODE } from "@/lib/demoOrgMemory";
 
 /**
  * Organizational operations, as tools.
@@ -184,6 +184,8 @@ export type OrgAgentSession = {
   steps: OrgAgentStep[];
   answer: string;
   memory_ids: string[];
+  /** A plan the agent proposed; it never applies itself. */
+  proposal?: Record<string, unknown> | null;
   error: string;
 };
 
@@ -297,6 +299,123 @@ export const orgApi = {
   ask: (question: string, spaceIds: string[]) =>
     post<OrgAgentSession>("/ask", { question, space_ids: spaceIds }),
   askStatus: (runId: string) => get<OrgAgentSession>(`/ask/${runId}`),
+  /** Free-text question, answered by a model driving the tool surface.
+   *
+   * Streams one NDJSON request so the run, its tool calls, and its trace stay
+   * on one server instance (the session registry is process-local), and the
+   * console can render each step the moment it lands. Falls back to the
+   * create-then-poll transport when the stream is unavailable, and to the
+   * guided offline agent when there is no backend at all. */
+  askStream: async (
+    question: string,
+    spaceIds: string[],
+    onSession: (session: OrgAgentSession) => void,
+  ): Promise<OrgAgentSession> => {
+    const publish = (session: OrgAgentSession) => onSession({ ...session, steps: [...session.steps] });
+    if (WEBMCP_DEMO_MODE) {
+      return (await demoAgentSession(question, spaceIds, publish as (session: any) => void)) as OrgAgentSession;
+    }
+    let response: Response;
+    try {
+      response = await fetch(`${API}/api/org/ask/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        cache: "no-store",
+        body: JSON.stringify({ question, space_ids: spaceIds }),
+      });
+    } catch {
+      throw new Error(
+        `Cannot reach the OrgMemory API at ${API}. Check that the backend is running and refresh the page.`,
+      );
+    }
+    if (!response.ok || !response.body) {
+      let session = await post<OrgAgentSession>("/ask", { question, space_ids: spaceIds });
+      publish(session);
+      const deadline = Date.now() + 150000;
+      while (session.status === "running" && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+        session = await orgApi.askStatus(session.id);
+        publish(session);
+      }
+      if (session.status === "error") throw new Error(session.error || "The agent could not finish.");
+      return session;
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    const state: { session: OrgAgentSession | null } = { session: null };
+    let buffer = "";
+    const apply = (next: OrgAgentSession) => {
+      state.session = next;
+      publish(next);
+    };
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newline = buffer.indexOf("\n");
+      while (newline !== -1) {
+        const line = buffer.slice(0, newline).trim();
+        buffer = buffer.slice(newline + 1);
+        newline = buffer.indexOf("\n");
+        if (!line) continue;
+        let event: {
+          type: string;
+          id?: string;
+          model?: string;
+          step?: OrgAgentStep;
+          session?: OrgAgentSession;
+          message?: string;
+        };
+        try {
+          event = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (event.type === "start") {
+          apply({
+            id: event.id || "",
+            question,
+            model: event.model || "",
+            status: "running",
+            steps: [],
+            answer: "",
+            memory_ids: [],
+            error: "",
+          });
+        } else if (event.type === "step" && event.step) {
+          const previous = state.session;
+          apply({
+            ...(previous || {
+              id: event.id || "",
+              question,
+              model: "",
+              status: "running",
+              steps: [],
+              answer: "",
+              memory_ids: [],
+              error: "",
+            }),
+            status: "running",
+            steps: [...(previous?.steps || []), event.step],
+          });
+        } else if (event.type === "done" && event.session) {
+          // Guard the live trace: the final session should carry every step,
+          // but never let a sparse terminal payload wipe what was streamed.
+          const streamed = state.session?.steps || [];
+          apply(
+            event.session.steps?.length
+              ? event.session
+              : { ...event.session, steps: streamed },
+          );
+        } else if (event.type === "error") {
+          throw new Error(event.message || "The agent could not finish.");
+        }
+      }
+    }
+    if (!state.session) throw new Error("The agent stream ended without a result.");
+    return state.session;
+  },
   watches: () => get<{ count: number; watches: OrgWatch[] }>("/watches"),
   createWatch: (name: string, spaceIds: string[], checks: string[], intervalSeconds = 900) =>
     post<OrgWatch>("/watches", {

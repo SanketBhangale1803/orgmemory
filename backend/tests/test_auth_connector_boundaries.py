@@ -99,7 +99,7 @@ def test_github_login_callback_redirects_to_authenticated_workspace(graph, monke
     monkeypatch.setattr(
         GitHubConnector,
         "complete_oauth",
-        lambda self, code, consumed_flow: {
+        lambda self, code, consumed_flow, redirect_uri="": {
             "token": "github-access-token",
             "external_id": "github-user-42",
             "login": "runbook-owner",
@@ -117,7 +117,9 @@ def test_github_login_callback_redirects_to_authenticated_workspace(graph, monke
     )
 
     assert response.status_code in {302, 307}
-    assert response.headers["location"] == f"{settings.frontend_url.rstrip('/')}/workspace"
+    # Redirect follows the request origin so hosted deployments need no
+    # baked-in frontend URL.
+    assert response.headers["location"] == "http://testserver/workspace"
     assert response.cookies.get(settings.session_cookie_name)
 
 
@@ -145,7 +147,7 @@ def test_github_connector_callback_exchanges_code_only_in_runtime(graph, monkeyp
     )
 
     assert response.status_code in {302, 307}
-    assert response.headers["location"] == f"{settings.frontend_url}/connectors?connected=github"
+    assert response.headers["location"] == "http://testserver/connectors?connected=github"
     assert completed["provider"] == "github"
     assert completed["code"] == "oauth-code"
 

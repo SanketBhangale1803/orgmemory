@@ -142,13 +142,19 @@ test("browser API calls use the secure session cookie instead of legacy local st
   assert.match(nextConfig, /destination: "http:\/\/localhost:3000\/:path\*"/);
 });
 
-test("the hosted demo cannot navigate past authentication before hydration", () => {
+test("sign-in uses real OAuth; only the public-demo guest path uses demo-login", () => {
   const login = readFileSync(new URL("../app/login/page.tsx", import.meta.url), "utf8");
   const vercel = readFileSync(new URL("../../vercel.json", import.meta.url), "utf8");
   assert.match(login, /WEBMCP_DEMO_MODE \? \(/);
   assert.match(login, /type="button"/);
-  assert.match(login, /enterDemo\("google"\)/);
-  assert.match(login, /enterDemo\("github"\)/);
+  // Real provider round trips, driven by what the backend reports configured.
+  assert.match(login, /providers\?\.google \? `\$\{API\}\/api\/auth\/google\/start`/);
+  assert.match(login, /providers\?\.github \? `\$\{API\}\/api\/auth\/github\/start`/);
+  // The persona sign-in is gone; demo-login only carries the public-demo
+  // guest entry, which lands in the shared seeded workspace.
+  assert.doesNotMatch(login, /enterDemo\("google"\)/);
+  assert.doesNotMatch(login, /enterDemo\("github"\)/);
+  assert.match(login, /enterDemo\("guest"\)/);
   assert.doesNotMatch(login, /WEBMCP_DEMO_MODE \? "\/workspace"/);
   assert.deepEqual(JSON.parse(vercel).rewrites[0], {
     source: "/",

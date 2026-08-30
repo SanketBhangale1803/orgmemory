@@ -7,9 +7,13 @@ and a person approves it. Capability and authorization stay separate.
 
 from __future__ import annotations
 
+import json
+import queue
+import time
 from threading import Thread
 
 from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.core.database import row
@@ -21,7 +25,6 @@ from app.webmcp_agent import AgentSessionStore, WebMCPAgentRunner
 
 from .routes import (
     _authenticate,
-    logger,
     _authorize_project_for_principal,
     _authorize_workspace,
     _authorized_space_ids,
@@ -29,6 +32,7 @@ from .routes import (
     audit,
     company_memory,
     ingestion,
+    logger,
 )
 
 org_router = APIRouter(prefix="/api/org", tags=["organization"])
@@ -336,9 +340,7 @@ def approve_plan(plan_id: str, authorization: str | None = Header(default=None))
     if principal["role"] not in {"owner", "admin"}:
         raise HTTPException(403, "Owner or admin session required to apply changes")
     try:
-        plan = orgops.approve_plan(
-            plan_id, principal["active_workspace_id"], str(principal["id"])
-        )
+        plan = orgops.approve_plan(plan_id, principal["active_workspace_id"], str(principal["id"]))
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
     except PermissionError as exc:
@@ -556,3 +558,108 @@ def org_session(run_id: str, authorization: str | None = Header(default=None)):
     if not record:
         raise HTTPException(404, "Session not found")
     return record
+
+
+@org_router.post("/ask/stream")
+def ask_org_stream(request: AskRequest, authorization: str | None = Header(default=None)):
+    """Stream one agent session as NDJSON over a single request.
+
+    The session registry is process-local, so a console that polls
+    ``/ask/{run_id}`` can reach a different instance mid-run and lose the
+    trace entirely. Running the same loop inside the request keeps the run,
+    its tool calls, and its trace on one instance — and lets the console
+    render each step the moment it lands. ``POST /ask`` stays for SDK and
+    single-instance deployments.
+    """
+    principal = _authenticate(authorization)
+    space_ids = _spaces(principal, ",".join(request.space_ids))
+    if not space_ids:
+        raise HTTPException(400, "No authorized spaces to search")
+    model = configured_model(request.model or None)
+    run_id = org_sessions.create(
+        request.question, model.id if model else "", principal.get("active_workspace_id", "")
+    )
+    audit.record(
+        "org.agent_session.started",
+        f"Console question: {request.question[:80]}",
+        actor=str(principal["id"]),
+        payload={"session_id": run_id, "spaces": len(space_ids), "transport": "stream"},
+    )
+
+    events: queue.Queue[tuple[str, dict]] = queue.Queue()
+
+    def on_step(step: dict) -> None:
+        org_sessions.append_step(run_id, step)
+        events.put(("step", step))
+
+    def worker() -> None:
+        try:
+            result = org_agent.run(
+                principal=principal,
+                question=request.question,
+                model=request.model or None,
+                exec_tool=_org_executor(principal, space_ids),
+                list_spaces=lambda _: [
+                    {"project_id": space["id"], "name": space["name"]}
+                    for space in orgops.list_spaces(space_ids)
+                ],
+                on_step=on_step,
+            )
+            org_sessions.update(
+                run_id,
+                status="complete",
+                answer=result["answer"],
+                memory_ids=result["memory_ids"],
+                proposal=result.get("proposal"),
+                thoughts=result.get("thoughts", []),
+                mode=result.get("mode", "model"),
+            )
+            events.put(
+                (
+                    "done",
+                    org_sessions.get(run_id, principal.get("active_workspace_id", "")) or {},
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - the stream must end with an event
+            logger.exception("Organizational agent session failed")
+            org_sessions.update(run_id, status="error", error=str(exc))
+            events.put(("error", {"message": str(exc)}))
+
+    Thread(target=worker, daemon=True).start()
+
+    def stream():
+        yield json.dumps({"type": "start", "id": run_id, "model": model.id if model else ""}) + "\n"
+        deadline = time.monotonic() + 300
+        while True:
+            try:
+                kind, payload = events.get(timeout=30)
+            except queue.Empty:
+                if time.monotonic() > deadline:
+                    org_sessions.update(run_id, status="error", error="Timed out")
+                    yield json.dumps(
+                        {"type": "error", "message": "The agent run timed out."}
+                    ) + "\n"
+                    return
+                yield json.dumps({"type": "ping"}) + "\n"
+                continue
+            if kind == "done":
+                yield json.dumps({"type": "done", "session": payload}, default=str) + "\n"
+                return
+            if kind == "error":
+                yield (
+                    json.dumps(
+                        {
+                            "type": "error",
+                            "message": payload.get("message") or "The agent could not finish.",
+                        }
+                    )
+                    + "\n"
+                )
+                return
+            yield json.dumps({"type": "step", "step": payload}, default=str) + "\n"
+
+    return StreamingResponse(
+        stream(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )

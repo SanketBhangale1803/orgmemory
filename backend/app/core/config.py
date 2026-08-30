@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     api_url: str = "http://localhost:8000"
     frontend_url: str = "http://localhost:3000"
+    # The public scheme://host of THIS deployment. When empty or local, the
+    # OAuth and redirect layer derives it from the incoming request's
+    # forwarded headers, so a hosted deployment needs no baked-in domain.
+    public_base_url: str = ""
     sqlite_path: Path = ROOT / "data" / "runbook.db"
     generated_runbooks_dir: Path = ROOT / "generated_runbooks"
     repo_cache_dir: Path = ROOT / "data" / "repos"
@@ -165,7 +169,9 @@ class Settings(BaseSettings):
             if self.connector_sync_worker_enabled or self.connector_custom_mcp_enabled:
                 faults.append("External connector execution must be disabled in the public demo")
             if not str(self.sqlite_path).startswith("/tmp/orgmemory/"):
-                faults.append("The public demo SQLite database must be disposable under /tmp/orgmemory")
+                faults.append(
+                    "The public demo SQLite database must be disposable under /tmp/orgmemory"
+                )
             if not self.frontend_url.startswith("https://"):
                 faults.append("FRONTEND_URL must use HTTPS")
             if self.jwt_secret == "runbook-local-dev-secret" or len(self.jwt_secret) < 32:

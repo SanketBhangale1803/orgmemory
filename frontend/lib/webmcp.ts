@@ -1839,3 +1839,55 @@ export async function registerOrgMemoryWebMCP(
     dispose: () => controller.abort(),
   };
 }
+
+/**
+ * Register the agent-operations console as a Model Context Provider surface
+ * of its own.
+ *
+ * The workspace registers the full 21-tool surface; this page registers the
+ * organizational-operations set it actually exercises, so a browser agent
+ * connected to the page drives the same handlers the on-screen console calls
+ * — not a parallel demo path. Every external call flows back through
+ * `onActivity`, which is what makes foreign agent traffic visible on screen.
+ */
+export async function registerOrgConsoleWebMCP(
+  onActivity?: (activity: WebMCPActivity) => void,
+): Promise<WebMCPRegistration> {
+  if (typeof document === "undefined" || !document.modelContext) {
+    return { supported: false, toolCount: 0, dispose: () => undefined };
+  }
+
+  const controller = new AbortController();
+  const registration = { signal: controller.signal };
+
+  const registrations = Object.values(ORG_TOOLS).map((tool) =>
+    document.modelContext!.registerTool(
+      {
+        name: tool.name,
+        title: tool.title,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+        annotations: tool.kind === "read" ? READ_ONLY : APPROVAL_REQUIRED_WRITE,
+        execute: (input) =>
+          tracked(tool.name as WebMCPToolName, onActivity, input, async () => {
+            const result = await tool.run(input as Record<string, unknown>);
+            return toolResult(result.summary, result.data);
+          }),
+      },
+      registration,
+    ),
+  );
+
+  try {
+    await Promise.all(registrations);
+  } catch (error) {
+    controller.abort();
+    throw error;
+  }
+
+  return {
+    supported: true,
+    toolCount: registrations.length,
+    dispose: () => controller.abort(),
+  };
+}

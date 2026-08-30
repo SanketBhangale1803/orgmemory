@@ -41,12 +41,12 @@ function dataModule(source) {
 const orgToolsUrl = dataModule(
   orgTools
     .replace(
-      /^import \{ api \} from "@\/lib\/api";$/m,
-      "const api = async () => ({ spaces: [], plans: [], results: [] });",
+      /^import \{ api, API \} from "@\/lib\/api";$/m,
+      "const api = async () => ({ spaces: [], plans: [], results: [] }); const API = '';",
     )
     .replace(
-      /^import \{ demoOrgRequest, WEBMCP_DEMO_MODE \} from "@\/lib\/demoOrgMemory";$/m,
-      "const WEBMCP_DEMO_MODE = false; const demoOrgRequest = async () => ({});",
+      /^import \{ demoAgentSession, demoOrgRequest, WEBMCP_DEMO_MODE \} from "@\/lib\/demoOrgMemory";$/m,
+      "const WEBMCP_DEMO_MODE = false; const demoOrgRequest = async () => ({}); const demoAgentSession = async () => ({});",
     ),
 );
 const webmcpStandalone = webmcp.replace('"@/lib/orgTools"', JSON.stringify(orgToolsUrl));

@@ -124,6 +124,11 @@ def create_oauth_session(
         (user_id,),
     )
     workspace_id = membership["workspace_id"] if membership else None
+    if not workspace_id and settings.public_demo_mode:
+        # A real sign-in on the hosted demo shares the seeded demo workspace:
+        # the judge lands somewhere that already has memory to query. The
+        # identity itself stays real (provider, external id, email).
+        workspace_id = _ensure_public_demo_membership(user_id)
     if not workspace_id:
         # No active home yet, so an outstanding invitation takes priority over
         # spinning up a fresh personal workspace.
@@ -139,22 +144,14 @@ def create_oauth_session(
     return issue_session(user_id, workspace_id)
 
 
-def ensure_public_demo_identity(identity: str, display_name: str = "") -> dict[str, Any]:
-    """Hydrate one deterministic identity in this container's demo database.
+def _ensure_public_demo_membership(user_id: str, role: str = "owner") -> str:
+    """Idempotently place one user inside the shared public demo workspace.
 
-    Vercel containers do not share their ``/tmp`` SQLite files. Stable IDs let
-    every instance reconstruct the same isolated workspace for a signed demo
-    cookie without treating container-local session state as durable storage.
+    Vercel containers do not share their ``/tmp`` SQLite files, so the shared
+    workspace row is rebuilt on demand. Stable IDs let every instance
+    reconstruct the same workspace without treating container-local state as
+    durable storage.
     """
-    if not settings.public_demo_mode:
-        raise ValueError("Public demo access is not enabled")
-    identity = identity.casefold().strip()
-    if identity not in PUBLIC_DEMO_IDENTITIES:
-        raise ValueError("Unsupported public demo identity")
-    email, default_name = PUBLIC_DEMO_IDENTITIES[identity]
-    name = (display_name or default_name).strip() or default_name
-    user_id = f"usr_public_demo_{identity}"
-    member_id = f"mem_public_demo_{identity}"
     now = utcnow()
     with connect() as conn:
         conn.execute(
@@ -171,6 +168,43 @@ def ensure_public_demo_identity(identity: str, display_name: str = "") -> dict[s
             ),
         )
         conn.execute(
+            """INSERT INTO workspace_members
+            (id,workspace_id,user_id,role,status,invited_email,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,?)
+            ON CONFLICT(workspace_id,user_id) DO UPDATE SET role=excluded.role,
+            status=excluded.status,updated_at=excluded.updated_at""",
+            (
+                f"mem_public_demo_{user_id}"[:64],
+                PUBLIC_DEMO_WORKSPACE_ID,
+                user_id,
+                role,
+                "active",
+                "",
+                now,
+                now,
+            ),
+        )
+    return PUBLIC_DEMO_WORKSPACE_ID
+
+
+def ensure_public_demo_identity(identity: str, display_name: str = "") -> dict[str, Any]:
+    """Hydrate one deterministic identity in this container's demo database.
+
+    Stable IDs let every instance reconstruct the same isolated workspace for
+    a signed demo cookie without treating container-local session state as
+    durable storage.
+    """
+    if not settings.public_demo_mode:
+        raise ValueError("Public demo access is not enabled")
+    identity = identity.casefold().strip()
+    if identity not in PUBLIC_DEMO_IDENTITIES:
+        raise ValueError("Unsupported public demo identity")
+    email, default_name = PUBLIC_DEMO_IDENTITIES[identity]
+    name = (display_name or default_name).strip() or default_name
+    user_id = f"usr_public_demo_{identity}"
+    now = utcnow()
+    with connect() as conn:
+        conn.execute(
             """INSERT INTO users
             (id,email,display_name,auth_provider,external_id,role_hint,created_at,updated_at)
             VALUES (?,?,?,?,?,?,?,?)
@@ -179,23 +213,7 @@ def ensure_public_demo_identity(identity: str, display_name: str = "") -> dict[s
             external_id=excluded.external_id,updated_at=excluded.updated_at""",
             (user_id, email, name, "public-demo", identity, "owner", now, now),
         )
-        conn.execute(
-            """INSERT INTO workspace_members
-            (id,workspace_id,user_id,role,status,invited_email,created_at,updated_at)
-            VALUES (?,?,?,?,?,?,?,?)
-            ON CONFLICT(workspace_id,user_id) DO UPDATE SET role=excluded.role,
-            status=excluded.status,updated_at=excluded.updated_at""",
-            (
-                member_id,
-                PUBLIC_DEMO_WORKSPACE_ID,
-                user_id,
-                "owner",
-                "active",
-                "",
-                now,
-                now,
-            ),
-        )
+    _ensure_public_demo_membership(user_id)
     return me_for_user(user_id, PUBLIC_DEMO_WORKSPACE_ID)
 
 

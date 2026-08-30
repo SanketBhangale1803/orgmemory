@@ -12,6 +12,7 @@ type Providers = {
   google: boolean;
   email: boolean;
   development: boolean;
+  public_demo?: boolean;
   details?: Record<string, { configured: boolean; setup: string }>;
 };
 
@@ -40,21 +41,22 @@ export default function Login() {
   async function enterDemo(identity: "google" | "github" | "guest" | "email") {
     setBusy(true);
     setError("");
-    const names = {
-      google: "Google demo user",
-      github: "GitHub demo user",
-      guest: "Guest operator",
-      email: displayName || "Email demo user",
-    };
+    if (WEBMCP_DEMO_MODE) {
+      // Offline preview: there is no backend to authenticate against, and the
+      // fixture console mints its own operator, so go straight to it.
+      window.location.assign("/webmcp");
+      return;
+    }
+    const name = identity === "email" ? displayName || "Email demo user" : "Guest operator";
     try {
       await api("/api/auth/demo-login", {
         method: "POST",
         body: JSON.stringify({
-          identity,
-          display_name: names[identity],
+          identity: identity === "email" ? "email" : "guest",
+          display_name: name,
         }),
       });
-      window.location.assign("/workspace");
+      window.location.assign("/webmcp");
     } catch (exc: any) {
       setError(exc.message);
       setBusy(false);
@@ -153,31 +155,22 @@ export default function Login() {
           {message && <div className="login-message">{message}</div>}
 
           <div className="oauth-stack">
-            {WEBMCP_DEMO_MODE ? (
-              <>
-                <button
-                  type="button"
-                  className="login-oauth"
-                  onClick={() => void enterDemo("google")}
-                  disabled={busy}
-                >
-                  <span className="provider-g">G</span>
-                  <strong>Continue with Google</strong>
-                  <span>→</span>
-                </button>
-                <button
-                  type="button"
-                  className="login-oauth"
-                  onClick={() => void enterDemo("github")}
-                  disabled={busy}
-                >
-                  <span><GitHubIcon size={18} /></span>
-                  <strong>Continue with GitHub</strong>
-                  <span>→</span>
-                </button>
-              </>
-            ) : (
-              <>
+          {WEBMCP_DEMO_MODE ? (
+            <div className="oauth-stack">
+              <button
+                type="button"
+                className="login-oauth"
+                onClick={() => void enterDemo("guest")}
+                disabled={busy}
+              >
+                <span className="provider-g">◈</span>
+                <strong>Open the offline demo console</strong>
+                <span>→</span>
+              </button>
+            </div>
+          ) : (
+            <>
+              <div className="oauth-stack">
                 <a
                   className={`login-oauth ${!providers?.google ? "disabled" : ""}`}
                   href={providers?.google ? `${API}/api/auth/google/start` : undefined}
@@ -196,8 +189,15 @@ export default function Login() {
                   <strong>Continue with GitHub</strong>
                   <span>→</span>
                 </a>
-              </>
-            )}
+              </div>
+              {providers && !providers.github && (
+                <small className="login-legal">
+                  GitHub sign-in activates once {`GITHUB_CLIENT_ID`} / {`GITHUB_CLIENT_SECRET`} are
+                  set on the deployment and this origin is a registered OAuth callback URL.
+                </small>
+              )}
+            </>
+          )}
           </div>
 
           <div className="login-divider"><span>or use work email</span></div>
@@ -254,11 +254,11 @@ export default function Login() {
             </details>
           )}
 
-          {providers?.development && (
+          {(providers?.public_demo || providers?.development) && (
             <div className="dev-access">
-              {WEBMCP_DEMO_MODE && (
+              {(providers?.public_demo || WEBMCP_DEMO_MODE) && (
                 <button className="button" onClick={() => void enterDemo("guest")} disabled={busy}>
-                  {busy ? "Opening demo…" : "Continue as guest"}
+                  {busy ? "Opening demo…" : "Enter the public demo"}
                 </button>
               )}
               <button className="text-button" onClick={() => setShowDev(!showDev)}>
@@ -280,8 +280,10 @@ export default function Login() {
 
           <small className="login-legal">
             {WEBMCP_DEMO_MODE
-              ? "Public demo: provider buttons use an isolated demo identity and never request an external account."
-              : "OrgMemory never sends source credentials to the browser or to a model."}
+              ? "Offline preview: the console runs against a local fixture workspace."
+              : providers?.public_demo
+                ? "The public demo shares one seeded workspace. Provider sign-ins use your real identity; demo access never requests an external account."
+                : "OrgMemory never sends source credentials to the browser or to a model."}
           </small>
         </div>
       </section>
