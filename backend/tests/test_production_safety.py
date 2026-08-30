@@ -57,3 +57,49 @@ def test_production_configuration_accepts_oci_kms():
     )
 
     config.assert_safe_for_environment()
+
+
+def test_public_demo_configuration_is_production_safe_and_isolated():
+    config = Settings(
+        environment="production",
+        public_demo_mode=True,
+        auth_dev_mode=False,
+        jwt_secret="a-public-demo-secret-that-is-longer-than-32-characters",
+        frontend_url="https://orgmemory.vercel.app",
+        graph_backend="memory",
+        sqlite_path="/tmp/orgmemory/runbook.db",
+        runbook_demo_mode=True,
+        allow_local_command_execution=False,
+        org_memory_execution_enabled=False,
+        connector_sync_worker_enabled=False,
+        connector_custom_mcp_enabled=False,
+        mcp_public_url="https://orgmemory.vercel.app/mcp",
+        mcp_oauth_issuer_url="https://orgmemory.vercel.app",
+    )
+
+    config.assert_safe_for_environment()
+
+
+def test_public_demo_configuration_refuses_execution_or_external_connectors():
+    config = Settings(
+        environment="production",
+        public_demo_mode=True,
+        auth_dev_mode=False,
+        jwt_secret="a-public-demo-secret-that-is-longer-than-32-characters",
+        frontend_url="https://orgmemory.vercel.app",
+        graph_backend="memory",
+        sqlite_path="/tmp/orgmemory/runbook.db",
+        runbook_demo_mode=True,
+        allow_local_command_execution=True,
+        org_memory_execution_enabled=True,
+        connector_sync_worker_enabled=True,
+        connector_custom_mcp_enabled=True,
+        mcp_public_url="https://orgmemory.vercel.app/mcp",
+        mcp_oauth_issuer_url="https://orgmemory.vercel.app",
+    )
+
+    with pytest.raises(RuntimeError) as exc:
+        config.assert_safe_for_environment()
+
+    assert "execution must be disabled" in str(exc.value)
+    assert "External connector execution must be disabled" in str(exc.value)

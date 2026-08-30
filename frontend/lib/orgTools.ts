@@ -1,4 +1,5 @@
 import { api } from "@/lib/api";
+import { demoOrgRequest, WEBMCP_DEMO_MODE } from "@/lib/demoOrgMemory";
 
 /**
  * Organizational operations, as tools.
@@ -165,6 +166,27 @@ export type OrgWatch = {
   findings: OrgWatchFinding[];
 };
 
+export type OrgAgentStep = {
+  tool: string;
+  arguments: Record<string, unknown>;
+  summary: string;
+  thought?: string;
+  duration_ms?: number;
+};
+
+export type OrgAgentSession = {
+  id: string;
+  question: string;
+  model: string;
+  status: "running" | "complete" | "error";
+  /** "model" when a model chose the tools; "guided" when none was reachable. */
+  mode?: "model" | "guided";
+  steps: OrgAgentStep[];
+  answer: string;
+  memory_ids: string[];
+  error: string;
+};
+
 export type OrgProjectContext = {
   spaces: OrgSpace[];
   memory_count: number;
@@ -189,10 +211,14 @@ function query(params: Record<string, unknown>): string {
 }
 
 const get = <T,>(path: string, params: Record<string, unknown> = {}) =>
-  api<T>(`/api/org${path}${query(params)}`);
+  WEBMCP_DEMO_MODE
+    ? demoOrgRequest<T>("GET", path, params)
+    : api<T>(`/api/org${path}${query(params)}`);
 
 const post = <T,>(path: string, body: unknown) =>
-  api<T>(`/api/org${path}`, { method: "POST", body: JSON.stringify(body) });
+  WEBMCP_DEMO_MODE
+    ? demoOrgRequest<T>("POST", path, {}, body)
+    : api<T>(`/api/org${path}`, { method: "POST", body: JSON.stringify(body) });
 
 function plural(count: number, one: string, many = `${one}s`) {
   return `${count} ${count === 1 ? one : many}`;
@@ -268,6 +294,9 @@ export const orgApi = {
   approvePlan: (planId: string) => post<OrgPlan>(`/plans/${planId}/approve`, {}),
   rejectPlan: (planId: string) => post<OrgPlan>(`/plans/${planId}/reject`, {}),
   seedScenario: (reset = false) => post<any>("/scenario/seed", { reset }),
+  ask: (question: string, spaceIds: string[]) =>
+    post<OrgAgentSession>("/ask", { question, space_ids: spaceIds }),
+  askStatus: (runId: string) => get<OrgAgentSession>(`/ask/${runId}`),
   watches: () => get<{ count: number; watches: OrgWatch[] }>("/watches"),
   createWatch: (name: string, spaceIds: string[], checks: string[], intervalSeconds = 900) =>
     post<OrgWatch>("/watches", {
@@ -279,7 +308,10 @@ export const orgApi = {
   runWatch: (watchId: string) => post<OrgWatch & { new_findings: number }>(`/watches/${watchId}/run`, {}),
   resolveFinding: (watchId: string, findingId: string) =>
     post<{ id: string; status: string }>(`/watches/${watchId}/findings/${findingId}/resolve`, {}),
-  deleteWatch: (watchId: string) => api(`/api/org/watches/${watchId}`, { method: "DELETE" }),
+  deleteWatch: (watchId: string) =>
+    WEBMCP_DEMO_MODE
+      ? demoOrgRequest("DELETE", `/watches/${watchId}`)
+      : api(`/api/org/watches/${watchId}`, { method: "DELETE" }),
 };
 
 /* --------------------------------------------------------------- schemas */

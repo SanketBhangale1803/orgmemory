@@ -5,6 +5,7 @@ from urllib.parse import parse_qs, urlparse
 from fastapi.testclient import TestClient
 
 from app.auth import OAuthStateStore
+from app.auth.app_auth import PUBLIC_DEMO_WORKSPACE_ID
 from app.auth.google import google_oauth_url
 from app.core.config import settings
 from app.llm.providers import generate_grounded_json, model_catalog
@@ -107,6 +108,44 @@ def test_provider_and_model_catalogs_expose_readiness_without_secrets(graph, mon
     assert "configured-but-secret" not in models_response.text
 
 
+def test_public_demo_login_uses_production_cookie_without_external_oauth(graph, monkeypatch):
+    monkeypatch.setattr(settings, "public_demo_mode", True)
+    monkeypatch.setattr(settings, "environment", "production")
+    monkeypatch.setattr("app.api.routes.seed_launch_scenario", lambda *args, **kwargs: {})
+
+    client = TestClient(app, base_url="https://testserver")
+    response = client.post(
+        "/api/auth/demo-login",
+        json={"identity": "github", "display_name": "Challenge reviewer"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["user"]["auth_provider"] == "public-demo"
+    assert response.json()["user"]["active_workspace_id"] == PUBLIC_DEMO_WORKSPACE_ID
+    assert "token" not in response.json()
+    cookie = response.headers["set-cookie"]
+    assert "HttpOnly" in cookie
+    assert "Secure" in cookie
+    assert "SameSite=lax" in cookie
+
+    # Public demo sessions are signed rather than stored in container-local
+    # SQLite, so a later request remains authenticated on another Vercel
+    # instance. TestClient retains the secure cookie for the HTTPS base URL.
+    authenticated = client.get("/api/auth/me")
+    assert authenticated.status_code == 200
+    assert authenticated.json()["active_workspace_id"] == PUBLIC_DEMO_WORKSPACE_ID
+
+    token = response.cookies.get(settings.session_cookie_name)
+    tampered_client = TestClient(app, base_url="https://testserver")
+    assert (
+        tampered_client.get(
+            "/api/auth/me",
+            headers={"Cookie": f"{settings.session_cookie_name}={token}tampered"},
+        ).status_code
+        == 401
+    )
+
+
 def test_openai_compatible_and_gemini_requests_use_current_provider_contracts(graph, monkeypatch):
     calls: list[dict] = []
 
@@ -130,16 +169,25 @@ def test_openai_compatible_and_gemini_requests_use_current_provider_contracts(gr
 
     monkeypatch.setattr("app.llm.providers.httpx.post", post)
     monkeypatch.setattr(settings, "kimi_api_key", "kimi-secret")
+    monkeypatch.setattr(settings, "openrouter_api_key", "openrouter-secret")
     monkeypatch.setattr(settings, "google_api_key", "google-secret")
 
+    glm = generate_grounded_json("prompt", "glm")
     kimi = generate_grounded_json("prompt", "kimi")
     gemini = generate_grounded_json("prompt", "gemini")
 
-    assert kimi and kimi[0]["answer"] == "compatible"
-    assert calls[0]["url"] == "https://api.moonshot.ai/v1/chat/completions"
+    assert glm and glm[0]["answer"] == "compatible"
+    assert calls[0]["url"] == "https://openrouter.ai/api/v1/chat/completions"
+    assert calls[0]["json"]["model"] == "z-ai/glm-5.3-flash"
+    assert calls[0]["headers"]["HTTP-Referer"] == settings.frontend_url
+    assert calls[0]["headers"]["X-OpenRouter-Title"] == "OrgMemory"
+    assert calls[0]["headers"]["Authorization"] == "Bearer openrouter-secret"
     assert "temperature" not in calls[0]["json"]
-    assert calls[0]["json"]["thinking"] == {"type": "disabled"}
+    assert kimi and kimi[0]["answer"] == "compatible"
+    assert calls[1]["url"] == "https://api.moonshot.ai/v1/chat/completions"
+    assert "temperature" not in calls[1]["json"]
+    assert calls[1]["json"]["thinking"] == {"type": "disabled"}
     assert gemini and gemini[0]["answer"] == "gemini"
-    assert calls[1]["headers"]["x-goog-api-key"] == "google-secret"
-    assert "params" not in calls[1]
-    assert "temperature" not in calls[1]["json"]["generationConfig"]
+    assert calls[2]["headers"]["x-goog-api-key"] == "google-secret"
+    assert "params" not in calls[2]
+    assert "temperature" not in calls[2]["json"]["generationConfig"]

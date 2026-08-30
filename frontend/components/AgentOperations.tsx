@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RunbookMark } from "@/components/RunbookLogo";
 import { api } from "@/lib/api";
+import { WEBMCP_DEMO_MODE } from "@/lib/demoOrgMemory";
 import {
   ORG_READ_TOOLS,
   ORG_TOOLS,
@@ -15,6 +16,7 @@ import {
   type OrgProjectContext,
   type OrgReadiness,
   type OrgReasoningChain,
+  type OrgAgentSession,
   type OrgSpace,
   type OrgWatch,
 } from "@/lib/orgTools";
@@ -37,7 +39,7 @@ type ToolCall = {
   kind: "read" | "gated-write";
 };
 
-type ViewKind = "briefing" | "chain" | "readiness" | "reconcile";
+type ViewKind = "briefing" | "chain" | "readiness" | "reconcile" | "agent";
 
 type Turn = {
   id: string;
@@ -115,6 +117,7 @@ export default function AgentOperations() {
   const [flash, setFlash] = useState(false);
   const [watch, setWatch] = useState<OrgWatch | null>(null);
   const [watching, setWatching] = useState(false);
+  const [draft, setDraft] = useState("");
   const transcript = useRef<HTMLDivElement>(null);
 
   const isAdmin = user?.role === "owner" || user?.role === "admin";
@@ -125,6 +128,7 @@ export default function AgentOperations() {
   const ready = scenario.length >= SCENARIO_SPACES.length - 1;
   const scope = useMemo(() => scenario.map((space) => space.id), [scenario]);
   const toolCount = ORG_READ_TOOLS.length + ORG_WRITE_TOOLS.length;
+  const backHref = WEBMCP_DEMO_MODE ? "/" : "/workspace";
 
   const refresh = useCallback(async () => {
     const spaceList = await orgApi.spaces().catch(() => ({ spaces: [] as OrgSpace[] }));
@@ -137,15 +141,20 @@ export default function AgentOperations() {
   }, []);
 
   useEffect(() => {
+    setWebmcp(
+      typeof document !== "undefined" && (document as any).modelContext ? "ready" : "absent",
+    );
+    if (WEBMCP_DEMO_MODE) {
+      setUser({ display_name: "Demo operator", role: "owner" });
+      void refresh();
+      return;
+    }
     api("/api/auth/me")
       .then((principal) => {
         setUser(principal);
         return refresh();
       })
       .catch((cause) => setError(cause instanceof Error ? cause.message : "Sign in to continue."));
-    setWebmcp(
-      typeof document !== "undefined" && (document as any).modelContext ? "ready" : "absent",
-    );
   }, [refresh]);
 
   useEffect(() => {
@@ -321,6 +330,50 @@ export default function AgentOperations() {
     }
   }
 
+  /** Ask anything. The tool sequence below is the agent's, not the page's. */
+  async function askAgent(question: string) {
+    const text = question.trim();
+    if (!text || busy) return;
+    const turnId = `turn_${Date.now()}`;
+    setBusy(true);
+    setError("");
+    setDraft("");
+    setTurns((current) => [
+      ...current,
+      { id: turnId, question: text, calls: [], view: null, data: {}, plan: null, error: "", done: false },
+    ]);
+    try {
+      let session = await orgApi.ask(text, scope);
+      const started = Date.now();
+      while (session.status === "running" && Date.now() - started < 120000) {
+        await wait(1200);
+        session = await orgApi.askStatus(session.id);
+        setTurns((current) =>
+          current.map((turn) =>
+            turn.id === turnId ? { ...turn, calls: agentCalls(session) } : turn,
+          ),
+        );
+      }
+      if (session.status === "error") throw new Error(session.error || "The agent could not finish.");
+      setTurns((current) =>
+        current.map((turn) =>
+          turn.id === turnId
+            ? { ...turn, calls: agentCalls(session), view: "agent", data: { session }, done: true }
+            : turn,
+        ),
+      );
+      // The board may have moved if the agent proposed and a person approved.
+      setReadiness(await orgApi.readiness(scope).catch(() => readiness));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The agent could not finish.");
+      setTurns((current) =>
+        current.map((turn) => (turn.id === turnId ? { ...turn, done: true } : turn)),
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function approve(turnId: string, plan: OrgPlan) {
     try {
       const applied = await orgApi.approvePlan(plan.id);
@@ -405,7 +458,7 @@ export default function AgentOperations() {
   return (
     <div className="ag-page">
       <header className="ag-bar">
-        <Link href="/workspace" className="ag-id">
+        <Link href={backHref} className="ag-id">
           <RunbookMark />
           <span>
             <strong>OrgMemory</strong>
@@ -422,8 +475,8 @@ export default function AgentOperations() {
           <Link className="ag-link" href="/docs">
             Tool reference
           </Link>
-          <Link className="ag-link" href="/workspace">
-            Back to chat
+          <Link className="ag-link" href={backHref}>
+            {WEBMCP_DEMO_MODE ? "Back to site" : "Back to chat"}
           </Link>
         </div>
       </header>
@@ -459,7 +512,7 @@ export default function AgentOperations() {
           <div className="ag-transcript" ref={transcript}>
             {!turns.length && ready && (
               <div className="ag-empty">
-                <p>Pick a request. Every tool call, argument, and result below is live.</p>
+                <p>Ask anything below, or start with a suggestion. Every tool call, argument, and result is live.</p>
               </div>
             )}
             {turns.map((turn) => (
@@ -474,21 +527,41 @@ export default function AgentOperations() {
           </div>
 
           <div className="ag-compose">
-            {REQUESTS.map((request) => (
-              <button
-                key={request.key}
-                className="ag-request"
-                onClick={() => void run(request.key)}
+            <div className="ag-suggestions">
+              {REQUESTS.map((request) => (
+                <button
+                  key={request.key}
+                  className="ag-request"
+                  onClick={() => void run(request.key)}
+                  disabled={busy || !ready}
+                >
+                  {request.label}
+                </button>
+              ))}
+            </div>
+            <div className="ag-input">
+              <textarea
+                rows={1}
+                value={draft}
+                placeholder="Ask anything about this organization…"
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    void askAgent(draft);
+                  }
+                }}
                 disabled={busy || !ready}
+              />
+              <button
+                className="ag-send"
+                onClick={() => void askAgent(draft)}
+                disabled={busy || !ready || !draft.trim()}
+                aria-label="Ask"
               >
-                {request.label}
+                ↑
               </button>
-            ))}
-            {isAdmin && ready && (
-              <button className="ag-reset" onClick={() => prepare(true)} disabled={preparing || busy}>
-                Reset
-              </button>
-            )}
+            </div>
           </div>
         </section>
 
@@ -563,6 +636,7 @@ function TurnBlock({
         ))}
       </div>
 
+      {turn.view === "agent" && <AgentAnswer data={turn.data} onEvidence={onEvidence} />}
       {turn.view === "briefing" && <Briefing data={turn.data} onEvidence={onEvidence} />}
       {turn.view === "chain" && <ReasoningChainView data={turn.data} onEvidence={onEvidence} />}
       {turn.view === "readiness" && <LaunchVerdict data={turn.data} onEvidence={onEvidence} />}
@@ -576,6 +650,46 @@ function TurnBlock({
         />
       )}
     </article>
+  );
+}
+
+/** Render an agent session's steps in the same shape the console's own calls use. */
+function agentCalls(session: OrgAgentSession): ToolCall[] {
+  return (session.steps || []).map((step) => ({
+    tool: step.tool,
+    args: step.arguments || {},
+    state: "done" as CallState,
+    summary: step.summary,
+    ms: step.duration_ms || 0,
+    kind: step.tool.startsWith("propose_") ? ("gated-write" as const) : ("read" as const),
+  }));
+}
+
+function AgentAnswer({ data, onEvidence }: { data: any; onEvidence: (id: string) => void }) {
+  const session: OrgAgentSession = data.session;
+  return (
+    <div className="ag-result">
+      <section>
+        <h3>Answer</h3>
+        <p className="ag-agent-answer">{session.answer}</p>
+        {session.memory_ids?.length > 0 && (
+          <p className="ag-note">
+            Cited:{" "}
+            {session.memory_ids.map((id) => (
+              <Cite key={id} id={id} onEvidence={onEvidence} />
+            ))}
+          </p>
+        )}
+      </section>
+      <section>
+        <h3>How this was answered</h3>
+        <p className="ag-note">
+          {session.mode === "guided"
+            ? "No model was reachable, so the tool order came from a fallback policy. Every call, observation, and sentence above is still live."
+            : `A model chose each tool from the ${ORG_READ_TOOLS.length + ORG_WRITE_TOOLS.length} registered on this page, one step at a time.`}
+        </p>
+      </section>
+    </div>
   );
 }
 

@@ -102,7 +102,7 @@ class AskRequest(BaseModel):
     project_id: str = Field(min_length=4, max_length=128)
     query: str = Field(min_length=3, max_length=4_000)
     token_budget: int = Field(6000, ge=500, le=32000)
-    model: Literal["gpt", "claude", "gemini", "grok", "kimi"] | None = None
+    model: Literal["glm", "gpt", "claude", "gemini", "grok", "kimi"] | None = None
     # Which surface asked. Recorded on the context event so the outcome corpus can
     # separate what works for a person in the web chat from what works for an
     # agent calling through MCP.
@@ -252,6 +252,11 @@ class ResolveRequest(BaseModel):
 class DevLoginRequest(BaseModel):
     email: str = "demo@runbook.local"
     display_name: str = "Demo User"
+
+
+class DemoLoginRequest(BaseModel):
+    identity: Literal["google", "github", "guest", "email"] = "guest"
+    display_name: str = Field(default="Demo User", min_length=1, max_length=80)
 
 
 class EmailCodeRequest(BaseModel):

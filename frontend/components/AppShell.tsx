@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import ChatBackBar from "@/components/ChatBackBar";
 import { RunbookMark } from "@/components/RunbookLogo";
 import { api } from "@/lib/api";
+import { WEBMCP_DEMO_MODE } from "@/lib/demoOrgMemory";
 import { titleFor } from "@/lib/workspaceMap";
 
 const SECURING_MIN_MS = 450;
@@ -14,17 +15,19 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const isLanding = pathname === "/";
   const isDocs = pathname === "/docs" || pathname.startsWith("/docs/");
-  const isPublic = isLanding || isDocs || pathname === "/login";
+  const isWebMCP = pathname === "/webmcp";
+  const isPublicWebMCP = isWebMCP && WEBMCP_DEMO_MODE;
+  const isPublic = isLanding || isDocs || pathname === "/login" || isPublicWebMCP;
   const isLogin = pathname === "/login";
   // The agent-operations console works against the signed-in workspace and
   // carries its own header, so it sits behind the same gate as the chat.
-  const isChat = pathname === "/workspace" || pathname === "/webmcp";
+  const isChat = pathname === "/workspace" || isWebMCP;
   const title = isChat ? "" : titleFor(pathname);
   const [user, setUser] = useState<any>();
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    if (isLanding) {
+    if (isLanding || isPublicWebMCP) {
       setReady(true);
       return;
     }
@@ -54,7 +57,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       current = false;
       if (securingTimer !== undefined) window.clearTimeout(securingTimer);
     };
-  }, [isLanding, isPublic, isLogin, router]);
+  }, [isLanding, isPublic, isPublicWebMCP, isLogin, router]);
 
   if (isPublic) return <>{children}</>;
   if (!ready || !user) return <div className="auth-loading"><RunbookMark /><div><p>Opening your memory…</p><span>Loading authorized company context</span></div><div className="secure-progress" aria-hidden="true"><i /></div></div>;

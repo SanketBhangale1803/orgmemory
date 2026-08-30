@@ -1,4 +1,6 @@
-export const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+export const API =
+  process.env.NEXT_PUBLIC_API_URL ||
+  (process.env.NEXT_PUBLIC_WEBMCP_DEMO === "true" ? "" : "http://localhost:8000");
 
 export async function api<T = any>(path: string, options?: RequestInit): Promise<T> {
   const headers = new Headers(options?.headers);

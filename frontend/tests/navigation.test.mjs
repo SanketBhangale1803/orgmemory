@@ -100,15 +100,16 @@ test("pages render real product concepts", () => {
   }
 });
 
-test("public landing, docs, login, and authenticated workspace are separate routes", () => {
+test("public routes and the isolated WebMCP demo stay separate from the workspace", () => {
   const shell = readFileSync(new URL("../components/AppShell.tsx", import.meta.url), "utf8");
   const map = readFileSync(new URL("../lib/workspaceMap.ts", import.meta.url), "utf8");
   assert.match(shell, /const isLanding = pathname === "\/"/);
   assert.match(shell, /pathname\.startsWith\("\/docs\/"\)/);
-  // /webmcp operates on the signed-in workspace, so it sits behind the gate
-  // with the chat rather than alongside the landing page.
-  assert.match(shell, /const isPublic = isLanding \|\| isDocs \|\| pathname === "\/login"/);
-  assert.match(shell, /pathname === "\/workspace" \|\| pathname === "\/webmcp"/);
+  // The challenge build can expose only the isolated WebMCP fixture. The real
+  // workspace remains behind the session gate.
+  assert.match(shell, /const isPublicWebMCP = isWebMCP && WEBMCP_DEMO_MODE/);
+  assert.match(shell, /pathname === "\/login" \|\| isPublicWebMCP/);
+  assert.match(shell, /pathname === "\/workspace" \|\| isWebMCP/);
   assert.match(shell, /router\.replace\("\/workspace"\)/);
   assert.match(map, /href: "\/workspace"/);
 });
@@ -132,14 +133,27 @@ test("the OrgMemory vector identity replaces the placeholder mark", () => {
 
 test("browser API calls use the secure session cookie instead of legacy local storage tokens", () => {
   const api = readFileSync(new URL("../lib/api.ts", import.meta.url), "utf8");
-  const middleware = readFileSync(new URL("../middleware.ts", import.meta.url), "utf8");
+  const nextConfig = readFileSync(new URL("../next.config.ts", import.meta.url), "utf8");
   assert.match(api, /credentials: "include"/);
   assert.match(api, /Cannot reach the OrgMemory API/);
   assert.doesNotMatch(api, /localStorage\.getItem\("runbook_token"\)/);
   assert.doesNotMatch(api, /Authorization: `Bearer/);
-  assert.match(middleware, /request\.headers\.get\("host"\)/);
-  assert.match(middleware, /requestHost !== "127\.0\.0\.1"/);
-  assert.match(middleware, /canonicalUrl\.hostname = "localhost"/);
+  assert.match(nextConfig, /type: "host", value: "127\.0\.0\.1"/);
+  assert.match(nextConfig, /destination: "http:\/\/localhost:3000\/:path\*"/);
+});
+
+test("the hosted demo cannot navigate past authentication before hydration", () => {
+  const login = readFileSync(new URL("../app/login/page.tsx", import.meta.url), "utf8");
+  const vercel = readFileSync(new URL("../../vercel.json", import.meta.url), "utf8");
+  assert.match(login, /WEBMCP_DEMO_MODE \? \(/);
+  assert.match(login, /type="button"/);
+  assert.match(login, /enterDemo\("google"\)/);
+  assert.match(login, /enterDemo\("github"\)/);
+  assert.doesNotMatch(login, /WEBMCP_DEMO_MODE \? "\/workspace"/);
+  assert.deepEqual(JSON.parse(vercel).rewrites[0], {
+    source: "/",
+    destination: { service: "frontend" },
+  });
 });
 
 test("no page fabricates metrics: benchmark page requires a real report", () => {
@@ -153,7 +167,7 @@ test("the post-login surface is a chat, not a dashboard", () => {
   const chat = readFileSync(new URL("../components/WorkspaceChat.tsx", import.meta.url), "utf8");
   const shell = readFileSync(new URL("../components/AppShell.tsx", import.meta.url), "utf8");
   assert.match(workspace, /<WorkspaceChat/);
-  assert.match(shell, /const isChat = pathname === "\/workspace" \|\| pathname === "\/webmcp"/);
+  assert.match(shell, /const isChat = pathname === "\/workspace" \|\| isWebMCP/);
   // Same model picker and composer the signed-out landing page shows.
   assert.match(chat, /\/api\/models/);
   assert.match(chat, /\/api\/ask/);

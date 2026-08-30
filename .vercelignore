@@ -1,0 +1,28 @@
+# Large local demo-render outputs are not application source.
+artifacts/
+
+# Vercel installs/builds these inside each service.
+frontend/.next/
+frontend/node_modules/
+backend/.venv/
+
+# Local state and credentials must never enter a deployment bundle.
+data/
+generated_runbooks/
+.env
+.env.*
+!.env.example
+!.env.production.example
+*.db
+*.sqlite
+*.sqlite3
+.connector_key
+deploy/oci/.keys/
+
+# Tool/editor caches.
+.git/
+.vercel/
+**/__pycache__/
+**/.pytest_cache/
+**/*.pyc
+.DS_Store

@@ -39,10 +39,15 @@ function dataModule(source) {
    registration is exercised against the real definitions rather than a stub;
    only the HTTP transport underneath it is replaced. */
 const orgToolsUrl = dataModule(
-  orgTools.replace(
-    /^import \{ api \} from "@\/lib\/api";$/m,
-    "const api = async () => ({ spaces: [], plans: [], results: [] });",
-  ),
+  orgTools
+    .replace(
+      /^import \{ api \} from "@\/lib\/api";$/m,
+      "const api = async () => ({ spaces: [], plans: [], results: [] });",
+    )
+    .replace(
+      /^import \{ demoOrgRequest, WEBMCP_DEMO_MODE \} from "@\/lib\/demoOrgMemory";$/m,
+      "const WEBMCP_DEMO_MODE = false; const demoOrgRequest = async () => ({});",
+    ),
 );
 const webmcpStandalone = webmcp.replace('"@/lib/orgTools"', JSON.stringify(orgToolsUrl));
 

@@ -226,14 +226,16 @@ class OrgOpsService:
         sources: list[dict] = []
         for source_id in source_ids:
             item = row(
-                "SELECT id,source_type,source_title,source_url,created_at "
+                "SELECT id,source_type,source_title,source_url,metadata_json,created_at "
                 "FROM knowledge_items WHERE id=? OR source_id=? LIMIT 1",
                 (source_id, source_id),
             )
+            metadata = _decode_json((item or {}).get("metadata_json"), {})
             sources.append(
                 {
                     "id": source_id,
-                    "type": (item or {}).get("source_type", "manual"),
+                    "type": metadata.get("record_kind")
+                    or (item or {}).get("source_type", "manual"),
                     "title": (item or {}).get("source_title", source_id),
                     "url": (item or {}).get("source_url", ""),
                     "captured_at": (item or {}).get("created_at", unit.get("created_at")),

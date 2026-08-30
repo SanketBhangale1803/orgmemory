@@ -7,13 +7,19 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.org_routes import org_router, watches
-from app.api.routes import connector_sync, graph, hcag, router
+from app.api.routes import company_memory, connector_sync, graph, hcag, ingestion, router
+from app.auth.app_auth import (
+    PUBLIC_DEMO_IDENTITIES,
+    PUBLIC_DEMO_WORKSPACE_ID,
+    ensure_public_demo_identity,
+)
 from app.auth.mcp_oauth import oauth_router
 from app.auth.middleware import AuthenticationBoundaryMiddleware
 from app.core.config import settings
 from app.core.database import init_db
 from app.core.logging import configure_logging
 from app.ingestion.maintenance import sanitize_existing_index
+from app.orgops.seed import seed_launch_scenario
 
 
 @asynccontextmanager
@@ -23,6 +29,17 @@ async def lifespan(_: FastAPI):
     init_db()
     with suppress(Exception):
         graph.initialize()
+    if settings.public_demo_mode:
+        # Every serverless instance has its own disposable SQLite database.
+        # Recreate the same deterministic demo identities and fixture at cold
+        # start so a signed session remains useful after load balancing.
+        for identity, (_, display_name) in PUBLIC_DEMO_IDENTITIES.items():
+            ensure_public_demo_identity(identity, display_name)
+        seed_launch_scenario(
+            PUBLIC_DEMO_WORKSPACE_ID,
+            ingestion.create_project,
+            company_memory,
+        )
     with suppress(Exception):
         sanitize_existing_index(graph, hcag)
     # Legacy-vector migration can touch thousands of chunks. Run it in a

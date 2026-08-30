@@ -7,15 +7,21 @@ and a person approves it. Capability and authorization stay separate.
 
 from __future__ import annotations
 
+from threading import Thread
+
 from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.core.database import row
+from app.llm.providers import configured_model
 from app.orgops import OrgOpsService, WatchService
+from app.orgops.agent import build_org_executor, org_guided_decider, org_tool_catalog
 from app.orgops.seed import reset_launch_scenario, seed_launch_scenario
+from app.webmcp_agent import AgentSessionStore, WebMCPAgentRunner
 
 from .routes import (
     _authenticate,
+    logger,
     _authorize_project_for_principal,
     _authorize_workspace,
     _authorized_space_ids,
@@ -28,6 +34,10 @@ from .routes import (
 org_router = APIRouter(prefix="/api/org", tags=["organization"])
 orgops = OrgOpsService(company_memory)
 watches = WatchService(orgops)
+org_sessions = AgentSessionStore()
+# Same loop the browser-tool agent uses; only the catalog differs, so a question
+# typed into the console is answered by a model choosing tools, not by a script.
+org_agent = WebMCPAgentRunner(catalog=org_tool_catalog, guided=org_guided_decider)
 
 
 def _spaces(principal: dict, requested: str = "") -> list[str]:
@@ -66,6 +76,12 @@ class PlanRequest(BaseModel):
 
 class SeedRequest(BaseModel):
     reset: bool = False
+
+
+class AskRequest(BaseModel):
+    question: str = Field(min_length=3, max_length=2000)
+    space_ids: list[str] = Field(default_factory=list)
+    model: str | None = None
 
 
 class WatchRequest(BaseModel):
@@ -361,7 +377,12 @@ def seed_scenario(request: SeedRequest, authorization: str | None = Header(defau
     if principal["role"] not in {"owner", "admin"}:
         raise HTTPException(403, "Owner or admin session required")
     workspace_id = principal["active_workspace_id"]
-    result = seed_launch_scenario(workspace_id, ingestion.create_project, company_memory)
+    result = seed_launch_scenario(
+        workspace_id,
+        ingestion.create_project,
+        company_memory,
+        ingest_item=ingestion.ingest_item,
+    )
     if request.reset:
         result["reset"] = reset_launch_scenario(workspace_id)
     return result
@@ -434,3 +455,104 @@ def delete_watch(watch_id: str, authorization: str | None = Header(default=None)
         raise HTTPException(403, "Owner or admin session required")
     watches.delete(watch_id, principal["active_workspace_id"])
     return {"status": "deleted"}
+
+
+# ------------------------------------------------------------- agent console
+
+
+def _org_executor(principal: dict, space_ids: list[str]):
+    """Bind the tool surface to one caller's authorized spaces."""
+
+    def resolve(_: dict) -> list[str]:
+        return space_ids
+
+    def search(caller: dict, query: str, memory_type: str, limit: int) -> dict:
+        result = _memory_search_core(caller, query, type=memory_type, limit=limit)
+        results = [
+            {**orgops.public_memory(item), "score": item.get("score")}
+            for item in result["results"]
+            if item["project_id"] in space_ids
+        ]
+        return {"query": query, "count": len(results), "results": results}
+
+    def propose(caller: dict, summary: str, space_id: str, operations: list[dict]) -> dict:
+        target = space_id if space_id in space_ids else (space_ids[0] if space_ids else "")
+        return orgops.propose_plan(
+            caller["active_workspace_id"],
+            str(caller["id"]),
+            target,
+            summary,
+            operations,
+            origin="console",
+        )
+
+    return build_org_executor(orgops, resolve, search, propose)
+
+
+def _run_org_session(run_id: str, principal: dict, question: str, space_ids: list[str], model: str):
+    def on_step(step: dict) -> None:
+        org_sessions.append_step(run_id, step)
+
+    try:
+        result = org_agent.run(
+            principal=principal,
+            question=question,
+            model=model or None,
+            exec_tool=_org_executor(principal, space_ids),
+            list_spaces=lambda _: [
+                {"project_id": space["id"], "name": space["name"]}
+                for space in orgops.list_spaces(space_ids)
+            ],
+            on_step=on_step,
+        )
+        org_sessions.update(
+            run_id,
+            status="complete",
+            answer=result["answer"],
+            memory_ids=result["memory_ids"],
+            proposal=result.get("proposal"),
+            thoughts=result.get("thoughts", []),
+            mode=result.get("mode", "model"),
+        )
+    except Exception as exc:
+        logger.exception("Organizational agent session failed")
+        org_sessions.update(run_id, status="error", error=str(exc))
+
+
+@org_router.post("/ask")
+def ask_org(request: AskRequest, authorization: str | None = Header(default=None)):
+    """Answer a free-text question by letting a model drive the tool surface.
+
+    Returns immediately. The console polls while tool calls land one at a time,
+    which is the point: what shows up is the agent's own sequence, not a
+    sequence the page decided in advance.
+    """
+    principal = _authenticate(authorization)
+    space_ids = _spaces(principal, ",".join(request.space_ids))
+    if not space_ids:
+        raise HTTPException(400, "No authorized spaces to search")
+    model = configured_model(request.model or None)
+    run_id = org_sessions.create(
+        request.question, model.id if model else "", principal.get("active_workspace_id", "")
+    )
+    audit.record(
+        "org.agent_session.started",
+        f"Console question: {request.question[:80]}",
+        actor=str(principal["id"]),
+        payload={"session_id": run_id, "spaces": len(space_ids)},
+    )
+    Thread(
+        target=_run_org_session,
+        args=(run_id, principal, request.question, space_ids, request.model or ""),
+        daemon=True,
+    ).start()
+    return org_sessions.get(run_id, principal.get("active_workspace_id", ""))
+
+
+@org_router.get("/ask/{run_id}")
+def org_session(run_id: str, authorization: str | None = Header(default=None)):
+    principal = _authenticate(authorization)
+    record = org_sessions.get(run_id, principal.get("active_workspace_id", ""))
+    if not record:
+        raise HTTPException(404, "Session not found")
+    return record

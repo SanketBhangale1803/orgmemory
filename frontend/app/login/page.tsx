@@ -5,6 +5,7 @@ import Link from "next/link";
 import GitHubIcon from "@/components/icons/GitHubIcon";
 import RunbookLogo from "@/components/RunbookLogo";
 import { API, api } from "@/lib/api";
+import { WEBMCP_DEMO_MODE } from "@/lib/demoOrgMemory";
 
 type Providers = {
   github: boolean;
@@ -27,10 +28,38 @@ export default function Login() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
+    if (WEBMCP_DEMO_MODE) {
+      setProviders({ github: true, google: true, email: true, development: true });
+      return;
+    }
     api<Providers>("/api/auth/providers").then(setProviders).catch((exc) => setError(exc.message));
     const oauthError = new URLSearchParams(window.location.search).get("error");
     if (oauthError) setError(oauthError);
   }, []);
+
+  async function enterDemo(identity: "google" | "github" | "guest" | "email") {
+    setBusy(true);
+    setError("");
+    const names = {
+      google: "Google demo user",
+      github: "GitHub demo user",
+      guest: "Guest operator",
+      email: displayName || "Email demo user",
+    };
+    try {
+      await api("/api/auth/demo-login", {
+        method: "POST",
+        body: JSON.stringify({
+          identity,
+          display_name: names[identity],
+        }),
+      });
+      window.location.assign("/workspace");
+    } catch (exc: any) {
+      setError(exc.message);
+      setBusy(false);
+    }
+  }
 
   async function requestCode() {
     if (!email.trim()) return;
@@ -124,24 +153,51 @@ export default function Login() {
           {message && <div className="login-message">{message}</div>}
 
           <div className="oauth-stack">
-            <a
-              className={`login-oauth ${!providers?.google ? "disabled" : ""}`}
-              href={providers?.google ? `${API}/api/auth/google/start` : undefined}
-              aria-disabled={!providers?.google}
-            >
-              <span className="provider-g">G</span>
-              <strong>Continue with Google</strong>
-              <span>→</span>
-            </a>
-            <a
-              className={`login-oauth ${!providers?.github ? "disabled" : ""}`}
-              href={providers?.github ? `${API}/api/auth/github/start` : undefined}
-              aria-disabled={!providers?.github}
-            >
-              <span><GitHubIcon size={18} /></span>
-              <strong>Continue with GitHub</strong>
-              <span>→</span>
-            </a>
+            {WEBMCP_DEMO_MODE ? (
+              <>
+                <button
+                  type="button"
+                  className="login-oauth"
+                  onClick={() => void enterDemo("google")}
+                  disabled={busy}
+                >
+                  <span className="provider-g">G</span>
+                  <strong>Continue with Google</strong>
+                  <span>→</span>
+                </button>
+                <button
+                  type="button"
+                  className="login-oauth"
+                  onClick={() => void enterDemo("github")}
+                  disabled={busy}
+                >
+                  <span><GitHubIcon size={18} /></span>
+                  <strong>Continue with GitHub</strong>
+                  <span>→</span>
+                </button>
+              </>
+            ) : (
+              <>
+                <a
+                  className={`login-oauth ${!providers?.google ? "disabled" : ""}`}
+                  href={providers?.google ? `${API}/api/auth/google/start` : undefined}
+                  aria-disabled={!providers?.google}
+                >
+                  <span className="provider-g">G</span>
+                  <strong>Continue with Google</strong>
+                  <span>→</span>
+                </a>
+                <a
+                  className={`login-oauth ${!providers?.github ? "disabled" : ""}`}
+                  href={providers?.github ? `${API}/api/auth/github/start` : undefined}
+                  aria-disabled={!providers?.github}
+                >
+                  <span><GitHubIcon size={18} /></span>
+                  <strong>Continue with GitHub</strong>
+                  <span>→</span>
+                </a>
+              </>
+            )}
           </div>
 
           <div className="login-divider"><span>or use work email</span></div>
@@ -200,8 +256,13 @@ export default function Login() {
 
           {providers?.development && (
             <div className="dev-access">
+              {WEBMCP_DEMO_MODE && (
+                <button className="button" onClick={() => void enterDemo("guest")} disabled={busy}>
+                  {busy ? "Opening demo…" : "Continue as guest"}
+                </button>
+              )}
               <button className="text-button" onClick={() => setShowDev(!showDev)}>
-                {showDev ? "Hide" : "Use"} local development access
+                {showDev ? "Hide" : "Use"} {WEBMCP_DEMO_MODE ? "a named demo identity" : "local development access"}
               </button>
               {showDev && (
                 <div className="stack">
@@ -209,8 +270,8 @@ export default function Login() {
                     <label>Display name</label>
                     <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
                   </div>
-                  <button className="button" onClick={devLogin} disabled={busy}>
-                    {busy ? "Signing in…" : "Enter local workspace"}
+                  <button className="button" onClick={WEBMCP_DEMO_MODE ? () => void enterDemo("email") : devLogin} disabled={busy}>
+                    {busy ? "Signing in…" : WEBMCP_DEMO_MODE ? "Enter demo workspace" : "Enter local workspace"}
                   </button>
                 </div>
               )}
@@ -218,7 +279,9 @@ export default function Login() {
           )}
 
           <small className="login-legal">
-            OrgMemory never sends source credentials to the browser or to a model.
+            {WEBMCP_DEMO_MODE
+              ? "Public demo: provider buttons use an isolated demo identity and never request an external account."
+              : "OrgMemory never sends source credentials to the browser or to a model."}
           </small>
         </div>
       </section>

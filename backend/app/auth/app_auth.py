@@ -10,10 +10,22 @@ from secrets import randbelow
 from typing import Any
 from uuid import uuid4
 
+import jwt
+
 from app.core.config import settings
 from app.core.database import connect, new_id, row, rows, utcnow
 
 DEFAULT_WORKSPACE_SLUG = "local"
+PUBLIC_DEMO_WORKSPACE_ID = "wsp_public_demo"
+PUBLIC_DEMO_WORKSPACE_SLUG = "orgmemory-public-demo"
+PUBLIC_DEMO_SESSION_PREFIX = "omd_"
+PUBLIC_DEMO_SESSION_ISSUER = "orgmemory-public-demo"
+PUBLIC_DEMO_IDENTITIES = {
+    "google": ("google@demo.orgmemory.invalid", "Google demo user"),
+    "github": ("github@demo.orgmemory.invalid", "GitHub demo user"),
+    "guest": ("guest@demo.orgmemory.invalid", "Guest operator"),
+    "email": ("email@demo.orgmemory.invalid", "Email demo user"),
+}
 
 
 @dataclass
@@ -125,6 +137,91 @@ def create_oauth_session(
             suffix += 1
         workspace_id = ensure_workspace(workspace_name, slug, user_id, "owner")["id"]
     return issue_session(user_id, workspace_id)
+
+
+def ensure_public_demo_identity(identity: str, display_name: str = "") -> dict[str, Any]:
+    """Hydrate one deterministic identity in this container's demo database.
+
+    Vercel containers do not share their ``/tmp`` SQLite files. Stable IDs let
+    every instance reconstruct the same isolated workspace for a signed demo
+    cookie without treating container-local session state as durable storage.
+    """
+    if not settings.public_demo_mode:
+        raise ValueError("Public demo access is not enabled")
+    identity = identity.casefold().strip()
+    if identity not in PUBLIC_DEMO_IDENTITIES:
+        raise ValueError("Unsupported public demo identity")
+    email, default_name = PUBLIC_DEMO_IDENTITIES[identity]
+    name = (display_name or default_name).strip() or default_name
+    user_id = f"usr_public_demo_{identity}"
+    member_id = f"mem_public_demo_{identity}"
+    now = utcnow()
+    with connect() as conn:
+        conn.execute(
+            """INSERT INTO workspaces(id,name,slug,created_at,updated_at)
+            VALUES (?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET name=excluded.name,slug=excluded.slug,
+            updated_at=excluded.updated_at""",
+            (
+                PUBLIC_DEMO_WORKSPACE_ID,
+                "OrgMemory public demo",
+                PUBLIC_DEMO_WORKSPACE_SLUG,
+                now,
+                now,
+            ),
+        )
+        conn.execute(
+            """INSERT INTO users
+            (id,email,display_name,auth_provider,external_id,role_hint,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET email=excluded.email,
+            display_name=excluded.display_name,auth_provider=excluded.auth_provider,
+            external_id=excluded.external_id,updated_at=excluded.updated_at""",
+            (user_id, email, name, "public-demo", identity, "owner", now, now),
+        )
+        conn.execute(
+            """INSERT INTO workspace_members
+            (id,workspace_id,user_id,role,status,invited_email,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,?)
+            ON CONFLICT(workspace_id,user_id) DO UPDATE SET role=excluded.role,
+            status=excluded.status,updated_at=excluded.updated_at""",
+            (
+                member_id,
+                PUBLIC_DEMO_WORKSPACE_ID,
+                user_id,
+                "owner",
+                "active",
+                "",
+                now,
+                now,
+            ),
+        )
+    return me_for_user(user_id, PUBLIC_DEMO_WORKSPACE_ID)
+
+
+def issue_public_demo_session(identity: str, display_name: str = "") -> dict[str, Any]:
+    """Issue a signed demo session that survives Vercel instance changes."""
+    principal = ensure_public_demo_identity(identity, display_name)
+    issued_at = datetime.now(UTC)
+    expires_at = issued_at + timedelta(days=7)
+    encoded = jwt.encode(
+        {
+            "iss": PUBLIC_DEMO_SESSION_ISSUER,
+            "aud": PUBLIC_DEMO_SESSION_ISSUER,
+            "sub": principal["id"],
+            "identity": identity,
+            "display_name": principal["display_name"],
+            "iat": issued_at,
+            "exp": expires_at,
+        },
+        settings.jwt_secret,
+        algorithm="HS256",
+    )
+    return {
+        "token": PUBLIC_DEMO_SESSION_PREFIX + encoded,
+        "expires_at": expires_at.isoformat(),
+        "user": principal,
+    }
 
 
 def request_email_login_code(email: str) -> dict[str, Any]:
@@ -279,6 +376,22 @@ def ensure_workspace(name: str, slug: str, owner_id: str, role: str = "owner") -
 def me_from_token(token: str | None) -> dict[str, Any] | None:
     if not token:
         return None
+    if settings.public_demo_mode and token.startswith(PUBLIC_DEMO_SESSION_PREFIX):
+        try:
+            claims = jwt.decode(
+                token.removeprefix(PUBLIC_DEMO_SESSION_PREFIX),
+                settings.jwt_secret,
+                algorithms=["HS256"],
+                audience=PUBLIC_DEMO_SESSION_ISSUER,
+                issuer=PUBLIC_DEMO_SESSION_ISSUER,
+            )
+            principal = ensure_public_demo_identity(
+                str(claims.get("identity") or ""),
+                str(claims.get("display_name") or ""),
+            )
+            return principal if claims.get("sub") == principal["id"] else None
+        except (jwt.PyJWTError, ValueError):
+            return None
     session = row("SELECT * FROM sessions WHERE token_hash=?", (_hash_token(token),))
     if not session:
         return None

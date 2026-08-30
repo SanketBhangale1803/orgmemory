@@ -38,12 +38,15 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-sonnet-4-20250514"
     google_api_key: str = ""
     gemini_model: str = "gemini-3.6-flash"
+    openrouter_api_key: str = ""
+    glm_model: str = "z-ai/glm-5.3-flash"
+    glm_base_url: str = "https://openrouter.ai/api/v1"
     xai_api_key: str = ""
     grok_model: str = "grok-4.5"
     kimi_api_key: str = ""
     kimi_model: str = "kimi-k2.6"
     kimi_base_url: str = "https://api.moonshot.ai/v1"
-    org_memory_default_model_provider: str = "gpt"
+    org_memory_default_model_provider: str = "glm"
     # A question is answered several independent ways and a judge picks the one
     # that actually fits what was asked. 1 disables the parallel pass entirely.
     org_memory_answer_candidates: int = 5
@@ -121,6 +124,10 @@ class Settings(BaseSettings):
     jwt_secret: str = "runbook-local-dev-secret"
     app_base_url: str = "http://localhost:3000"
     auth_dev_mode: bool = True
+    # Credential-free, isolated access for the hosted challenge demo. Unlike
+    # AUTH_DEV_MODE, this profile still runs with production cookie/security
+    # behavior and refuses to start if connectors or execution are enabled.
+    public_demo_mode: bool = False
     session_cookie_name: str = "runbook_session"
     session_cookie_domain: str = ""
 
@@ -146,6 +153,30 @@ class Settings(BaseSettings):
         if self.environment.casefold() != "production":
             return
         faults: list[str] = []
+        if self.public_demo_mode:
+            if self.auth_dev_mode:
+                faults.append("AUTH_DEV_MODE must be false in the public demo")
+            if self.graph_backend.casefold() != "memory":
+                faults.append("GRAPH_BACKEND must be memory in the public demo")
+            if not self.runbook_demo_mode:
+                faults.append("RUNBOOK_DEMO_MODE must be true in the public demo")
+            if self.allow_local_command_execution or self.org_memory_execution_enabled:
+                faults.append("All command and agent execution must be disabled in the public demo")
+            if self.connector_sync_worker_enabled or self.connector_custom_mcp_enabled:
+                faults.append("External connector execution must be disabled in the public demo")
+            if not str(self.sqlite_path).startswith("/tmp/orgmemory/"):
+                faults.append("The public demo SQLite database must be disposable under /tmp/orgmemory")
+            if not self.frontend_url.startswith("https://"):
+                faults.append("FRONTEND_URL must use HTTPS")
+            if self.jwt_secret == "runbook-local-dev-secret" or len(self.jwt_secret) < 32:
+                faults.append("JWT_SECRET must be a non-default secret of at least 32 characters")
+            if not self.mcp_public_url.startswith("https://"):
+                faults.append("MCP_PUBLIC_URL must use HTTPS")
+            if not self.mcp_oauth_issuer_url.startswith("https://"):
+                faults.append("MCP_OAUTH_ISSUER_URL must use HTTPS")
+            if faults:
+                raise RuntimeError("Unsafe public demo configuration: " + "; ".join(faults))
+            return
         if self.auth_dev_mode:
             faults.append("AUTH_DEV_MODE must be false")
         if self.jwt_secret == "runbook-local-dev-secret" or len(self.jwt_secret) < 32:

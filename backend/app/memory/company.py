@@ -74,9 +74,10 @@ class CompanyMemoryService:
         scope: dict[str, str],
         item_id: str = "",
         chunk_ids: list[str] | None = None,
+        memory_id: str = "",
     ) -> dict[str, Any]:
         now = utcnow()
-        memory_id = new_id("mem")
+        memory_id = memory_id or new_id("mem")
         workspace = row(
             "SELECT workspace_id FROM workspace_projects WHERE project_id=?", (project_id,)
         )

@@ -44,6 +44,7 @@ from app.auth.app_auth import (
     create_oauth_session,
     create_workspace,
     invite_member,
+    issue_public_demo_session,
     list_workspaces,
     logout,
     me_from_token,
@@ -97,6 +98,7 @@ from app.memory import (
 )
 from app.memory.change_intelligence import github_diff
 from app.memory.company import MEMORY_TYPES
+from app.orgops.seed import seed_launch_scenario
 from app.outcomes import (
     export_training_records,
     record_action,
@@ -130,6 +132,7 @@ from .schemas import (
     ConnectorToolResolveRequest,
     CorrelateRequest,
     CustomConnectorCreateRequest,
+    DemoLoginRequest,
     DevLoginRequest,
     EmailCodeRequest,
     EmailCodeVerifyRequest,
@@ -521,6 +524,32 @@ def auth_dev_login(request: DevLoginRequest, response: Response):
         result = create_dev_session(request.email, request.display_name)
         _set_session_cookie(response, result["token"])
         return result
+    except Exception as exc:
+        fail(exc)
+
+
+@router.post("/auth/demo-login")
+def auth_demo_login(request: DemoLoginRequest, response: Response):
+    """Enter the isolated challenge workspace without external OAuth.
+
+    Google and GitHub are persona choices in this profile. No provider token is
+    requested, received, or stored. Normal production deployments do not expose
+    this authentication option.
+    """
+    if not settings.public_demo_mode:
+        raise HTTPException(404, "Public demo access is not enabled")
+    try:
+        result = issue_public_demo_session(
+            request.identity,
+            request.display_name,
+        )
+        seed_launch_scenario(
+            result["user"]["active_workspace_id"],
+            ingestion.create_project,
+            company_memory,
+        )
+        _set_session_cookie(response, result["token"])
+        return {"expires_at": result["expires_at"], "user": result["user"]}
     except Exception as exc:
         fail(exc)
 

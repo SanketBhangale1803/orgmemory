@@ -12,11 +12,13 @@ tasks rather than producing a second copy of the organization.
 
 from __future__ import annotations
 
+import hashlib
 import json
-from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
-from app.core.database import connect, new_id, row, rows, utcnow
+from app.core.database import connect, row, rows, utcnow
 
 SPACES = [
     ("Product", "What we are shipping and when."),
@@ -30,7 +32,7 @@ SPACES = [
 
 
 def _iso(moment: datetime) -> str:
-    return moment.astimezone(timezone.utc).isoformat()
+    return moment.astimezone(UTC).isoformat()
 
 
 def _memory_plan(now: datetime) -> list[dict]:
@@ -376,13 +378,34 @@ RELATIONSHIPS = [
 ]
 
 
+# The scenario's own vocabulary for where a record came from, mapped onto the
+# source types the indexer accepts. Keeping the scenario's words separate from
+# the indexer's keeps the story readable without inventing a source type.
+_SOURCE_TYPES = {"meeting": "document", "message": "slack", "document": "document"}
+
+
+def _stable_id(prefix: str, workspace_id: str, value: str) -> str:
+    """Return the same fixture ID in every disposable serverless instance."""
+    digest = hashlib.sha256(f"{workspace_id}:{value}".encode()).hexdigest()[:20]
+    return f"{prefix}_{digest}"
+
+
 def seed_launch_scenario(
     workspace_id: str,
-    create_project: Callable[[str], str],
+    create_project: Callable[..., str],
     company_memory: Any,
+    ingest_item: Callable[..., dict] | None = None,
 ) -> dict:
-    """Create (or reuse) the multi-space launch scenario for this workspace."""
-    now = datetime.now(timezone.utc)
+    """Create (or reuse) the multi-space launch scenario for this workspace.
+
+    Source text goes through the real indexer when one is supplied, so the chat
+    can retrieve it like any other document. The indexer's own extractor is then
+    retired for that source and replaced with the scenario's designed memory:
+    its output here is sentence fragments ("engineering", "no further scope"),
+    which would put noise in a briefing and give the contradiction detector
+    something meaningless to match on.
+    """
+    now = datetime.now(UTC)
     space_ids: dict[str, str] = {}
     existing = {
         record["name"]: record["id"]
@@ -396,7 +419,10 @@ def seed_launch_scenario(
         if name in existing:
             space_ids[name] = existing[name]
             continue
-        project_id = create_project(name)
+        project_id = create_project(
+            name,
+            project_id=_stable_id("prj", workspace_id, f"space:{name}"),
+        )
         with connect() as conn:
             conn.execute(
                 "INSERT OR IGNORE INTO workspace_projects VALUES (?,?)",
@@ -417,23 +443,45 @@ def seed_launch_scenario(
             memory_ids[entry["subject"]] = found["id"]
             continue
         source_type, source_title = entry["source"]
-        source_id = new_id("src")
         stamp = _iso(entry["at"])
-        with connect() as conn:
-            conn.execute(
-                "INSERT INTO knowledge_items "
-                "(id,project_id,source_type,source_id,source_title,source_url,content,"
-                "metadata_json,created_at) VALUES (?,?,?,?,?,'',?,'{}',?)",
-                (
-                    new_id("item"),
-                    project_id,
-                    source_type,
-                    source_id,
-                    source_title,
-                    entry["content"],
-                    stamp,
-                ),
+        if ingest_item:
+            indexed = ingest_item(
+                project_id,
+                _SOURCE_TYPES.get(source_type, "document"),
+                source_title,
+                entry["content"],
+                "",
+                None,
+                # The indexer stores its own coarse source type, so the kind of
+                # record this actually was — a meeting, a message — travels in
+                # metadata. Provenance reads it back; "a decision recorded in a
+                # meeting" is the part that makes the trace worth opening.
+                {"record_kind": source_type},
             )
+            source_id = indexed["source_id"]
+            company_memory.retire_source_memories(project_id, source_id)
+            with connect() as conn:
+                conn.execute(
+                    "UPDATE knowledge_items SET created_at=? WHERE source_id=?",
+                    (stamp, source_id),
+                )
+        else:
+            source_id = _stable_id("src", workspace_id, f"{project_id}:{entry['subject']}:source")
+            with connect() as conn:
+                conn.execute(
+                    "INSERT INTO knowledge_items "
+                    "(id,project_id,source_type,source_id,source_title,source_url,content,"
+                    "metadata_json,created_at) VALUES (?,?,?,?,?,'',?,'{}',?)",
+                    (
+                        _stable_id("item", workspace_id, f"{project_id}:{entry['subject']}:item"),
+                        project_id,
+                        source_type,
+                        source_id,
+                        source_title,
+                        entry["content"],
+                        stamp,
+                    ),
+                )
         unit = company_memory.create(
             project_id,
             entry["type"],
@@ -442,6 +490,7 @@ def seed_launch_scenario(
             [source_id],
             0.94,
             {"service": "checkout"},
+            memory_id=_stable_id("mem", workspace_id, f"{project_id}:{entry['subject']}"),
         )
         memory_id = unit.get("id", "")
         if memory_id:
@@ -476,7 +525,11 @@ def seed_launch_scenario(
             conn.execute(
                 "INSERT OR IGNORE INTO memory_relationships VALUES (?,?,?,?,?,?)",
                 (
-                    new_id("rel"),
+                    _stable_id(
+                        "rel",
+                        workspace_id,
+                        f"{source_id}:{relationship}:{target_id}",
+                    ),
                     (source_project or {}).get("project_id", ""),
                     source_id,
                     target_id,
@@ -497,7 +550,7 @@ def seed_launch_scenario(
         if found:
             task_ids[entry["key"]] = found["id"]
             continue
-        task_id = new_id("task")
+        task_id = _stable_id("task", workspace_id, entry["key"])
         stamp = _iso(entry["at"])
         with connect() as conn:
             conn.execute(
@@ -515,7 +568,11 @@ def seed_launch_scenario(
                     entry["priority"],
                     entry["kind"],
                     json.dumps(
-                        [memory_ids[subject] for subject in entry["evidence"] if subject in memory_ids]
+                        [
+                            memory_ids[subject]
+                            for subject in entry["evidence"]
+                            if subject in memory_ids
+                        ]
                     ),
                     entry["key"],
                     stamp,
@@ -557,7 +614,7 @@ def reset_launch_scenario(workspace_id: str) -> dict:
     point of the gate — so replaying the walkthrough needs an explicit way to
     rewind it rather than a second copy of the organization.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     space_ids = {
         record["name"]: record["id"]
         for record in rows(
@@ -588,4 +645,13 @@ def reset_launch_scenario(workspace_id: str) -> dict:
             restored += cursor.rowcount
     with connect() as conn:
         conn.execute("DELETE FROM org_action_plans WHERE workspace_id=?", (workspace_id,))
+        # Findings reference the plans that were just removed. Leaving them
+        # behind would offer an "approve the drafted fix" button pointing at a
+        # plan that no longer exists, and the watch would not re-detect the
+        # situation because the fingerprint is already on file.
+        conn.execute("DELETE FROM org_watch_findings WHERE workspace_id=?", (workspace_id,))
+        conn.execute(
+            "UPDATE org_watches SET last_run_at=NULL,runs=0,updated_at=? WHERE workspace_id=?",
+            (utcnow(), workspace_id),
+        )
     return {"restored_tasks": restored}

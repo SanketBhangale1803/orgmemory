@@ -30,3 +30,5 @@ htmlcov/
 .mypy_cache/
 .idea/
 .vscode/
+.vercel
+.env*

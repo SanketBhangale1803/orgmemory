@@ -1509,11 +1509,16 @@ function AnswerBlock({
   const confidenceLabel = answer.trust_score?.level
     ? `${answer.trust_score.level.replace(/_/g, " ")} confidence`
     : "Source-backed answer";
+  /* `likely_cause` answers "what broke". For every other kind of question the
+     server fills it with a "Not applicable — …" placeholder, which is a note to
+     other code, not a sentence anyone should read. Headlining it made a real,
+     source-backed answer look like a refusal. */
+  const diagnosis = answer.likely_cause?.startsWith("Not applicable") ? "" : answer.likely_cause;
   const trail = [
     { type: "Question", label: question },
     ...relatedEntities.slice(0, 2).map((entity) => ({ type: "Service context", label: entity })),
     ...memories.slice(0, 3).map((memory) => ({ type: memory.type, label: memory.subject })),
-    ...(answer.likely_cause ? [{ type: "Conclusion", label: answer.likely_cause }] : []),
+    ...(diagnosis ? [{ type: "Conclusion", label: diagnosis }] : []),
   ];
 
   return (
@@ -1522,7 +1527,7 @@ function AnswerBlock({
         <header className="intelligence-head">
           <div>
             <p>Intelligence Canvas</p>
-            <h2>{answer.likely_cause || "Answer from current organizational memory"}</h2>
+            <h2>{diagnosis || "Answer from current organizational memory"}</h2>
           </div>
           <div className="intelligence-badges">
             <span className="confidence"><i />{confidenceLabel}</span>

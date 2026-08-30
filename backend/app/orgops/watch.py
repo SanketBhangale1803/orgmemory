@@ -159,7 +159,7 @@ class WatchService:
             if "blockers" in checks:
                 found.extend(self._blocker_findings(space_ids))
             if "conflicts" in checks:
-                found.extend(self._conflict_findings(space_ids, workspace_id, user_id or record["created_by"]))
+                found.extend(self._conflict_findings(space_ids))
             if "stale" in checks:
                 found.extend(self._stale_findings(space_ids))
         except Exception as exc:  # a broken watch must not take the worker down
@@ -168,14 +168,16 @@ class WatchService:
 
         recorded = 0
         now = utcnow()
+        author = user_id or record["created_by"]
         for finding in found:
+            finding_id = new_id("find")
             with connect() as conn:
                 cursor = conn.execute(
                     "INSERT OR IGNORE INTO org_watch_findings "
                     "(id,watch_id,workspace_id,kind,headline,detail,payload_json,fingerprint,"
-                    "plan_id,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,'open',?)",
+                    "plan_id,status,created_at) VALUES (?,?,?,?,?,?,?,?,'','open',?)",
                     (
-                        new_id("find"),
+                        finding_id,
                         watch_id,
                         workspace_id,
                         finding["kind"],
@@ -183,11 +185,22 @@ class WatchService:
                         finding.get("detail", ""),
                         json.dumps(finding.get("payload", {})),
                         finding["fingerprint"],
-                        finding.get("plan_id", ""),
                         now,
                     ),
                 )
-                recorded += cursor.rowcount
+                is_new = cursor.rowcount == 1
+            recorded += 1 if is_new else 0
+            # Only a genuinely new finding drafts a plan. Drafting on every pass
+            # would file the same fix every few minutes and bury the queue it is
+            # supposed to make legible.
+            if is_new and finding.get("resolution"):
+                plan_id = self._draft_plan(finding, workspace_id, author)
+                if plan_id:
+                    with connect() as conn:
+                        conn.execute(
+                            "UPDATE org_watch_findings SET plan_id=? WHERE id=?",
+                            (plan_id, finding_id),
+                        )
 
         with connect() as conn:
             conn.execute(
@@ -250,29 +263,13 @@ class WatchService:
             )
         return findings
 
-    def _conflict_findings(
-        self, space_ids: list[str], workspace_id: str, user_id: str
-    ) -> list[dict]:
+    def _conflict_findings(self, space_ids: list[str]) -> list[dict]:
+        """Look, and only look. The fix is drafted later, and only if new."""
         result = self.orgops.find_conflicts(space_ids)
         findings = []
         for conflict in result["conflicts"]:
             task = conflict["task"]
             source = conflict["source"]
-            plan_id = ""
-            # A contradiction has one unambiguous fix, so the watch drafts it.
-            # Drafting is not doing: the plan sits in the approval queue.
-            try:
-                plan = self.orgops.propose_plan(
-                    workspace_id,
-                    user_id,
-                    task["space_id"],
-                    f"Reconcile “{task['title']}” with {source['space_name']}",
-                    [conflict["resolution"]],
-                    origin="watch",
-                )
-                plan_id = plan["id"]
-            except Exception:
-                logger.exception("Could not draft a reconciliation plan")
             findings.append(
                 {
                     "kind": "conflict",
@@ -282,11 +279,35 @@ class WatchService:
                     ),
                     "detail": source["title"],
                     "fingerprint": _fingerprint("conflict", task["id"], source["id"]),
-                    "plan_id": plan_id,
                     "payload": conflict,
+                    "resolution": {
+                        "space_id": task["space_id"],
+                        "summary": f"Reconcile “{task['title']}” with {source['space_name']}",
+                        "operations": [conflict["resolution"]],
+                    },
                 }
             )
         return findings
+
+    def _draft_plan(self, finding: dict, workspace_id: str, user_id: str) -> str:
+        """A contradiction has one unambiguous fix, so the watch writes it down.
+
+        Writing it down is not doing it: the plan lands in the approval queue.
+        """
+        resolution = finding["resolution"]
+        try:
+            plan = self.orgops.propose_plan(
+                workspace_id,
+                user_id,
+                resolution["space_id"],
+                resolution["summary"],
+                resolution["operations"],
+                origin="watch",
+            )
+            return plan["id"]
+        except Exception:
+            logger.exception("Could not draft a reconciliation plan")
+            return ""
 
     def _stale_findings(self, space_ids: list[str]) -> list[dict]:
         result = self.orgops.find_stale_information(space_ids, max_age_days=120)

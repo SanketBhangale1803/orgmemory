@@ -28,6 +28,15 @@ class ModelProvider:
 def _providers() -> list[ModelProvider]:
     return [
         ModelProvider(
+            "glm",
+            "GLM",
+            "Z.AI",
+            settings.glm_model,
+            settings.openrouter_api_key.strip(),
+            "openai_compatible",
+            settings.glm_base_url.rstrip("/"),
+        ),
+        ModelProvider(
             "gpt",
             "GPT",
             "OpenAI",
@@ -147,14 +156,22 @@ def _openai_compatible(provider: ModelProvider, prompt: str) -> str:
                 "max_tokens": 2048,
             }
         )
-    else:
+    elif provider.id != "glm":
         payload["temperature"] = 0
+    headers = {
+        "Authorization": f"Bearer {provider.api_key}",
+        "Content-Type": "application/json",
+    }
+    if provider.id == "glm":
+        headers.update(
+            {
+                "HTTP-Referer": settings.frontend_url,
+                "X-OpenRouter-Title": "OrgMemory",
+            }
+        )
     response = httpx.post(
         f"{provider.base_url}/chat/completions",
-        headers={
-            "Authorization": f"Bearer {provider.api_key}",
-            "Content-Type": "application/json",
-        },
+        headers=headers,
         json=payload,
         timeout=60,
     )

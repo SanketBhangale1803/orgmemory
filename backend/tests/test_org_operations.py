@@ -35,7 +35,30 @@ def _session(email: str, name: str, workspace_name: str) -> str:
 
 
 @pytest.fixture
-def scenario(graph):
+def scenario(graph, monkeypatch):
+    """Bind the route's services to this test's graph store.
+
+    The route module builds them once at import time, so without this the seed
+    writes its documents into whichever store existed then — and every later
+    retrieval test in the session silently answers from a launch scenario it
+    never asked for.
+    """
+    from app.api import org_routes
+    from app.audit import AuditService
+    from app.hcag_adapter import HCAGAdapter
+    from app.ingestion import IngestionService
+    from app.memory.company import CompanyMemoryService
+    from app.orgops import OrgOpsService, WatchService
+
+    memory = CompanyMemoryService(graph)
+    monkeypatch.setattr(org_routes, "company_memory", memory)
+    monkeypatch.setattr(
+        org_routes, "ingestion", IngestionService(graph, HCAGAdapter(graph), AuditService())
+    )
+    ops = OrgOpsService(memory)
+    monkeypatch.setattr(org_routes, "orgops", ops)
+    monkeypatch.setattr(org_routes, "watches", WatchService(ops))
+
     token = _session("launch@orgmemory.local", "Launch Owner", "Launch Co")
     header = f"Bearer {token}"
     seed = seed_scenario(SeedRequest(), authorization=header)
@@ -193,7 +216,14 @@ def test_a_watch_finds_the_contradiction_and_drafts_a_fix_without_applying_it(sc
     # Drafting is not doing.
     assert readiness(authorization=header)["status"] == "NOT READY"
 
-    # Running again must not pile up duplicates of the same situation.
-    second = run_watch(watch["id"], authorization=header)
-    assert second["new_findings"] == 0
+    # Running again must not pile up duplicates of the same situation. A watch
+    # that re-drafts the same fix every interval buries the queue it exists to
+    # make legible, so the plan count is asserted, not just the finding count.
+    from app.api.org_routes import list_plans
+
+    before = len(list_plans(authorization=header)["plans"])
+    for _ in range(3):
+        second = run_watch(watch["id"], authorization=header)
+        assert second["new_findings"] == 0
+    assert len(list_plans(authorization=header)["plans"]) == before
     assert len(list_watches(authorization=header)["watches"]) == 1

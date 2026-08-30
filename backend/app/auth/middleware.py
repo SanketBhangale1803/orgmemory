@@ -13,6 +13,7 @@ PUBLIC_API_PATHS = {
     "/api/health",
     "/api/health/graph",
     "/api/auth/providers",
+    "/api/auth/demo-login",
     "/api/models",
     "/api/platforms",
     "/api/auth/dev-login",
@@ -27,6 +28,15 @@ PUBLIC_API_PATHS = {
     "/api/auth/slack/callback",
     "/api/webhooks/github",
 }
+
+PUBLIC_DEMO_BLOCKED_MUTATION_PREFIXES = (
+    "/api/connectors",
+    "/api/execute",
+    "/api/importers",
+    "/api/ingest",
+    "/api/keys",
+    "/api/mcp/oauth/clients",
+)
 
 
 class AuthenticationBoundaryMiddleware(BaseHTTPMiddleware):
@@ -58,4 +68,18 @@ class AuthenticationBoundaryMiddleware(BaseHTTPMiddleware):
             and not principal_from_mcp_token(token)
         ):
             return JSONResponse({"detail": "Authentication required"}, status_code=401)
+        if (
+            settings.public_demo_mode
+            and request.method not in {"GET", "HEAD", "OPTIONS"}
+            and path.startswith(PUBLIC_DEMO_BLOCKED_MUTATION_PREFIXES)
+        ):
+            return JSONResponse(
+                {
+                    "detail": (
+                        "This external integration or execution path is disabled "
+                        "in the public demo"
+                    )
+                },
+                status_code=403,
+            )
         return await call_next(request)

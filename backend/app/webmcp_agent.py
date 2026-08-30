@@ -24,6 +24,8 @@ from app.llm.providers import configured_model, generate_grounded_json
 
 MAX_STEPS = 6
 MAX_OBSERVATION_CHARS = 1400
+RATE_LIMIT_ATTEMPTS = 2
+RATE_LIMIT_BACKOFF_SECONDS = 1.5
 
 LlmCall = Callable[[str], dict[str, Any] | None]
 
@@ -96,9 +98,22 @@ def _observation(value: Any) -> str:
 class WebMCPAgentRunner:
     """Executes one agent session: question → tools → grounded answer."""
 
-    def __init__(self, llm: LlmCall | None = None):
+    def __init__(
+        self,
+        llm: LlmCall | None = None,
+        catalog: Callable[[], list[dict[str, Any]]] | None = None,
+        guided: Callable[[str, list[dict], str], LlmCall] | None = None,
+    ):
         # Injectable for tests; production uses the configured model provider.
         self._llm = llm
+        # The loop is the same whichever surface it drives; only the tools an
+        # agent can see differ. Passing the catalog in keeps one loop rather
+        # than a second copy that drifts.
+        self._catalog = catalog or agent_tool_catalog
+        # The fallback has to speak the same catalog. A guided policy naming
+        # tools this surface does not expose produces "Unknown tool" on screen,
+        # which is worse than no fallback at all.
+        self._guided = guided or self._guided_decider
 
     def run(
         self,
@@ -153,7 +168,7 @@ class WebMCPAgentRunner:
                 # labeled as guided.
                 if mode == "model" and self._llm is None:
                     mode = "guided"
-                    llm = self._guided_decider(question, spaces, default_project)
+                    llm = self._guided(question, spaces, default_project)
                     decision = llm(prompt)
                 else:
                     raise
@@ -204,6 +219,10 @@ class WebMCPAgentRunner:
             observation = _observation(structured)
             transcript += (
                 f"\nTOOL CALL {step_index}: {tool_name} {json.dumps(arguments)}\n"
+                # The summary is the tool's own one-line account of what it
+                # found. Observations get truncated mid-JSON; this does not, so
+                # both the model and the guided fallback can rely on it.
+                f"SUMMARY {step_index}: {summary}\n"
                 f"OBSERVATION {step_index}: {observation}"
             )
             steps.append(
@@ -339,7 +358,7 @@ class WebMCPAgentRunner:
     def _prompt(self, question: str, spaces: list[dict], transcript: str, max_steps: int) -> str:
         tools = "\n".join(
             f"- {tool['name']}({', '.join(tool['arguments'])}): {tool['description']}"
-            for tool in agent_tool_catalog()
+            for tool in self._catalog()
         )
         return f"""You are a browser AI agent on an OrgMemory page. The page exposes WebMCP tools for company memory.
 
@@ -370,14 +389,19 @@ Rules:
                 raise RuntimeError(
                     "No model key is configured. Add one in OrgMemory settings to run a live agent."
                 )
-            # Demo-critical: free-tier providers rate-limit aggressively. A
-            # transient 429 should back off and retry, not kill the session.
+            # Free-tier providers rate-limit aggressively. A transient 429 is
+            # worth one quick retry; an exhausted quota answers 429 instantly
+            # and forever, and a long backoff there just leaves the page silent
+            # for half a minute before the fallback it was always going to use.
             last_error: Exception | None = None
-            for attempt in range(3):
+            for attempt in range(RATE_LIMIT_ATTEMPTS):
                 if attempt:
-                    time.sleep(4 * (2**attempt))
+                    time.sleep(RATE_LIMIT_BACKOFF_SECONDS * attempt)
                 try:
-                    return generate_grounded_json(prompt, provider.id)
+                    # generate_grounded_json hands back (decision, provider);
+                    # the loop only wants the decision.
+                    result = generate_grounded_json(prompt, provider.id)
+                    return result[0] if isinstance(result, tuple) else result
                 except Exception as exc:
                     last_error = exc
                     if "429" not in str(exc) and "rate" not in str(exc).lower():

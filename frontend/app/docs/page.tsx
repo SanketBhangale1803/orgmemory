@@ -212,8 +212,8 @@ ORGMEMORY_API_KEY=om_live_...`}
             <h2>One company context. Your choice of model.</h2>
             <p>
               OrgMemory retrieves, scopes, and compiles the evidence before a
-              model sees it. Configure any combination of GPT, Claude, Gemini,
-              Grok, and Kimi. If no model key is present, source-backed
+              model sees it. Configure any combination of GLM, GPT, Claude,
+              Gemini, Grok, and Kimi. If no model key is present, source-backed
               deterministic answer paths remain available.
             </p>
             <CodeBlock label="Model configuration" language="bash">
@@ -223,12 +223,15 @@ ANTHROPIC_API_KEY=
 ANTHROPIC_MODEL=claude-sonnet-4-20250514
 GOOGLE_API_KEY=
 GEMINI_MODEL=gemini-3.6-flash
+OPENROUTER_API_KEY=
+GLM_MODEL=z-ai/glm-5.3-flash
+GLM_BASE_URL=https://openrouter.ai/api/v1
 XAI_API_KEY=
 GROK_MODEL=grok-4.5
 KIMI_API_KEY=
 KIMI_MODEL=kimi-k2.6
 
-ORG_MEMORY_DEFAULT_MODEL_PROVIDER=gpt`}
+ORG_MEMORY_DEFAULT_MODEL_PROVIDER=glm`}
             </CodeBlock>
           </section>
 

@@ -17,7 +17,8 @@ type Model = {
 /* Shown until /api/models answers. Order matches the providers the backend
    knows how to call, so the picker never changes shape after it loads. */
 const fallbackModels: Model[] = [
-  { id: "gpt", label: "GPT", company: "OpenAI", model: "gpt-4o-mini", configured: false, default: true },
+  { id: "glm", label: "GLM", company: "Z.AI via OpenRouter", model: "GLM 5.3 Flash", configured: false, default: true },
+  { id: "gpt", label: "GPT", company: "OpenAI", model: "gpt-4o-mini", configured: false, default: false },
   { id: "claude", label: "Claude", company: "Anthropic", model: "Claude Sonnet", configured: false, default: false },
   { id: "gemini", label: "Gemini", company: "Google", model: "Gemini 3.6 Flash", configured: false, default: false },
   { id: "grok", label: "Grok", company: "xAI", model: "Grok 4.5", configured: false, default: false },
