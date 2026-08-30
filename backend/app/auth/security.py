@@ -5,12 +5,49 @@ import hashlib
 from datetime import UTC, datetime, timedelta
 from secrets import token_urlsafe
 
+import jwt
 from starlette.requests import Request
 
 from app.core.config import settings
 from app.core.database import connect, utcnow
 
 from .vault import OAuthTokenVault
+
+FLOW_STATE_ISSUER = "orgmemory-oauth-flow"
+
+
+def sign_flow_state(payload: dict) -> str:
+    """An OAuth `state` that carries its own flow, cryptographically.
+
+    The hosted deployment runs several stateless containers over per-container
+    SQLite, so a flow row written by /start is invisible to /callback. Signing
+    the flow into the state token (PKCE verifier included) makes the round
+    trip portable across instances; the database tombstone still provides
+    best-effort single-use inside one container.
+    """
+    payload = {
+        **payload,
+        "iss": FLOW_STATE_ISSUER,
+        "aud": FLOW_STATE_ISSUER,
+        "iat": datetime.now(UTC),
+        "exp": datetime.now(UTC) + timedelta(minutes=10),
+    }
+    payload["nonce"] = token_urlsafe(8)
+    return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
+
+
+def read_flow_state(state: str) -> dict | None:
+    try:
+        claims = jwt.decode(
+            state,
+            settings.jwt_secret,
+            algorithms=["HS256"],
+            issuer=FLOW_STATE_ISSUER,
+            audience=FLOW_STATE_ISSUER,
+        )
+    except jwt.PyJWTError:
+        return None
+    return claims
 
 
 def _is_local_base(url: str) -> bool:
@@ -74,8 +111,16 @@ class OAuthStateStore:
         user_id: str = "",
         use_pkce: bool = False,
     ) -> dict[str, str]:
-        state = token_urlsafe(32)
-        verifier = token_urlsafe(64) if use_pkce else ""
+        state = sign_flow_state(
+            {
+                "p": provider,
+                "i": intent,
+                "w": workspace_id,
+                "u": user_id,
+                "v": token_urlsafe(64) if use_pkce else "",
+            }
+        )
+        verifier = read_flow_state(state).get("v", "") if read_flow_state(state) else ""
         expires = (datetime.now(UTC) + timedelta(minutes=10)).isoformat()
         with connect() as conn:
             conn.execute(
@@ -89,6 +134,23 @@ class OAuthStateStore:
         return {"state": state, "code_challenge": challenge}
 
     def consume(self, provider: str, state: str) -> dict:
+        # Portable path first: the signed state decodes on any container,
+        # even one that never saw the /start request. A tombstone row (this
+        # container or another that shares the file) makes it single-use.
+        claims = read_flow_state(state)
+        if claims:
+            if self._state_is_used(state):
+                raise ValueError("OAuth state is invalid or expired")
+            self._tombstone(state)
+            return {
+                "state": state,
+                "provider": claims.get("p", ""),
+                "intent": claims.get("i", "connect"),
+                "workspace_id": claims.get("w", ""),
+                "user_id": claims.get("u", ""),
+                "code_verifier": claims.get("v", ""),
+                "expires_at": datetime.now(UTC).isoformat(),
+            }
         with connect() as conn:
             row = conn.execute(
                 "SELECT * FROM oauth_flows WHERE state=? AND provider=?",
@@ -102,3 +164,32 @@ class OAuthStateStore:
                 raise ValueError("OAuth state is invalid or expired")
             conn.execute("UPDATE oauth_flows SET used_at=? WHERE state=?", (utcnow(), state))
             return dict(row)
+
+    def _state_is_used(self, state: str) -> bool:
+        try:
+            with connect() as conn:
+                row = conn.execute(
+                    "SELECT used_at FROM oauth_flows WHERE state=?", (state,)
+                ).fetchone()
+            return bool(row and row["used_at"])
+        except Exception:  # noqa: BLE001 - a read failure must not block login
+            return False
+
+    def _tombstone(self, state: str) -> None:
+        # Best-effort single-use marker. A second container replaying the
+        # state is bounded by the provider's single-use authorization code,
+        # so this only needs to be best-effort.
+        try:
+            now = utcnow()
+            with connect() as conn:
+                marked = conn.execute(
+                    "UPDATE oauth_flows SET used_at=? WHERE state=? AND used_at IS NULL",
+                    (now, state),
+                ).rowcount
+                if not marked:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO oauth_flows VALUES (?,?,?,?,?,?,?,?)",
+                        (state, "consumed", "", "", "", "", datetime.now(UTC).isoformat(), now),
+                    )
+        except Exception:  # noqa: BLE001 - tombstones must never fail a login
+            pass

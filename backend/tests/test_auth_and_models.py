@@ -5,9 +5,14 @@ from urllib.parse import parse_qs, urlparse
 from fastapi.testclient import TestClient
 
 from app.auth import OAuthStateStore
-from app.auth.app_auth import PUBLIC_DEMO_WORKSPACE_ID
+from app.auth.app_auth import (
+    PUBLIC_DEMO_WORKSPACE_ID,
+    issue_real_session,
+    me_from_token,
+)
 from app.auth.google import google_oauth_url
 from app.core.config import settings
+from app.core.database import connect
 from app.llm.providers import generate_grounded_json, model_catalog
 from app.main import app
 
@@ -198,3 +203,43 @@ def test_openai_compatible_and_gemini_requests_use_current_provider_contracts(gr
     assert calls[2]["headers"]["x-goog-api-key"] == "google-secret"
     assert "params" not in calls[2]
     assert "temperature" not in calls[2]["json"]["generationConfig"]
+
+
+def test_oauth_state_and_sessions_survive_container_loss(graph, monkeypatch):
+    """The hosted deployment runs stateless containers over per-container SQLite.
+
+    A flow row written by /start is invisible to /callback on another container,
+    and a session row likewise. Both must survive via their signed tokens:
+    consume() decodes the state without its row, and me_from_token resolves an
+    issued session after every local session row is gone.
+    """
+    store = OAuthStateStore()
+    created = store.create("github", intent="login", use_pkce=True)
+    assert created["code_challenge"]
+
+    with connect() as conn:
+        conn.execute("DELETE FROM oauth_flows")
+
+    flow = store.consume("github", created["state"])
+    assert flow["intent"] == "login"
+    assert flow["code_verifier"]
+
+    monkeypatch.setattr(settings, "public_demo_mode", True)
+    session = issue_real_session(
+        "github",
+        "github-user-42",
+        "owner@example.com",
+        "Owner",
+        "Owner workspace",
+    )
+    assert session["token"].startswith("omr_")
+
+    # Simulate the next request landing on a fresh container: no sessions row.
+    with connect() as conn:
+        conn.execute("DELETE FROM sessions")
+    principal = me_from_token(session["token"])
+    assert principal and principal["email"] == "owner@example.com"
+    assert principal["active_workspace_id"]
+
+    # A tampered token resolves to nothing.
+    assert me_from_token("omr_" + session["token"].removeprefix("omr_")[:-1] + "x") is None

@@ -20,6 +20,8 @@ PUBLIC_DEMO_WORKSPACE_ID = "wsp_public_demo"
 PUBLIC_DEMO_WORKSPACE_SLUG = "orgmemory-public-demo"
 PUBLIC_DEMO_SESSION_PREFIX = "omd_"
 PUBLIC_DEMO_SESSION_ISSUER = "orgmemory-public-demo"
+REAL_SESSION_PREFIX = "omr_"
+REAL_SESSION_ISSUER = "orgmemory-session"
 PUBLIC_DEMO_IDENTITIES = {
     "google": ("google@demo.orgmemory.invalid", "Google demo user"),
     "github": ("github@demo.orgmemory.invalid", "GitHub demo user"),
@@ -103,22 +105,28 @@ def create_oauth_session(
 ) -> dict[str, Any]:
     """Create or refresh a real identity and issue a workspace-bound session."""
     now = utcnow()
-    user = row(
-        "SELECT * FROM users WHERE auth_provider=? AND external_id=?",
-        (provider, external_id),
-    ) or row("SELECT * FROM users WHERE email=?", (email,))
-    user_id = user["id"] if user else new_id("usr")
+    if settings.public_demo_mode:
+        # The hosted demo runs stateless containers over per-container SQLite.
+        # The user id is derived from the provider identity itself, so any
+        # container can hydrate the same user, and the session is a signed
+        # JWT rather than a database row lookup.
+        user_id = _deterministic_demo_user_id(provider, external_id)
+    else:
+        user = row(
+            "SELECT * FROM users WHERE auth_provider=? AND external_id=?",
+            (provider, external_id),
+        ) or row("SELECT * FROM users WHERE email=?", (email,))
+        user_id = user["id"] if user else new_id("usr")
     with connect() as conn:
-        if user:
-            conn.execute(
-                "UPDATE users SET email=?,display_name=?,auth_provider=?,external_id=?,updated_at=? WHERE id=?",
-                (email, display_name, provider, external_id, now, user_id),
-            )
-        else:
-            conn.execute(
-                "INSERT INTO users VALUES (?,?,?,?,?,?,?,?)",
-                (user_id, email, display_name, provider, external_id, "owner", now, now),
-            )
+        conn.execute(
+            """INSERT INTO users
+            (id,email,display_name,auth_provider,external_id,role_hint,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET email=excluded.email,
+            display_name=excluded.display_name,auth_provider=excluded.auth_provider,
+            external_id=excluded.external_id,updated_at=excluded.updated_at""",
+            (user_id, email, display_name, provider, external_id, "owner", now, now),
+        )
     membership = row(
         "SELECT workspace_id FROM workspace_members WHERE user_id=? AND status='active' ORDER BY created_at LIMIT 1",
         (user_id,),
@@ -141,7 +149,160 @@ def create_oauth_session(
             slug = f"{base_slug[:54]}-{suffix}"
             suffix += 1
         workspace_id = ensure_workspace(workspace_name, slug, user_id, "owner")["id"]
+    if settings.public_demo_mode:
+        # Portable session: the JWT carries the identity, so whichever
+        # instance serves the next request can hydrate this user locally.
+        session = _issue_portable_session(user_id, workspace_id)
+        _seed_public_demo_workspace_once(workspace_id)
+        return session
     return issue_session(user_id, workspace_id)
+
+
+def _deterministic_demo_user_id(provider: str, external_id: str) -> str:
+    """A user id any container can reconstruct from the identity itself."""
+    digest = hashlib.sha256(f"{provider}:{external_id}".encode()).hexdigest()[:12]
+    return f"usr_demo_{digest}"
+
+
+def _hydrate_user(
+    user_id: str, email: str, display_name: str, provider: str, external_id: str
+) -> None:
+    """Idempotently make one user visible to this container's database."""
+    now = utcnow()
+    with connect() as conn:
+        conn.execute(
+            """INSERT INTO users
+            (id,email,display_name,auth_provider,external_id,role_hint,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET email=excluded.email,
+            display_name=excluded.display_name,auth_provider=excluded.auth_provider,
+            external_id=excluded.external_id,updated_at=excluded.updated_at""",
+            (user_id, email, display_name, provider, external_id, "owner", now, now),
+        )
+
+
+def issue_real_session(
+    provider: str,
+    external_id: str,
+    email: str,
+    display_name: str,
+    workspace_name: str,
+) -> dict[str, Any]:
+    """Create the identity and issue a workspace-bound session.
+
+    The portable-session branch lives in create_oauth_session; this wrapper
+    exists so callers (and tests) can exercise the cross-container behavior
+    under its own name.
+    """
+    return create_oauth_session(provider, external_id, email, display_name, workspace_name)
+
+
+def _issue_portable_session(user_id: str, workspace_id: str) -> dict[str, Any]:
+    """Sign a self-contained session any instance can validate.
+
+    The claims carry the identity needed to rebuild the user row on a
+    container that has never seen this sign-in; the database session row is
+    still written on the issuing instance for local revocation.
+    """
+    principal = me_for_user(user_id, workspace_id)
+    issued_at = datetime.now(UTC)
+    expires_at = issued_at + timedelta(days=7)
+    encoded = jwt.encode(
+        {
+            "iss": REAL_SESSION_ISSUER,
+            "aud": REAL_SESSION_ISSUER,
+            "sub": user_id,
+            "wid": workspace_id,
+            "email": principal["email"],
+            "name": principal["display_name"],
+            "iat": issued_at,
+            "exp": expires_at,
+        },
+        settings.jwt_secret,
+        algorithm="HS256",
+    )
+    token = REAL_SESSION_PREFIX + encoded
+    with connect() as conn:
+        conn.execute(
+            """INSERT INTO sessions
+            (id,user_id,workspace_id,token_hash,expires_at,created_at)
+            VALUES (?,?,?,?,?,?)""",
+            (
+                new_id("ses"),
+                user_id,
+                workspace_id,
+                _hash_token(token),
+                expires_at.isoformat(),
+                utcnow(),
+            ),
+        )
+    return {
+        "token": token,
+        "expires_at": expires_at.isoformat(),
+        "user": principal,
+    }
+
+
+def _hydrate_portable_session(token: str) -> dict[str, Any] | None:
+    """Resolve an omr_ session on any container, rebuilding local state.
+
+    Validates the signature first; then makes the user, the shared demo
+    workspace membership, and (for demo identities) the seeded scenario
+    visible to this container before answering. A tampered or expired token
+    resolves to None, exactly like an unknown session row.
+    """
+    try:
+        claims = jwt.decode(
+            token.removeprefix(REAL_SESSION_PREFIX),
+            settings.jwt_secret,
+            algorithms=["HS256"],
+            issuer=REAL_SESSION_ISSUER,
+            audience=REAL_SESSION_ISSUER,
+        )
+    except jwt.PyJWTError:
+        return None
+    user_id, workspace_id = str(claims.get("sub")), claims.get("wid") or ""
+    if not user_id:
+        return None
+    if settings.public_demo_mode and workspace_id == PUBLIC_DEMO_WORKSPACE_ID:
+        _hydrate_user(
+            user_id, str(claims.get("email") or ""), str(claims.get("name") or ""), "oauth", user_id
+        )
+        _ensure_public_demo_membership(user_id)
+        _seed_public_demo_workspace_once(workspace_id)
+    return me_for_user(user_id, workspace_id)
+
+
+def _seed_public_demo_workspace_once(workspace_id: str) -> None:
+    """Seed the demo scenario once per process, on first contact.
+
+    Containers do not share their SQLite file, so every instance has to be
+    able to reconstruct the demo organization by itself — otherwise a judge
+    routed to a fresh container sees an empty workspace. Idempotent by
+    construction (the seed upserts by stable ids); the flag just keeps the
+    per-request cost at one boolean check.
+    """
+    if not settings.public_demo_mode or workspace_id != PUBLIC_DEMO_WORKSPACE_ID:
+        return
+    if getattr(_module_state, "seeded", False):
+        return
+    _module_state.seeded = True
+    try:
+        from app.api.routes import (  # noqa: PLC0415 - avoids an import cycle
+            company_memory,
+            ingestion,
+        )
+        from app.orgops.seed import seed_launch_scenario
+
+        seed_launch_scenario(workspace_id, ingestion.create_project, company_memory)
+    except Exception:  # noqa: BLE001 - seeding is best-effort; never fail auth
+        pass
+
+
+class _module_state:
+    """Process-local latch for the once-per-container demo seed."""
+
+    seeded = False
 
 
 def _ensure_public_demo_membership(user_id: str, role: str = "owner") -> str:
@@ -394,6 +555,8 @@ def ensure_workspace(name: str, slug: str, owner_id: str, role: str = "owner") -
 def me_from_token(token: str | None) -> dict[str, Any] | None:
     if not token:
         return None
+    if token.startswith(REAL_SESSION_PREFIX):
+        return _hydrate_portable_session(token)
     if settings.public_demo_mode and token.startswith(PUBLIC_DEMO_SESSION_PREFIX):
         try:
             claims = jwt.decode(
@@ -407,6 +570,7 @@ def me_from_token(token: str | None) -> dict[str, Any] | None:
                 str(claims.get("identity") or ""),
                 str(claims.get("display_name") or ""),
             )
+            _seed_public_demo_workspace_once(PUBLIC_DEMO_WORKSPACE_ID)
             return principal if claims.get("sub") == principal["id"] else None
         except (jwt.PyJWTError, ValueError):
             return None

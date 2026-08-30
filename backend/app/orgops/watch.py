@@ -14,7 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.core.database import connect, new_id, row, rows, utcnow
@@ -212,7 +212,7 @@ class WatchService:
 
     def due(self) -> list[str]:
         """Watches whose interval has elapsed."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ready: list[str] = []
         for record in rows("SELECT * FROM org_watches WHERE status='active'"):
             last = record.get("last_run_at")
@@ -225,7 +225,7 @@ class WatchService:
                 ready.append(record["id"])
                 continue
             if stamp.tzinfo is None:
-                stamp = stamp.replace(tzinfo=timezone.utc)
+                stamp = stamp.replace(tzinfo=UTC)
             if now - stamp >= timedelta(seconds=record.get("interval_seconds", 900)):
                 ready.append(record["id"])
         return ready
