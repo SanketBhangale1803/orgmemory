@@ -1,148 +1,182 @@
-# OrgMemory — 3-minute demo script
+# OrgMemory — 3-minute demo script (production)
 
-For the OpenAI WebMCP Challenge submission. Judged on WebMCP Leverage, Execution,
-Potential Impact, and Creativity & Ambition — equally weighted. Every beat below
-is chosen to land one of those four, and the timings assume a normal speaking
-pace (~150 wpm), so the narration text is already cut to fit.
+For the OpenAI WebMCP Challenge submission, recorded against the live
+deployment at `https://orgmemory.vercel.app`. Judged on WebMCP Leverage,
+Execution, Potential Impact, and Creativity & Ambition — equally weighted.
+Timings assume ~150 wpm; narration is already cut to fit.
+
+The story in one line: **a real person signs in, an agent reads the company's
+memory, proposes a fix, and a person approves it — every step visible, nothing
+applied without a human.**
+
+---
 
 ## Before you hit record
 
-```bash
-# 1. Backend
-cd backend && .venv/bin/python -m uvicorn app.main:app --port 8000
+1. **Fresh session.** Sign out, then sign in with GitHub once. If it's your
+   first login on the production workspace, click **Load the scenario** in the
+   `/webmcp` console *before* recording so beat 3 starts warm. The scenario
+   needs to be NOT READY (security task open) — if you already reconciled it
+   in an earlier take, click **Reset** (or re-seed with `{"reset": true}`) so
+   the conflict is back.
+2. **Warm every page** you'll show: `/`, `/login`, `/workspace`, `/webmcp`.
+   Nothing may compile or load on camera.
+3. **Browser:** 1440×900, bookmarks bar hidden, only one window. Zoom the
+   system UI one notch if the console text reads small on your screen.
+4. **Record** with QuickTime (File → New Screen Recording) or Screen Studio
+   for auto-zoom. Record the whole take twice; pick the calmer one.
+5. **Mic:** the narration matters more than the pixels. Record audio in a
+   quiet room; re-read any line you stumble on rather than restarting.
 
-# 2. Frontend — never run `npm run build` while this is up, it clobbers .next
-cd frontend && npm run dev
-
-# 3. Clear the three junk proposals left over from an old agent run.
-#    One has parser scaffolding in its title and it is on camera in beat 4.
-backend/.venv/bin/python -c "
-import sqlite3; c=sqlite3.connect('data/runbook.db')
-c.execute(\"update memory_proposals set status='denied' where status='pending_approval' and subject like '%TOOL CALL%'\"); c.commit()"
-```
-
-Sign in at `/login` (dev login is fine), then pre-warm every page you will show
-— `/`, `/workspace`, `/webmcp`, `/loop` — so nothing compiles on camera. Set the
-browser to 1440×900 and hide bookmarks. Record with QuickTime (File → New Screen
-Recording) or Screen Studio if you want automatic zooms.
-
----
-
-## 0:00–0:22 · The problem (landing page)
-
-**Screen:** `/` — hold on the hero, then scroll slowly through the four cards.
-
-> "Every engineering org already knows why its payments service failed last time.
-> That knowledge is in a postmortem nobody reads, a Slack thread nobody can find,
-> and one engineer's head. So when an AI agent shows up to change something, it
-> starts from zero — and repeats the outage you already had.
->
-> OrgMemory is the memory layer for engineering organizations. And through
-> WebMCP, it hands that memory to the agent *before* it acts."
-
-**Land:** the eyebrow — "the memory layer for engineering organizations" — and
-the live counter: 21 tools, 14 read-only, 6 human-governed.
+Contingencies:
+- If a model step is slow, **don't talk over it** — the live "running" state
+  with the model's thought on screen *is* the demo. Read the thought aloud.
+- If the provider rate-limits, the console says so honestly and the guided
+  fallback still runs the same real tools. If it happens on camera, say:
+  "even without a model, the tool loop is real — watch."
 
 ---
 
-## 0:22–0:45 · One keystroke (command menu)
+## 0:00–0:20 · The problem (landing page)
 
-**Screen:** `/workspace`, press ⌘K, scroll the groups, type `approv`.
+**Screen:** `/` — hold on the hero two seconds, then a slow scroll past the
+platform cards.
 
-> "The workspace is a chat, not a dashboard. And there's one thing to learn:
-> Command-K. Twenty-six places, one keystroke — every one of them reachable,
-> and the approvals queue showing three decisions waiting on a person.
-> Type a question instead of a page name and it answers from company memory."
+> "Every engineering org already knows why its payments service failed last
+> time. That knowledge is in a postmortem nobody reads, a Slack thread nobody
+> can find, and one engineer's head. So when an AI agent shows up to change
+> something, it starts from zero — and repeats the outage you already had.
+>
+> OrgMemory is the memory layer for engineering organizations — and through
+> WebMCP, the browser hands that memory to agents before they act."
 
-**Land:** the footer — "26 places · one keystroke." This is your Execution point:
-it reads as a finished product, not a hackathon surface.
+**Land on:** the tool counter — 21 tools, 14 read-only, 6 human-governed.
 
 ---
 
-## 0:45–1:45 · The briefing (**the centerpiece — give it the most time**)
+## 0:20–0:40 · Real sign-in (production)
 
-**Screen:** `/webmcp`, scroll to "Ask before you act, from anywhere on the web."
-Type `restart the payments connection pool`, service `payments`, hit **Brief me**.
+**Screen:** `/login` — click **Continue with GitHub**, let the OAuth round
+trip play, land in `/workspace`.
 
-> "Here's the tool the product exists for. Every other WebMCP tool answers a
-> question. This one answers an *intent* — I'm about to do this thing.
->
-> Watch. The agent says what it's about to do, and OrgMemory comes back with:
-> requires approval. Two prior incidents that started exactly this way. The
-> decision to cap worker concurrency that constrains it. The blast radius — this
-> service shares a Postgres cluster with the ledger. And the remembered
-> first-response procedure.
->
-> Every line carries a memory ID you can open. And no model runs in this path —
-> ask twice, get the same verdict twice. An agent about to restart production
-> needs a control, not a summary."
+> "This is the deployed product, not a localhost. Real sign-in with my real
+> GitHub identity — my source permissions are the boundary. And my session
+> cookie never leaves the browser: when a browser agent connects, it borrows
+> this page's authenticated session inside its permission boundary. Agents
+> never receive credentials."
 
-Then click the second example, **raise worker concurrency on payments**:
-
-> "Different intent, same discipline. And a read-only intent comes back
-> 'proceed' — the boundary is real, not decorative."
-
-**Land:** the amber `REQUIRES APPROVAL` chip and the `mem_...` IDs. This is your
-WebMCP Leverage *and* Creativity point in one shot.
+**Land on:** your name and role in the workspace.
 
 ---
 
-## 1:45–2:15 · The boundary (approvals)
+## 0:40–1:00 · The console registers itself as a tool provider
 
-**Screen:** the `requires_approval` block, then ⌘K → Approvals.
+**Screen:** `/webmcp` — point at the header badge, then the right rail.
 
-> "OrgMemory will not approve it for you. Three permission tiers, and an agent
-> can tell them apart from the annotations alone. Reads are permission-trimmed on
-> the server. An outcome report appends to a ledger and changes no knowledge.
-> And the only path for a single fact into company memory is a proposal a person
-> approves. Capability is never authorization."
+> "This page is itself a Model Context Provider. It registered sixteen
+> organizational tools on document.modelContext — the same handlers the UI
+> calls, no parallel demo path. Read tools run immediately. Write tools are
+> approval-gated. And approving is *not* a tool — that's a person, in the
+> workspace. That asymmetry is deliberate."
+
+**Land on:** the WebMCP surface card — Read / Write / **Approve: no tool. A
+person only.**
 
 ---
 
-## 2:15–2:50 · The loop (why this compounds)
+## 1:00–1:30 · A question runs real tools, live
 
-**Screen:** `/loop`. Hold on the metric row, then one closed ledger entry.
+**Screen:** click the **Catch me up** suggestion. Let the tool calls land one
+at a time — read one thought and one summary out loud. Then let the briefing
+render.
 
-> "And this is the part a better model can't copy. Serving that briefing opened a
-> row here. The agent closes it with `record_orgmemory_outcome` — what it did,
-> and whether it worked.
+> "Every row is a real call: the model chose it, the thought above it is the
+> model's, the milliseconds are real. One question, four spaces, and the
+> answer is grounded — every claim cites the memory it came from."
+
+**Land on:** the briefing — decisions on record, the blocker, next best
+action, with citations.
+
+---
+
+## 1:30–2:15 · The centerpiece: "fix it"
+
+**Screen:** type **fix it** in the composer. Let it run. Do not narrate every
+step — pick the proposal moment and the approval.
+
+> "Now the part that matters. 'Fix it' — no context, no menu. The model
+> reads the workspace, finds the one blocker, finds the contradiction — the
+> tracker says open, but a go/no-go meeting already settled it — and proposes
+> the fix *by reference*: the resolution it submits is the exact one the
+> system computed, not a re-typed guess.
 >
-> Context served, action taken, outcome observed. Forty-six contexts served so
-> far. This one is closed: the agent followed the remembered procedure, and the
-> pool recovered without a restart.
->
-> Anyone can ingest the same Slack and the same repos. Only this workspace
-> accumulates the record of which context actually produced correct action here."
+> And look — it stops. The plan is right here in the answer: proposed,
+> nothing applied. I'm the approval step."
 
-**Land:** the green-edged closed entry with `served → action → outcome`. This is
-your Potential Impact point.
+**Click Approve.** The plan flips to Applied; the readiness board on the
+right recomputes from **NOT READY** to **READY**.
+
+> "Approved by a person. The board on the right recomputed from stored state —
+> the launch is unblocked. The agent did the reading; the human did the
+> deciding."
+
+---
+
+## 2:15–2:35 · Follow-ups that aren't pre-written
+
+**Screen:** point at the suggestion chips under the composer — they changed
+after the last answer. Click one (e.g. **"Show the proposed change waiting
+for approval"** or **"Who settled the OAuth approval in Launch?"**).
+
+> "These next questions aren't canned. They're drafted from what this session
+> actually found — the conflict it saw, the person on record, the plan it
+> filed. The console keeps up with the conversation."
+
+---
+
+## 2:35–2:50 · Built for agents outside the page
+
+**Screen:** the **Live WebMCP activity** card, then (optional, only if
+pre-connected) a Chrome browser agent calling `get_orgmemory_readiness` and
+its call appearing in the card.
+
+> "Anything speaking WebMCP — Chrome's built-in agent support, any MCP
+> client — can connect to this URL and call the same tools. Foreign agent
+> traffic shows here, separate from my own. Read tools stream data; write
+> tools stop at exactly the same approval card I just clicked."
+
+*(If you don't connect an external agent on camera, keep the sentence and cut
+the optional shot — the activity card alone carries it.)*
 
 ---
 
 ## 2:50–3:00 · Close
 
-**Screen:** back to `/webmcp`, tool manifest visible.
+**Screen:** back to the readiness board, **READY**, then hold on the logo.
 
-> "Twenty-one browser-native tools. An agent that gets briefed before it acts,
-> and reports back after. OrgMemory — your organization remembers."
+> "Briefing, proposal, human decision, recorded outcome — that loop is the
+> product. Anyone can ingest the same Slack and GitHub. Nobody can copy the
+> record of which context actually produced correct action here.
+>
+> OrgMemory — company memory your agents can actually use, at
+> orgmemory.vercel.app."
 
 ---
 
-## If you have to cut
+## 60-second cut (if the form demands it)
 
-Cut in this order: the second briefing example (0:15), the approvals page visit
-(0:15), the landing-page scroll (0:10). **Never cut the briefing beat or the
-loop** — those two are the entire differentiated claim, and everything else is
-context for them.
+Keep: 0:20–0:40 (real sign-in) → 0:40–1:00 (WebMCP surface card) → 1:30–2:15
+("fix it" + approve + NOT READY→READY) → 2:50–3:00 (close). Drop the
+catch-up beat and the follow-up chips beat.
 
-## Recording notes
+## Upload checklist
 
-- Type the briefing task by hand on camera. Watching it get typed sells that it
-  is a live call; a pre-filled field reads as a mock.
-- Pause ~1.5s on the verdict chip before narrating it. It is the single most
-  important frame in the video.
-- Don't show the `/webmcp` "Session 1 — agent investigates" console unless you
-  have a model key configured and have rehearsed it; it depends on a live LLM
-  and can rate-limit mid-take.
-- Keep the browser DevTools closed — the Next.js dev overlay badge appears in
-  the bottom-left corner otherwise.
+- 1080p minimum, ≤ 200 MB (compress if needed; the UI is high-contrast so
+  H.264 at ~6 Mbps reads fine)
+- Title: `OrgMemory — WebMCP: company memory your agents can use`
+- Description first line: the one-line story above + repo link +
+  `https://orgmemory.vercel.app`
+- Caption the "fix it" beat — judges often watch muted
+- In the submission form, put the WebMCP surface card (beat 3) in the first
+  two screenshots: WebMCP Leverage is a quarter of the score and it should be
+  legible without pressing play
