@@ -405,6 +405,8 @@ Ask responses contain `answer`, `memory_profile_used`, `confidence`, `memory_uni
 
 Verified GitHub webhooks trigger incremental repository reconciliation — chunks, atomic memories, updates, conflicts, profiles, and HCAG retrieval state. Once a Slack channel is connected, verified message events add, update, or retire the corresponding project memories. Set `GITHUB_WEBHOOK_SECRET` and `SLACK_SIGNING_SECRET`, and point the providers at `/api/webhooks/github` and `/api/webhooks/slack`.
 
+GitHub sign-in and the GitHub connector both use the exact callback registered on the OAuth App: `https://<your-host>/api/auth/github/callback`. On hosted deployments, OrgMemory derives that callback from the public request origin and carries it through the signed OAuth state, so a local `GITHUB_REDIRECT_URI` default cannot leak into the production authorization request. Set `PUBLIC_BASE_URL` to pin a canonical production origin when the deployment is reachable through more than one hostname.
+
 ---
 
 ## Python SDK and CLI

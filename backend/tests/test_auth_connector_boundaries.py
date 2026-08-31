@@ -81,6 +81,7 @@ def test_oauth_state_preserves_intent_and_cannot_be_reused(graph):
         workspace_id="wsp_test",
         user_id="usr_test",
         use_pkce=True,
+        redirect_uri="https://orgmemory.example/api/auth/github/callback",
     )
 
     flow = store.consume("github", created["state"])
@@ -88,10 +89,32 @@ def test_oauth_state_preserves_intent_and_cannot_be_reused(graph):
     assert flow["intent"] == "connect"
     assert flow["workspace_id"] == "wsp_test"
     assert flow["user_id"] == "usr_test"
+    assert flow["redirect_uri"] == "https://orgmemory.example/api/auth/github/callback"
     assert flow["code_verifier"]
     assert created["code_challenge"]
     with pytest.raises(ValueError, match="invalid or expired"):
         store.consume("github", created["state"])
+
+
+def test_github_connector_start_uses_public_request_origin(graph, monkeypatch):
+    session = create_dev_session("connector-oauth@example.com", "Connector OAuth")
+    monkeypatch.setattr(
+        settings, "github_redirect_uri", "http://localhost:8000/api/auth/github/callback"
+    )
+    monkeypatch.setattr(settings, "public_base_url", "")
+    monkeypatch.setattr(settings, "github_client_id", "github-client")
+
+    response = TestClient(app).get(
+        "/api/connectors/github/auth/start",
+        headers={"Authorization": f"Bearer {session['token']}"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {302, 307}
+    query = parse_qs(urlparse(response.headers["location"]).query)
+    assert query["redirect_uri"] == ["http://testserver/api/auth/github/callback"]
+    flow = OAuthStateStore().consume("github", query["state"][0])
+    assert flow["redirect_uri"] == "http://testserver/api/auth/github/callback"
 
 
 def test_github_login_callback_redirects_to_authenticated_workspace(graph, monkeypatch):

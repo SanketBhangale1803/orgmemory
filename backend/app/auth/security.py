@@ -110,6 +110,7 @@ class OAuthStateStore:
         workspace_id: str = "",
         user_id: str = "",
         use_pkce: bool = False,
+        redirect_uri: str = "",
     ) -> dict[str, str]:
         state = sign_flow_state(
             {
@@ -118,6 +119,9 @@ class OAuthStateStore:
                 "w": workspace_id,
                 "u": user_id,
                 "v": token_urlsafe(64) if use_pkce else "",
+                # Keep the callback byte-identical across the authorization
+                # and token-exchange legs, including on stateless hosts.
+                "redirect_uri": redirect_uri,
             }
         )
         verifier = read_flow_state(state).get("v", "") if read_flow_state(state) else ""
@@ -131,7 +135,11 @@ class OAuthStateStore:
         if verifier:
             digest = hashlib.sha256(verifier.encode()).digest()
             challenge = base64.urlsafe_b64encode(digest).decode().rstrip("=")
-        return {"state": state, "code_challenge": challenge}
+        return {
+            "state": state,
+            "code_challenge": challenge,
+            "redirect_uri": redirect_uri,
+        }
 
     def consume(self, provider: str, state: str) -> dict:
         # Portable path first: the signed state decodes on any container,
@@ -149,6 +157,7 @@ class OAuthStateStore:
                 "workspace_id": claims.get("w", ""),
                 "user_id": claims.get("u", ""),
                 "code_verifier": claims.get("v", ""),
+                "redirect_uri": claims.get("redirect_uri", ""),
                 "expires_at": datetime.now(UTC).isoformat(),
             }
         with connect() as conn:

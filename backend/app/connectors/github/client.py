@@ -106,7 +106,11 @@ class GitHubConnector(Connector):
     def authorize(self, user: dict[str, Any], scopes: list[str]) -> str:
         flow = user.get("flow") or user
         wanted = " ".join(scopes or list(self.manifest.oauth.scopes if self.manifest.oauth else ()))
-        return self.oauth_url(flow, scopes=wanted)
+        return self.oauth_url(
+            flow,
+            scopes=wanted,
+            redirect_uri=str(flow.get("redirect_uri") or ""),
+        )
 
     def complete_authorization(self, code: str, flow: dict[str, Any]) -> dict[str, Any]:
         return self.complete_oauth(code, flow)

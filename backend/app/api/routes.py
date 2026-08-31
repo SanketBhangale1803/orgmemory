@@ -3762,17 +3762,24 @@ def google_auth_callback(code: str, state: str, request: Request):
 @router.get("/connectors/{provider}/auth/start")
 def connector_auth_start(
     provider: str,
+    request: Request,
     scopes: str = "",
     authorization: str | None = Header(default=None),
 ):
     principal = _authorize_workspace(authorization)
     try:
+        redirect_uri = (
+            oauth_redirect_uri(request, settings.github_redirect_uri, "/api/auth/github/callback")
+            if provider == "github"
+            else ""
+        )
         flow = OAuthStateStore().create(
             provider,
             intent="connect",
             workspace_id=principal["active_workspace_id"],
             user_id=principal["id"],
             use_pkce=settings.github_oauth_use_pkce if provider == "github" else True,
+            redirect_uri=redirect_uri,
         )
         requested = [item for item in scopes.replace(",", " ").split() if item]
         return RedirectResponse(
