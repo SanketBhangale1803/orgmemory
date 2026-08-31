@@ -57,7 +57,7 @@ test("the command menu reaches every registered destination from anywhere", () =
 
 test("pages render real product concepts", () => {
   const pages = [
-    ["../app/page.tsx", "Your organization remembers"],
+    ["../app/page.tsx", "Give every engineering change its full company context"],
     // The landing page must name the vertical, not the category. "Organizational
     // memory" sells to nobody; engineering organizations are who this is for.
     ["../app/page.tsx", "The memory layer for engineering organizations"],

@@ -17,7 +17,7 @@ export const metadata: Metadata = {
   description: "Every incident, decision, owner, and dependency your engineering org already learned, tied to its source — and briefed to the people and AI agents about to change something, before they change it.",
   openGraph: {
     title: "OrgMemory — The memory layer for engineering organizations",
-    description: "Your organization remembers. Give every engineer and every browser agent source-backed context before they act.",
+    description: "OrgMemory brings together incidents, decisions, dependencies, owners, and runbooks—with evidence—so people and AI agents can check what matters before they act.",
     images: [{ url: "/og.png", width: 1200, height: 630, alt: "OrgMemory company brain" }],
     type: "website",
   },

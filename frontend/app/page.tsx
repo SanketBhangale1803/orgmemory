@@ -33,11 +33,10 @@ export default function HomePage() {
           <i />
           The memory layer for engineering organizations
         </div>
-        <h1>Your organization remembers.</h1>
+        <h1>Give every engineering change its full company context.</h1>
         <p>
-          OrgMemory holds what your engineering org already learned — every incident, decision,
-          owner, dependency, and runbook, tied to its source. Then it hands that context to the
-          people and AI agents about to change something, <em>before</em> they change it.
+          OrgMemory brings together incidents, decisions, dependencies, owners, and runbooks—with
+          evidence—so people and AI agents can check what matters before they act.
         </p>
         <HomeCommandOrb />
         <Link href="/webmcp" className="entry-webmcp-status">
