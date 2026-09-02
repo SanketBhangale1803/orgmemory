@@ -111,7 +111,6 @@ def create_oauth_session(
     the next request lands elsewhere. The JWT carries enough identity for any
     container to rebuild this user and their membership locally.
     """
-    now = utcnow()
     if settings.public_demo_mode:
         # On the hosted demo the id is derived from the provider identity
         # itself, so every container computes the same id with no shared

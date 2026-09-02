@@ -385,13 +385,35 @@ class InMemoryGraphStore(GraphStore):
 _store: GraphStore | None = None
 
 
-def get_graph_store() -> GraphStore:
+class GraphStoreProxy:
+    """Stable façade that forwards to the currently active graph store.
+
+    Long-lived services capture the graph once at import time. Resolving the
+    concrete store through this proxy on every access means set_graph_store()
+    (tests, a runtime backend switch) takes effect everywhere without
+    re-importing modules — previously those captures kept talking to the
+    backend that happened to exist at import, e.g. raising connection errors
+    in environments where ArcadeDB was not running.
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(_require_store(), name)
+
+
+def _require_store() -> GraphStore:
     global _store
     if _store is None:
         _store = (
             InMemoryGraphStore() if settings.graph_backend == "memory" else ArcadeDBGraphStore()
         )
     return _store
+
+
+_proxy = GraphStoreProxy()
+
+
+def get_graph_store() -> GraphStore:
+    return _proxy
 
 
 def set_graph_store(store: GraphStore) -> None:

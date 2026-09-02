@@ -602,12 +602,21 @@ CREATE INDEX IF NOT EXISTS idx_org_watch_findings ON org_watch_findings(watch_id
 """
 
 
+# Schema creation is expensive (a 600-line executescript plus PRAGMA introspection)
+# and must not repeat for every connection. Keyed by resolved path so a test (or a
+# re-pointed deployment) that swaps sqlite_path re-initializes for the new file.
+_initialized_paths: set[str] = set()
+
+
 def init_db() -> None:
-    settings.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path = settings.sqlite_path
+    resolved = str(db_path.resolve())
+    if resolved in _initialized_paths:
+        return
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     # closing() as well as the transaction context: sqlite3's own context manager
-    # commits but never closes, so the bare form leaks a descriptor per call —
-    # and init_db runs on every single connect().
-    with closing(sqlite3.connect(settings.sqlite_path)) as conn, conn:
+    # commits but never closes, so the bare form leaks a descriptor per call.
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.executescript(SCHEMA)
         session_columns = {
             record[1] for record in conn.execute("PRAGMA table_info(sessions)").fetchall()
@@ -637,14 +646,20 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE execution_runs ADD COLUMN skill_ids_json TEXT NOT NULL DEFAULT '[]'"
             )
+    _initialized_paths.add(resolved)
 
 
 @contextmanager
 def connect() -> Iterator[sqlite3.Connection]:
     init_db()
-    conn = sqlite3.connect(settings.sqlite_path)
+    conn = sqlite3.connect(settings.sqlite_path, timeout=30.0)
     conn.row_factory = sqlite3.Row
+    # WAL allows concurrent readers alongside one writer; NORMAL is the durable
+    # pairing (fsync only at checkpoints). busy_timeout keeps short multi-process
+    # write contention from surfacing as "database is locked" errors.
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA synchronous=NORMAL")
     try:
         yield conn
         conn.commit()

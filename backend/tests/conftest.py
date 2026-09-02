@@ -29,9 +29,27 @@ def hermetic_deployment_settings(monkeypatch):
     PUBLIC_BASE_URL, …) for the hosted deployment. Those values would flip
     cookie flags and redirect targets under the http TestClient, so every
     test starts from local defaults and pins what it actually asserts on.
+
+    LLM credentials are cleared for the same reason: with a real key present,
+    every ask-path test silently fired live provider calls (minutes of network
+    latency per test, non-deterministic answers, and real API spend). With no
+    key configured, generate_grounded_json() returns None and the answer path
+    stays local and deterministic — which is what these tests assert against.
     """
     monkeypatch.setattr(settings, "frontend_url", "http://localhost:3000")
     monkeypatch.setattr(settings, "public_base_url", "")
     monkeypatch.setattr(settings, "environment", "development")
     monkeypatch.setattr(settings, "public_demo_mode", False)
     monkeypatch.setattr(settings, "auth_dev_mode", True)
+    for key in (
+        "openai_api_key",
+        "anthropic_api_key",
+        "google_api_key",
+        "openrouter_api_key",
+        "xai_api_key",
+        "kimi_api_key",
+    ):
+        monkeypatch.setattr(settings, key, "")
+    monkeypatch.setattr(settings, "org_memory_default_model_provider", "none")
+    monkeypatch.setattr(settings, "org_memory_answer_candidates", 1)
+    monkeypatch.setattr(settings, "org_memory_answer_judge_enabled", False)
