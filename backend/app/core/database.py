@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
@@ -614,39 +615,59 @@ def init_db() -> None:
     if resolved in _initialized_paths:
         return
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    # closing() as well as the transaction context: sqlite3's own context manager
-    # commits but never closes, so the bare form leaks a descriptor per call.
-    with closing(sqlite3.connect(db_path)) as conn, conn:
-        conn.executescript(SCHEMA)
-        session_columns = {
-            record[1] for record in conn.execute("PRAGMA table_info(sessions)").fetchall()
-        }
-        if "workspace_id" not in session_columns:
-            conn.execute("ALTER TABLE sessions ADD COLUMN workspace_id TEXT NOT NULL DEFAULT ''")
-        envelope_columns = {
-            record[1] for record in conn.execute("PRAGMA table_info(context_envelopes)").fetchall()
-        }
-        if "compiled_context_json" not in envelope_columns:
-            conn.execute(
-                "ALTER TABLE context_envelopes "
-                "ADD COLUMN compiled_context_json TEXT NOT NULL DEFAULT '{}'"
-            )
-        if "activation_run_ids_json" not in envelope_columns:
-            conn.execute(
-                "ALTER TABLE context_envelopes "
-                "ADD COLUMN activation_run_ids_json TEXT NOT NULL DEFAULT '[]'"
-            )
-        # CREATE TABLE IF NOT EXISTS is a no-op once a table exists, so a column
-        # added to the schema above never reaches a database that already has it.
-        # Tests run on fresh files and cannot catch this; only a real deployment can.
-        run_columns = {
-            record[1] for record in conn.execute("PRAGMA table_info(execution_runs)").fetchall()
-        }
-        if run_columns and "skill_ids_json" not in run_columns:
-            conn.execute(
-                "ALTER TABLE execution_runs ADD COLUMN skill_ids_json TEXT NOT NULL DEFAULT '[]'"
-            )
-    _initialized_paths.add(resolved)
+    # Multiple processes can cold-start against a fresh database at the same
+    # moment (parallel test collection, horizontally scaled instances). Schema
+    # creation retries through the transient "database is locked" window that
+    # a first-time WAL setup can produce.
+    last_error: sqlite3.OperationalError | None = None
+    for attempt in range(5):
+        try:
+            # closing() as well as the transaction context: sqlite3's own context
+            # manager commits but never closes, so the bare form leaks a
+            # descriptor per call.
+            with closing(sqlite3.connect(db_path, timeout=30.0)) as conn, conn:
+                conn.execute("PRAGMA busy_timeout=30000")
+                conn.executescript(SCHEMA)
+                _migrate_columns(conn)
+            _initialized_paths.add(resolved)
+            return
+        except sqlite3.OperationalError as exc:
+            last_error = exc
+            if "locked" not in str(exc).casefold() and "busy" not in str(exc).casefold():
+                raise
+            time.sleep(0.25 * (attempt + 1))
+    raise last_error if last_error else RuntimeError("init_db failed")
+
+
+def _migrate_columns(conn: sqlite3.Connection) -> None:
+    session_columns = {
+        record[1] for record in conn.execute("PRAGMA table_info(sessions)").fetchall()
+    }
+    if "workspace_id" not in session_columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN workspace_id TEXT NOT NULL DEFAULT ''")
+    envelope_columns = {
+        record[1] for record in conn.execute("PRAGMA table_info(context_envelopes)").fetchall()
+    }
+    if "compiled_context_json" not in envelope_columns:
+        conn.execute(
+            "ALTER TABLE context_envelopes "
+            "ADD COLUMN compiled_context_json TEXT NOT NULL DEFAULT '{}'"
+        )
+    if "activation_run_ids_json" not in envelope_columns:
+        conn.execute(
+            "ALTER TABLE context_envelopes "
+            "ADD COLUMN activation_run_ids_json TEXT NOT NULL DEFAULT '[]'"
+        )
+    # CREATE TABLE IF NOT EXISTS is a no-op once a table exists, so a column
+    # added to the schema above never reaches a database that already has it.
+    # Tests run on fresh files and cannot catch this; only a real deployment can.
+    run_columns = {
+        record[1] for record in conn.execute("PRAGMA table_info(execution_runs)").fetchall()
+    }
+    if run_columns and "skill_ids_json" not in run_columns:
+        conn.execute(
+            "ALTER TABLE execution_runs ADD COLUMN skill_ids_json TEXT NOT NULL DEFAULT '[]'"
+        )
 
 
 @contextmanager
