@@ -31,4 +31,10 @@ htmlcov/
 .idea/
 .vscode/
 .vercel
+# The trailing .env* below would re-ignore the example files negated above;
+# re-negate them so a fresh clone can copy them (last match wins in gitignore).
 .env*
+!.env.example
+!.env.production.example
+# Marketing collateral and local render outputs, not part of the app.
+artifacts/

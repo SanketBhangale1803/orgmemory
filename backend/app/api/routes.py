@@ -894,8 +894,38 @@ def overview(authorization: str | None = Header(default=None)):
 
 
 @router.get("/settings/runtime")
-def runtime_settings():
+def runtime_settings(authorization: str | None = Header(default=None)):
+    """Deployment/runtime surface consumed by the settings, admin, and IDE
+    access pages. Requires a workspace-authenticated principal. Deployment
+    internals (environment name, auth mode, graph backend, database name) are
+    owner/admin-only; workspace members get the connection flags their UI needs.
+    """
+    principal = _authorize_workspace(authorization)
+    admin_view = principal["role"] in {"owner", "admin"} and principal["auth_type"] == "session"
+    member_view = {
+        "github_oauth_configured": bool(
+            settings.github_client_id and settings.github_client_secret
+        ),
+        "slack_oauth_configured": bool(settings.slack_client_id and settings.slack_client_secret),
+        "google_oauth_configured": bool(
+            settings.google_client_id and settings.google_client_secret
+        ),
+        "email_auth_configured": bool(
+            settings.email_auth_enabled
+            and (settings.auth_dev_mode or settings.smtp_host and settings.email_from)
+        ),
+        "models_configured": sum(1 for item in model_catalog() if item["configured"]),
+        # Where an IDE or desktop agent connects. The setup instructions are
+        # generated from this rather than written into the docs by hand, so a
+        # self-hosted deployment shows its own URLs instead of localhost.
+        "mcp_http_url": settings.mcp_public_url.rstrip("/") + "/mcp",
+        "mcp_oauth_issuer": settings.mcp_oauth_issuer_url.rstrip("/"),
+        "api_url": settings.api_url.rstrip("/"),
+    }
+    if not admin_view:
+        return member_view
     return {
+        **member_view,
         "environment": settings.environment,
         "auth_dev_mode": settings.auth_dev_mode,
         "runbook_demo_mode": settings.runbook_demo_mode,
@@ -917,26 +947,8 @@ def runtime_settings():
             else "disabled"
         ),
         "vector_store": "arcadedb_exact_cosine",
-        "github_oauth_configured": bool(
-            settings.github_client_id and settings.github_client_secret
-        ),
-        "slack_oauth_configured": bool(settings.slack_client_id and settings.slack_client_secret),
         "github_live_updates": bool(settings.github_webhook_secret),
         "slack_live_updates": bool(settings.slack_signing_secret),
-        "google_oauth_configured": bool(
-            settings.google_client_id and settings.google_client_secret
-        ),
-        "email_auth_configured": bool(
-            settings.email_auth_enabled
-            and (settings.auth_dev_mode or settings.smtp_host and settings.email_from)
-        ),
-        "models_configured": sum(1 for item in model_catalog() if item["configured"]),
-        # Where an IDE or desktop agent connects. The setup instructions are
-        # generated from this rather than written into the docs by hand, so a
-        # self-hosted deployment shows its own URLs instead of localhost.
-        "mcp_http_url": settings.mcp_public_url.rstrip("/") + "/mcp",
-        "mcp_oauth_issuer": settings.mcp_oauth_issuer_url.rstrip("/"),
-        "api_url": settings.api_url.rstrip("/"),
     }
 
 
