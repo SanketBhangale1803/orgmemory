@@ -105,6 +105,12 @@ class Settings(BaseSettings):
     connector_custom_mcp_enabled: bool = True
     connector_rest_sources_enabled: bool = True
     connector_custom_mcp_allow_private_networks: bool = False
+    # API guard: buffered-body cap and per-principal sliding-window limits.
+    # Limits are per instance; a load-balanced deployment multiplies the budget.
+    api_max_body_bytes: int = 115 * 1024 * 1024
+    api_rate_limit_enabled: bool = True
+    api_rate_limit_per_minute: int = 600
+    api_rate_limit_public_per_minute: int = 120
 
     mcp_public_url: str = "http://localhost:8001"
     mcp_oauth_issuer_url: str = "http://localhost:8000"

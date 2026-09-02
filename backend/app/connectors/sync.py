@@ -18,6 +18,10 @@ from .registry import ConnectorRegistry, get_connector_registry
 
 ApplyRecord = Callable[[SyncRecord, dict[str, Any]], dict[str, Any] | None]
 
+# A 'running' job older than this is assumed to come from a dead worker and is
+# reclaimed back into the retry queue.
+JOB_LEASE_MINUTES = 10
+
 
 class ConnectorRateLimiter:
     """Process-local limiter backed by manifest policy.
@@ -253,11 +257,28 @@ class SyncEngine:
             raise
 
     def run_once(self, limit: int = 10) -> int:
+        now = datetime.now(UTC)
+        # Reclaim leases from workers that died mid-run: a 'running' job whose
+        # update timestamp is older than the lease window goes back to the
+        # retry queue, so one crashed instance cannot stall a resource forever.
+        lease_expiry = (now - timedelta(minutes=JOB_LEASE_MINUTES)).isoformat()
+        stale = rows(
+            """SELECT id FROM connector_sync_jobs
+            WHERE status='running' AND updated_at<=? LIMIT ?""",
+            (lease_expiry, limit),
+        )
+        for item in stale:
+            with connect() as conn:
+                conn.execute(
+                    """UPDATE connector_sync_jobs SET status='retrying',updated_at=?
+                    WHERE id=? AND status='running'""",
+                    (now.isoformat(), item["id"]),
+                )
         due = rows(
             """SELECT id FROM connector_sync_jobs
             WHERE status IN ('queued','retrying') AND next_attempt_at<=?
             ORDER BY next_attempt_at,created_at LIMIT ?""",
-            (utcnow(), limit),
+            (now.isoformat(), limit),
         )
         processed = 0
         for item in due:
@@ -265,7 +286,7 @@ class SyncEngine:
                 claimed = conn.execute(
                     """UPDATE connector_sync_jobs SET status='running',updated_at=?
                     WHERE id=? AND status IN ('queued','retrying')""",
-                    (utcnow(), item["id"]),
+                    (now.isoformat(), item["id"]),
                 ).rowcount
             if claimed:
                 self._process(item["id"])

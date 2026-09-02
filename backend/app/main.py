@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
@@ -15,6 +16,7 @@ from app.auth.app_auth import (
 )
 from app.auth.mcp_oauth import oauth_router
 from app.auth.middleware import AuthenticationBoundaryMiddleware
+from app.core.api_guard import APIGuardMiddleware
 from app.core.config import settings
 from app.core.database import init_db
 from app.core.logging import configure_logging
@@ -51,8 +53,18 @@ async def lifespan(_: FastAPI):
     if settings.connector_sync_worker_enabled:
 
         async def run_connector_sync_worker() -> None:
+            # The worker outlives any single failed job: a raised error (a
+            # transient DB lock, a broken connector) must not kill the loop,
+            # or the whole deployment silently stops syncing.
             while True:
-                await asyncio.to_thread(connector_sync.run_once)
+                try:
+                    await asyncio.to_thread(connector_sync.run_once)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logging.getLogger(__name__).warning(
+                        "connector sync worker iteration failed: %s", exc
+                    )
                 await asyncio.sleep(max(1, settings.connector_sync_poll_seconds))
 
         sync_worker_task = asyncio.create_task(run_connector_sync_worker())
@@ -94,6 +106,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(AuthenticationBoundaryMiddleware)
+# The API guard is the outermost layer: abuse is shed before authentication
+# work happens. Rate limits are per instance, per principal (or client IP).
+app.add_middleware(APIGuardMiddleware)
 app.include_router(router)
 app.include_router(org_router)
 app.include_router(oauth_router)
