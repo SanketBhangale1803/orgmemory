@@ -13,7 +13,10 @@ def test_hcag_context_survives_adapter_restart(graph):
     first = first_adapter.route_query(project_id, "Why is reddit_service failing?")
     assert first.service_name == "reddit_service"
     assert first.query_count == 1
-    assert first.plan["intent"] == "MULTI_HOP"
+    # The external hcag planner (when the sibling repo is present) emits
+    # uppercase intents; the built-in fallback is lowercase. Case is not a
+    # product contract.
+    assert str(first.plan["intent"]).casefold() == "multi_hop"
 
     restarted_adapter = HCAGAdapter(graph)
     follow_up = restarted_adapter.route_query(project_id, "What changed for it in production?")

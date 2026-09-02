@@ -15,10 +15,26 @@ HANDOFF = {"task": "change the bg colour to navy", "prompt": "Task: change the b
 
 @pytest.fixture(autouse=True)
 def signed_in(monkeypatch):
-    """Agent auth is a property of the machine, not of the behaviour under test.
+    """Agent auth and binary presence are machine properties, not the
+    behaviour under test.
 
-    Tests that care about the unauthenticated path patch this back themselves.
+    CI has no cursor-agent installed, so which() reports every executor as
+    present; tests that care about the unauthenticated path patch this back
+    themselves.
     """
+    import shutil as _shutil
+
+    from app.execution.runner import EXECUTORS
+
+    real_which = _shutil.which
+    executor_binaries = {command[0] for command in EXECUTORS.values()}
+
+    def fake_which(command):
+        if command in executor_binaries:
+            return f"/usr/local/bin/{command}"
+        return real_which(command)
+
+    monkeypatch.setattr("app.execution.runner.shutil.which", fake_which)
     monkeypatch.setattr("app.execution.runner.is_signed_in", lambda name: True)
 
 
