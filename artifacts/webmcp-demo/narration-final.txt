@@ -1,0 +1,23 @@
+Before an engineer — or an AI agent — changes production, it needs more than code. It needs the incidents, decisions, dependencies, and runbooks surrounding that change.
+
+Today, that context is scattered across repositories, Slack, and postmortems. OrgMemory brings it together with its evidence — and, through WebMCP, makes it available to an agent at the moment it needs to act.
+
+This authenticated page exposes OrgMemory through WebMCP — browser-native tools that use the page's existing session and permissions. The agent never receives a separate API credential. It can only access what the signed-in user is allowed to access.
+
+Let's see it work. I'll ask it to restart the payments connection pool.
+
+The most important tool here is get OrgMemory briefing. Instead of answering a general question, it evaluates an intended action. Here, the agent says it plans to restart the payments connection pool.
+
+OrgMemory returns a clear verdict: requires approval. It surfaces two related incidents, the decision that capped worker concurrency, and the blast radius — payments shares a Postgres cluster with the ledger. It also returns the remembered first-response procedure.
+
+Every claim includes a memory I D a person can open and verify against its original evidence.
+
+This briefing path is deterministic. Running the same intent against the same organizational memory produces the same verdict. A production control shouldn't change just because a model phrased its answer differently.
+
+The boundary is based on the intended action, not simply the topic. A read-only investigation can proceed. A potentially disruptive production action requires human approval.
+
+OrgMemory doesn't approve its own recommendation. Reads are permission-trimmed to the user's team scope. Reporting an outcome only appends to the ledger. And adding a fact to shared company memory requires a proposal a human reviews. Capability is never treated as authorization.
+
+Serving the briefing opens an entry in the outcome ledger. After acting — from GitHub, PagerDuty, or another system — the agent calls record OrgMemory outcome with what it did and whether it worked. Now the loop is complete: context served, action taken, outcome observed. Over time, OrgMemory learns which company context actually led to successful action.
+
+OrgMemory gives every engineering change its full company context — with evidence, permissions, and human control. Through WebMCP, agents can check what matters before they act, and report what happened afterward. OrgMemory: put what your organization has learned to work.

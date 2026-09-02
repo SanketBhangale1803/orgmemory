@@ -1,0 +1,58 @@
+R
+
+‘OrgMemory
+
+AGENT OPERATIONS
+
+What is blocking production?
+
+AGENT ACTIVITY
+
+find_orgmemory_blockers() 2
+
+‘twoucHT ~ The question asks what is blocking, so I'll start with the tool purpose-built for root causes of stalls.
+1 blocker(s) — Complete OAuth security approval (critical), holding 2 item(s).
+
+ANSWER
+
+Production is blocked by one root cause: ‘Complete OAuth security approval’ (task {2c73¢449803ee26a507) —a critical, open gate task in the
+Security space owned by Dana Whitfield, whose description is to record the security review outcome for the external OAuth sign-in surface
+(evidence: mem_7c6129bc17baa2dac9dc, mem_ac9af353a6c0ec800992). Its own prerequisites are already met, so itis the stall point, and it is
+holding two downstream items: 'Promote rc-14 to production’ (task ff14116f9f7603821c55, Infrastructure, Sam Okafor — the checkout deploy
+pipeline against the release candidate, mem_4780790dabc00225cd32) and ultimately ‘Launch checkout OAuth sign-in’
+(task_208e635afa464684fdd1, Launch, Priya Raman — Friday 09:00 UTC go-live, mem_6b66865fda20f0e88cdc). Recording the security approval
+‘outcome with Dana unblocks the re~14 promotion and the launch.
+
+ited: | mem_7€6129b¢ | men_acd90f353 | wen_4780790d | men_6b66865¢
+
+WoW THIS WAS ANSWERED
+
+Catchmeup  Whyiisthis the priority? Are wereadytolaunch? —_—_—Reconcile it draft
+
+@ WebMCP Live + 16 tools Tool reference
+
+Test backend release candidate rc-14 rE
+
+Complete OAuth security approval oven
+Promote re-14 to production stoceo
+Launch checkout Auth sign-in stockeD
+
+STANDING WATCH
+
+Start watching
+
+SPACES
+
+Customer Support
+
+Design
+
+Engineering
+
+Infrastructure 3
+Launch 3
+Product 7
+Security 3
+
+Back to chat
+

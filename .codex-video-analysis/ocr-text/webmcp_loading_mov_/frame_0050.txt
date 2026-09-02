@@ -1,0 +1,40 @@
+R
+
+OrgMemory © WebMCP Live - 16 tools  Toolreference Back to chat
+
+Agents operate on organizational memory. cauxen nexonaess
+
+This launch is spread across 7 spaces. The answer to any of the questions below sits in four of NOT READY
+them at once. Each request runs real tool calls against this workspace — and because this page Peunchoneckouconuin sign-in
+registers the same 16 tools on document.mode Context, a browser agent you connect can call mapprove fol signal terface os
+them too, without touching this interface.
+Test backend release candidate rc-14 owe
+
+Restart the payments connection poo Complete OAuth security approval oven
+Promote rc-14 to production: BLOCKED
+acewr acravity
+Launch checkout OAuth sign-in stockeo
+search_orgmemory_records(query: "payments connection pool restart", limit: 10) 9036 ms
+Tmovent — The request isto restart the payments connection pool, so frst need to find any recorded runbook, incident, or ownership info for that service before doing f dependency graph
+
+anything else.
+0 matching memories.
+
+search_orgmemory_records(query: "payments", limit: 10) running STANDING WATCH
+
+Tuousut ~ The exact-phrase search retur
+
+pio ga Broce ian iron extemal: nena oe Mea een tos — ee
+ground a restart.
+
+0 matching memories. n arrives with the
+
+Start watching
+
+SPACES
+
+Customer Support 2
+Design 2
+
+Engineering
+

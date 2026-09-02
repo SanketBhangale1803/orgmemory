@@ -1,0 +1,51 @@
+=< OrgMemory
+
+[AGENT OPERATIONS
+
+O blockers - 6 work items “4 dependencies across 5 spaces.
+CURRENT STATE
+
+Approve final sign-in interface
+
+Test backend release candidate re-14
+
+Complete OAuth security approval
+
+Promote rc-14 to production
+
+Launch checkout OAuth sign-in
+
+Show the 5 launch checklist items
+
+AGENT ACTIVITY
+
+Ly
+
+‘Show the 5 launch checklist items Which 4 dependencies does launch rely on?
+
+READY
+
+READY
+
+Who owns the 6 launch work items?
+
+© WebMCP live - 16 tools  Toolreference Back to chat
+vesign
+Engineering 4
+Infrastructure 3
+Launch 3
+Product 3
+Security 3
+
+LIVE Weence AcrviTy
+
+docunent .modelcontext. registerTool()
+
+WEBNCP SURFACE
+
+READ 13 tools, no approval
+write 3 tools, approval required
+APPROVE No tool. A person only.
+
+TRANSPORT document.modeiContext
+

@@ -1,0 +1,44 @@
+fae rte
+
+Your brain is empty — for about a minute.
+
+Connect one source and OrgMemory starts answering from it: a
+repository, a Slack workspace, or a document you paste in.
+
+R
+
+Connect your first source —
+
+Ly
+
+WORKSPACE
+
+‘Company memory MEMBER
+
+‘You can ask company memory and propose a
+repository refresh. An owner or admin
+reviews any request before it runs.
+
+APPROVAL INBOX
+
+History —
+All clear :
+
+Your refresh requests appear here until an
+admin decides.
+
+MEMORY PROPOSALS
+
+What is this?
+None
+
+When a browser agent proposes verified
+knowledge, it waits here — nothing enters
+‘company memory until a person approves it.
+
+WEBMCP AUTOMATION
+
+Browser tools una
+
+lable
+

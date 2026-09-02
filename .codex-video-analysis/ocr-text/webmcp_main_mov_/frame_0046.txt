@@ -1,0 +1,58 @@
+R
+
+‘OrgMemory
+
+Agents operate on organizational memory.
+
+This launch is spread across 7 spaces. The answer to any of the questions below sits in four of
+them at once. Each request runs real tool calls against this workspace — and because this page
+registers the same 16 tools on document .mode Context, a browser agent you connect can call
+them too, without touching this interface.
+
+No access to space prj_2e4a1869193cb0b867af
+
+just joined this launch. Tell me what matters, what changed, and what is unresolved.
+
+AGENT ACTIVITY
+
+h get_orgmemory_project_context(space_ids: [7])
+
+20 memories across 7 spaces: 4 decisions, 4 open items, 1 blocker.
+
+get_orgmemory_recent_changes(since: "2026-08-24T00:52:28.8472", space_ids: [7])
+No access to space prj_2e4a1869193cb0b867at
+
+Catch me up Why is this the priority? Are we ready to launch? Reconcile it
+
+© WebMCP Live - 16 tools Tool reference
+
+LAUNCH READINESS
+
+NOT READY
+
+Launch checkout OAuth sign-in
+Approve final sign-in interface
+
+Test backend release candidate rc-14
+Complete OAuth security approval
+Promote rc~14 to production
+
+Launch checkout OAuth sign-in
+
+STANDING WATCH
+
+Pen
+
+BLocKeD
+
+aLocKED
+
+Back to chat
+
+SPACES
+
+Customer Support
+Design
+
+Engineering
+

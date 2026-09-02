@@ -1,0 +1,317 @@
+[
+  {
+    "text": " Before an engineer — or an AI agent — changes",
+    "startMs": 600,
+    "endMs": 4788,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " production, it needs more than code.",
+    "startMs": 4788,
+    "endMs": 7301,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " It needs the incidents, decisions, dependencies, and runbooks surrounding that",
+    "startMs": 7301,
+    "endMs": 11488,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " change. Today, that context is scattered across repositories, Slack, and",
+    "startMs": 11488,
+    "endMs": 15676,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " postmortems. OrgMemory brings it together with its evidence — and,",
+    "startMs": 15676,
+    "endMs": 19864,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " through WebMCP, makes it available to an agent at the",
+    "startMs": 19864,
+    "endMs": 24052,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " moment it needs to act.",
+    "startMs": 24052,
+    "endMs": 26146,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " This authenticated page exposes OrgMemory through WebMCP — browser-native tools",
+    "startMs": 26146,
+    "endMs": 30334,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " that use the page's existing session and permissions.",
+    "startMs": 30334,
+    "endMs": 33684,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " The agent never receives a separate API credential.",
+    "startMs": 33684,
+    "endMs": 37034,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " It can only access what the signed-in user is allowed",
+    "startMs": 37034,
+    "endMs": 41222,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " to access. Let's see it work.",
+    "startMs": 41222,
+    "endMs": 43735,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " I'll ask it to restart the payments connection pool.",
+    "startMs": 43735,
+    "endMs": 47504,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " The most important tool here is get_orgmemory_briefing.",
+    "startMs": 47504,
+    "endMs": 51273,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " Instead of answering a general question, it evaluates an intended",
+    "startMs": 51273,
+    "endMs": 55460,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " action. Here, the agent says it plans to restart the",
+    "startMs": 55460,
+    "endMs": 59648,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " payments connection pool. OrgMemory returns a clear verdict: requires approval.",
+    "startMs": 59648,
+    "endMs": 63836,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " It surfaces two related incidents, the decision that capped worker",
+    "startMs": 63836,
+    "endMs": 68024,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " concurrency, and the blast radius — payments shares a Postgres",
+    "startMs": 68024,
+    "endMs": 72212,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " cluster with the ledger. It also returns the remembered first-response",
+    "startMs": 72212,
+    "endMs": 76399,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " procedure. Every claim includes a memory ID a person can",
+    "startMs": 76399,
+    "endMs": 81006,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " open and verify against its original evidence.",
+    "startMs": 81006,
+    "endMs": 83938,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " This briefing path is deterministic.",
+    "startMs": 83938,
+    "endMs": 86031,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " Running the same intent against the same organizational memory produces",
+    "startMs": 86031,
+    "endMs": 90219,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " the same verdict. A production control shouldn't change just because",
+    "startMs": 90219,
+    "endMs": 94407,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " a model phrased its answer differently.",
+    "startMs": 94407,
+    "endMs": 96920,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " The boundary is based on the intended action, not simply",
+    "startMs": 96920,
+    "endMs": 101108,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " the topic. A read-only investigation can proceed.",
+    "startMs": 101108,
+    "endMs": 104039,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " A potentially disruptive production action requires human approval.",
+    "startMs": 104039,
+    "endMs": 107389,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " OrgMemory doesn't approve its own recommendation.",
+    "startMs": 107389,
+    "endMs": 109902,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " Reads are permission-trimmed to the user's team scope.",
+    "startMs": 109902,
+    "endMs": 113252,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " Reporting an outcome only appends to the ledger.",
+    "startMs": 113252,
+    "endMs": 116603,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " And adding a fact to shared company memory requires a",
+    "startMs": 116603,
+    "endMs": 120790,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " proposal a human reviews. Capability is never treated as authorization.",
+    "startMs": 120790,
+    "endMs": 124978,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " Serving the briefing opens an entry in the outcome ledger.",
+    "startMs": 124978,
+    "endMs": 129166,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " After acting — from GitHub, PagerDuty, or another system —",
+    "startMs": 129166,
+    "endMs": 133354,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " the agent calls record_orgmemory_outcome with what it did and whether",
+    "startMs": 133354,
+    "endMs": 138379,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " it worked. Now the loop is complete: context served, action",
+    "startMs": 138379,
+    "endMs": 142567,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " taken, outcome observed. Over time, OrgMemory learns which company context",
+    "startMs": 142567,
+    "endMs": 146755,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " actually led to successful action.",
+    "startMs": 146755,
+    "endMs": 148849,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " OrgMemory gives every engineering change its full company context —",
+    "startMs": 148849,
+    "endMs": 153037,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " with evidence, permissions, and human control.",
+    "startMs": 153037,
+    "endMs": 155549,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " Through WebMCP, agents can check what matters before they act,",
+    "startMs": 155549,
+    "endMs": 159737,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " and report what happened afterward.",
+    "startMs": 159737,
+    "endMs": 161831,
+    "timestampMs": null,
+    "confidence": 1
+  },
+  {
+    "text": " OrgMemory: put what your organization has learned to work.",
+    "startMs": 161831,
+    "endMs": 165600,
+    "timestampMs": null,
+    "confidence": 1
+  }
+]

@@ -1,0 +1,57 @@
+R
+
+‘OrgMemory
+
+AGENT OPERATIONS
+
+What is blocking production?
+
+AGewr ACTIVITY
+
+find_orgmemory_blockers() 2611
+‘twoueT ~ The question asks what is blocking, so I'll start with the tool purpose-built for root causes of stalls.
+1 blocker(s) — Complete OAuth security approval (critical), holding 2 item(s).
+
+ANSWER
+
+Production is blocked by one root cause: ‘Complete OAuth security approval’ (task 2c73¢449803ee26a507) —a critical, open gate task in the
+Security space owned by Dana Whitfield, whose description is to record the security review outcome for the external OAuth sign-in surface
+(evidence: mem_7c6129bc17baa2dacSdc, mem_ac9af353a6c0ec800992). Its own prerequisites are already met, so it is the stall point, and it is
+holding two downstream items: 'Promote rc-14 to production’ (task_ff14116f9f7603821655, Infrastructure, Sam Okafor — the checkout deploy
+pipeline against the release candidate, mem_4780790dabc00225cd32) and ultimately ‘Launch checkout OAuth sign-in’
+(task_208e635afa464684fdd1, Launch, Priya Raman — Friday 09:00 UTC go-live, mem_6b66865{da20f0e88cdc). Recording the security approval
+‘outcome with Dana unblocks the ro-14 promotion and the launch.
+
+Cited:| mem_7c6129b¢ | men_acdaf353 | men_4780790d | men_6b66865¢
+
+Now THIS WAS ANSWERED
+
+Catch me up launch Reconcile it Potiee
+
+Complete OAuth security approval
+
+Promote re-14 to production
+
+Launch checkout OAuth sign-in
+
+STANDING WATCH
+
+SPACES
+Customer Support
+Design
+Engineering
+Infrastructure
+Launch
+
+Product
+
+Security
+
+@ WebMCP Live - 16 tools  Toolreference Back to chat
+
+Oren
+
+BLOCKED
+
+BLocKeD
+

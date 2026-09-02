@@ -1,0 +1,54 @@
+R
+
+‘OrgMemory
+
+AGENT OPERATIONS
+
+‘1 change(s) proposed and waiting for a person. Nothing applied. Basis: 10 matching memories. 1 conflict(s) — "Complete OAuth security approval”
+is open, but Launch already settled it. The proposed changes are shown below — approving or declining them is a person's call, not the agent's.
+
+ymem_33#084c0 | men_fe1a082c | men 7c6129bc | men_f8416cc7 | men_acdaf353
+
+WOM THIS WAS ANSWERED
+
+Applied
+
++ Mark “Complete OAuth security approval” complete*oAuth security review approved for Friday release” (Launch, 2026-08-30T15:42) setts the record
+this task tracks. The task was never updated,
+
+Now are we ready for launch?
+
+AGENT ACTIVITY too! cal
+
+get_orgnenory_readiness()
+‘woucir ~ The question is a launch readiness ched, so the most specific tool is the readiness computation over the dependency graph
+READY — 0 blocker(s), § checkist items
+
+Ask anything about this organization *
+
+© WebMCP Live » 16 tools
+
+Tool reference Back to chat
+
+SPACES
+Customer Support 2
+Design 2
+Engineering
+
+Infrastructure 3
+Launch 3
+Product 3
+Security
+
+LIVE weonce ACTIVITY
+
+docunent .nodelContext. registerTool(). Co’
+
+WEBNCP SURFACE
+
+READ 13 tools, no approval
+write 3 tools, approval required
+APPROVE No tool. A person only.
+
+wnt document. modelContext
+

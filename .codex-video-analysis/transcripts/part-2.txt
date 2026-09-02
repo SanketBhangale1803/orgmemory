@@ -1,0 +1,4 @@
+This authenticated page exposes org memory through web mcp
+browser native tools that use the pages existing sessions and permissions.
+The agent never receives a separate API credential.
+It can only access what the user signed in, what the signed in user is allowed to access.

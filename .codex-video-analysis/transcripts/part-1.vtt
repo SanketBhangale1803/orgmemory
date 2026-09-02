@@ -1,0 +1,17 @@
+WEBVTT
+
+00:00.000 --> 00:05.980
+or an engineer, or an AI agent, changes production, it needs more than code.
+
+00:06.700 --> 00:11.820
+It needs the incidents, decisions, and dependencies surrounding that change.
+
+00:12.480 --> 00:18.480
+Today, that context is scattered across repositories, slack, and other docs.
+
+00:19.220 --> 00:24.200
+Word memory brings it together with its evidence and through Web MCP
+
+00:24.580 --> 00:28.020
+makes it available to an agent at the moment it needs to act.
+

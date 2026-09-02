@@ -643,7 +643,3 @@ OrgMemory is organization-specific rather than a generic memory API: company, pr
 ## Migration note
 
 Runbook was the previous product direction. OrgMemory is focused on the company brain rather than operational runbooks. Legacy database table names and environment variables (`RUNBOOK_*`) remain temporarily for migration compatibility.
-
-## License
-
-See [LICENSE](LICENSE).

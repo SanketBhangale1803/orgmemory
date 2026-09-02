@@ -1,0 +1,64 @@
+01 / RENENBER
+
+Incidents, decisions, and
+owners stay tied to
+evidence.
+
+Code, postmortems, threads, and docs
+become one time-aware memory
+graph. Every promoted fact cites a
+source; anything uncertain stays a
+
+searchable chunk.
+
+‘OrgMemory e-backed memo
+
+matters before they act
+
+Why is payments failing again?
+
+‘© WebMCP ready > human
+
+02 / BRIEF
+
+Agents get briefed before
+they act, not after.
+
+‘An agent about to touch a service asks
+What this company knows first, and
+gets back the decisions that constrain
+it, the incidents that started the same
+way, and the blast radius — anywhere
+‘on the web, through WebMCP.
+
+What changed in checkout this week?
+
+Who owns thei
+
+03 / GoveRN
+
+Agents investigate.
+People authorize.
+
+Reads move at machine speed.
+Anything that would change company
+memory enters a scoped approval
+queue and waits for a person.
+Capability is never authorization
+
+Open
+
+gestion pipeline?
+
+04 / conpouno
+
+Every answer is scored by
+whatyhappened next.
+
+Context served, action taken, outcome
+observed. The record of which context
+actually produced correct action is the
+one asset a better model cannot copy.
+
+Documentation Enter workspace
+

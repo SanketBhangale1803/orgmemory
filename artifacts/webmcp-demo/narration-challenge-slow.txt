@@ -1,0 +1,33 @@
+Every engineering organization already knows why its payments service failed last time.
+
+That knowledge is sitting in a postmortem nobody reads, a Slack thread nobody can find, and one engineer's head.
+
+So when an AI agent shows up to change something, it starts from zero — and repeats the outage you already had.
+
+OrgMemory is the memory layer for engineering organizations. It turns your postmortems, Slack, and repos into a time-aware memory graph where every fact cites its evidence.
+
+And through Web M C P, the authenticated page itself registers twenty-one browser-native tools, so any agent working here can ask what the company knows before it acts, using the page's own session. The agent never sees a credential.
+
+Here's the tool this product exists for: get OrgMemory briefing. Every other retrieval tool answers a question. This one answers an intent: "I'm about to do this thing."
+
+Watch. The agent says what it's about to do... and OrgMemory comes back with a verdict: requires approval.
+
+Two prior incidents that started exactly this way. The decision to cap worker concurrency that constrains it. The blast radius — payments shares a Postgres cluster with the ledger. And the remembered first-response procedure.
+
+Every line carries a memory I D a person can open. And no model runs in this path. Ask twice, get the same verdict twice. An agent about to restart production needs a control, not a summary.
+
+And the boundary is real, not decorative: a read-only intent comes back, "proceed."
+
+But OrgMemory will not approve it for you. Three permission tiers, legible to an agent from the annotations alone. Reads are permission-trimmed server-side against your team scope.
+
+An outcome report appends to a ledger and changes no knowledge. And the only path for a single fact into company memory is a proposal a human approves. Capability is never authorization.
+
+Serving that briefing opened a row in the outcome ledger. After acting — from GitHub, PagerDuty, wherever — the agent closes it with record OrgMemory outcome: what it did, and whether it worked.
+
+Context served. Action taken. Outcome observed.
+
+That record — which context actually produced correct action inside this company — is the one asset a better model cannot copy. And it compounds with every run.
+
+Twenty-one browser-native tools. An agent that gets briefed before it acts, and reports back after.
+
+OrgMemory. Your organization remembers.

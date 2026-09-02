@@ -1,0 +1,48 @@
+R
+
+Cecurem  &  https://orgmemoryvercel.app/approva - Google Search
+
+Agents operate on organizational memory.
+
+This launch is spread across 7 spaces. The answer to any of the questions below sits in four of
+
+them at once. Each request runs real tool calls against this workspace — and because this page
+registers the same 16 tools on document. modelContext, a browser agent you connect can call
+them too, without touching this interface.
+
+‘Ask anything below, or start with a suggestion. Every tool call, argument, and result is live.
+
+Catchmeup Why is this the pr
+
+vy? Arewereadytolaunch? —_—Reconcile it
+
+OrgMemory — The memory layer for engineering organizations - https://orgmemory.vercel.app/approvals
+
+Tool reference
+
+LAUNCH READINESS
+
+READY
+
+Launch checkout OAuth sign-in
+Approve final sign-in interface
+
+Test backend release candidate rc
+
+Complete OAuth security approval
+Promote re~14 to production READY
+
+Launch checkout OAuth sign-in neaby
+
+STANDING WATCH
+
+Start watching
+
+SPACES
+Customer Support
+Design
+
+Engineering
+
+Back to chat
+

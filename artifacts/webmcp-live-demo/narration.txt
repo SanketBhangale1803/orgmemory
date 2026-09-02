@@ -1,0 +1,27 @@
+Before an engineer — or an AI agent — changes production, it needs more than code. It needs the incidents, decisions, dependencies, owners, and runbooks surrounding that change.
+
+Today, that context is usually scattered across repositories, Slack, and postmortems. OrgMemory brings it together with its evidence, then exposes it to browser agents through WebMCP using the page's existing authenticated session.
+
+This is the live production application. The workspace registers thirty-seven browser-native tools: twenty-seven read-only and nine human-governed. The agent receives organizational context, but never receives a separate credential.
+
+Inside Agent Operations, sixteen focused tools are available for launch reasoning. I will ask a real question: what is blocking the checkout OAuth launch, and what should we do next?
+
+The request is running against the signed-in workspace. We will skip the idle wait and continue from the returned result.
+
+GLM selected find-orgmemory-blockers. It found one critical gate: the OAuth security approval. That gate blocks the production promotion, which blocks the launch. The answer identifies the owners, the next action, and the memory records that support it.
+
+Now I will ask OrgMemory to reconcile the contradiction and prepare for launch.
+
+Again, we skip only the waiting time. The result itself is unchanged.
+
+The agent first reads the conflict. It then calls propose-orgmemory-changes. That tool is marked approval required. OrgMemory creates one proposed change, but applies nothing.
+
+The boundary is visible in the result: the agent may investigate and propose; only a person may approve or decline. There is deliberately no WebMCP tool that can approve its own plan.
+
+The separate approvals surface applies the same boundary to repository refreshes, connector writes, and runbook actions.
+
+Finally, the outcome loop records what happens after context is served. Get-orgmemory-briefing opens a ledger row. Record-orgmemory-outcome closes it with the action and whether it worked. Neither operation changes company memory.
+
+This creates a complete operating loop: context served, action taken, outcome observed.
+
+OrgMemory gives every engineering change its full company context — with evidence, permissions, and human control.

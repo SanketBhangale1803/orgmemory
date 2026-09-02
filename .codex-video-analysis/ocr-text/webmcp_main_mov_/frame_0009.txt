@@ -1,0 +1,36 @@
+Z OrgMemory © WebMCP Live + 16 tools  Toolreference Back to chat
+
+search_orgmemory_records (query: "connection pool", limit: 10)
+
+Customer Support
+Tuauehr ~ Before concluding there is nothing on this, | should check for the more specific term ‘connection poo!’ since ‘payments! alone returned zero hits.
+© matching memories. Design 2
+Engineering
+SRT Infrastructure 3
+| cannot restart a payments connection pool: as a browser agent on OrgMemory, my tools are limited to reading, searching, and proposing changes Launch
+to company memory — none can execute infrastructure actions. | also found no grounding for it: searches for "payments connection poo! restart", ence ’
+"payments", and "connection pool” each returned 0 matching memories (observations 1, 2, 4), and the full project context across all 7 authorized
+i 2 Sis 4 j Securit
+spaces (20 memories, including Infrastructure's 3 memories of type dependency/fact/ownership and Engineering's one incident) contains nothing a
+about a payments service or connection pool. if you need this done, please escalate directly to the on-call/infrastructure owner through your ops or
+incident channel — if you can verify details, | can propose recording it as an incident or creating a follow-up task in OrgMemory for human approval.
+Wow THIS WAS ANSWERED LIVE weBNcP ACTIVITY
+
+docunent .modelContext.registerTool()
+| just joined this launch. Tell me what matters, what changed, and what is unresolved.
+
+AGENT ACTIVITY
+
+get_orgnemory_project_context(space_ids: [7])
+‘Authentication required
+
+WEBNCP SURFACE
+
+READ 18 tools, no approval
+= write 3 tools, approval required
+
+Catch me up Why Are we ready to launch? Reconcile it
+Approve No tool. A person only.
+
+TRANSPORT document.modelcontext
+

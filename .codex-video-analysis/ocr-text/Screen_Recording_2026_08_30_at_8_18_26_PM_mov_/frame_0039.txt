@@ -1,0 +1,41 @@
+ek ape iid @ WebMCP Live + 16 tools Toolreference Back to chat
+
+Test backend release candidate re~14 E
+
+What is blocking production? Complete OAuth security approval Oren
+Promote ro-14 to production stoceo
+Acent acravrry
+Launch checkout OAuth sign-in sLockeD
+find_orgnemory_blockers() 2610 as
+twoucir ~ The question asks what is blocking, so I'll start with the tool purpose-built for root causes of stalls Computed ney graph
+
+1 blocker(s) — Complete OAuth security approval (critical), holding 2 item(s).
+
+Le STANDING WATCH
+
+Production is blocked by one root cause: ‘Complete OAuth security approval' (task {2c73¢449803ee26a507) —a critical, open gate task in the ree ,
+Security space owned by Dana Whitfield, whose description is to record the security review outcome for the external OAuth sign-in surface ks on an interval, wit Finding:
+(evidence: mem_7c6129bc17baa2dac9dc, mem_ac9af353a6c0ec800992). Its own prerequisites are already met, so it is the stall point, and it is Nn ction arrives Ww
+holding two downstream items: 'Promote rc-14 to production’ (task ff14116f9f7603821c55, Infrastructure, Sam Okafor — the checkout deploy eee
+pipeline against the release candidate, mem_4780790dabc00225cd32) and ultimately ‘Launch checkout OAuth sign-in’
+(task_208e635afa464684fdd1, Launch, Priya Raman — Friday 09:00 UTC go-live, mem_6b66865fda20f0e88cdc). Recording the security approval
+‘outcome with Dana unblocks the re~14 promotion and the launch.
+
+ited: | mem_7¢6129¢ | men_acdaf353 | wen_4780790d | wen_6b66865t
+
+Spaces
+
+WoW THIS WAS ANSWERED Customer Support 2
+
+: every call and ¢ ve is live, and nothing was script Design
+
+Engineering
+Infrastructure 3
+
+Launch
+
+Catchmeup Why isthis the priority? Are wereadytolaunch? —_—_—Reconcile it aft
+Product 3
+
+Fix the OAuth issue| @ | Security 2
+

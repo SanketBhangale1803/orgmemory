@@ -1,0 +1,114 @@
+[
+  {
+    "text": "Before an engineer — or an AI agent — changes production, it needs more than code. It needs the incidents, decisions, dependencies, owners, and runbooks surrounding that change.",
+    "startMs": 0,
+    "endMs": 11800,
+    "timestampMs": null,
+    "confidence": null
+  },
+  {
+    "text": "Today, that context is usually scattered across repositories, Slack, and postmortems. OrgMemory brings it together with its evidence, then exposes it through WebMCP using the page's authenticated session.",
+    "startMs": 11800,
+    "endMs": 25800,
+    "timestampMs": null,
+    "confidence": null
+  },
+  {
+    "text": "This is the live production application. The workspace registers thirty-seven browser-native tools: twenty-seven read-only and nine human-governed.",
+    "startMs": 25800,
+    "endMs": 36600,
+    "timestampMs": null,
+    "confidence": null
+  },
+  {
+    "text": "The agent receives organizational context, but never receives a separate credential.",
+    "startMs": 36600,
+    "endMs": 41400,
+    "timestampMs": null,
+    "confidence": null
+  },
+  {
+    "text": "Inside Agent Operations, sixteen focused tools are available for launch reasoning. I will ask a real question: what is blocking the checkout OAuth launch, and what should we do next?",
+    "startMs": 41400,
+    "endMs": 54300,
+    "timestampMs": null,
+    "confidence": null
+  },
+  {
+    "text": "The request is running against the signed-in workspace. We will skip the idle wait and continue from the returned result.",
+    "startMs": 54300,
+    "endMs": 62600,
+    "timestampMs": null,
+    "confidence": null
+  },
+  {
+    "text": "GLM selected find-orgmemory-blockers. It found one critical gate: the OAuth security approval. That gate blocks the production promotion, which blocks the launch.",
+    "startMs": 62600,
+    "endMs": 74200,
+    "timestampMs": null,
+    "confidence": null
+  },
+  {
+    "text": "The answer identifies the owners, the next action, and the memory records that support it.",
+    "startMs": 74200,
+    "endMs": 80400,
+    "timestampMs": null,
+    "confidence": null
+  },
+  {
+    "text": "Now I will ask OrgMemory to reconcile the contradiction and prepare for launch. Again, we skip only the waiting time. The result itself is unchanged.",
+    "startMs": 80400,
+    "endMs": 91400,
+    "timestampMs": null,
+    "confidence": null
+  },
+  {
+    "text": "The agent first reads the conflict. It then calls propose-orgmemory-changes. That tool is marked approval required. OrgMemory creates one proposed change, but applies nothing.",
+    "startMs": 91400,
+    "endMs": 103900,
+    "timestampMs": null,
+    "confidence": null
+  },
+  {
+    "text": "The boundary is visible in the result: the agent may investigate and propose; only a person may approve or decline.",
+    "startMs": 103900,
+    "endMs": 112500,
+    "timestampMs": null,
+    "confidence": null
+  },
+  {
+    "text": "There is deliberately no WebMCP tool that can approve its own plan.",
+    "startMs": 112500,
+    "endMs": 117800,
+    "timestampMs": null,
+    "confidence": null
+  },
+  {
+    "text": "The approvals surface applies the same boundary to repository refreshes, connector writes, and runbook actions.",
+    "startMs": 117800,
+    "endMs": 125600,
+    "timestampMs": null,
+    "confidence": null
+  },
+  {
+    "text": "Finally, the outcome loop records what happens after context is served. Get-orgmemory-briefing opens a ledger row. Record-orgmemory-outcome closes it with the action and whether it worked.",
+    "startMs": 125600,
+    "endMs": 139600,
+    "timestampMs": null,
+    "confidence": null
+  },
+  {
+    "text": "Neither operation changes company memory. This creates a complete operating loop: context served, action taken, outcome observed.",
+    "startMs": 139600,
+    "endMs": 149100,
+    "timestampMs": null,
+    "confidence": null
+  },
+  {
+    "text": "OrgMemory gives every engineering change its full company context — with evidence, permissions, and human control.",
+    "startMs": 149100,
+    "endMs": 160000,
+    "timestampMs": null,
+    "confidence": null
+  }
+]

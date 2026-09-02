@@ -1,0 +1,16 @@
+1
+00:00:00,000 --> 00:00:07,800
+This authenticated page exposes org memory through web mcp
+
+2
+00:00:10,020 --> 00:00:15,580
+browser native tools that use the pages existing sessions and permissions.
+
+3
+00:00:16,080 --> 00:00:18,620
+The agent never receives a separate API credential.
+
+4
+00:00:18,880 --> 00:00:24,560
+It can only access what the user signed in, what the signed in user is allowed to access.
+

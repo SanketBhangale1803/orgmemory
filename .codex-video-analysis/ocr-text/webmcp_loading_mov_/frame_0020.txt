@@ -1,0 +1,95 @@
+B Projects
+
+12 Pull requests
+© Scheduled
+@ Plugins
+
+s+ Explore
+
+Recents
+‘OrgMemory WebMCP Challenge
+Create OrgMemory demo walkthroug:
+Write Linkedin post on memory
+‘Transform OrgMemory into WebMCP
+Assess orgmemory WebMCP submis
+Fix YouTube media downloads
+
+Open Cosmos link in Chrome
+
+List qualified job titles and ATS
+Evaluate vertical Al agent idea
+
+Write GPT-5.6-level model code
+Explain browser agent usage
+Replace collage item 1
+
+Build Welspun pipe traceability
+
+Trim and combine videos
+
+Explain vouch
+
+Start service
+
+Review cosmoweb improvements
+
+@ sanket.bhangale ®
+
+OrgMemory returns a clear verdict: requires approval.
+
+Itidentifies two related incidents, the decision that capped worker concurrency, and the blast radius: payments
+shares a Postgres cluster with the ledger. It also provides the remembered first-response procedure.
+
+Every claim includes a memory ID that a person can open and verify against its original evidence.
+
+This briefing path is deterministic. Running the same intent against the same organizational memory produces
+the same verdict. A production control should not change because a model phrased its answer differently.
+
+1:30-1:50 — Show a read-only intent
+
+The boundary is based on the intended action—not simply the topic.
+A read-only investigation can proceed. A potentially disruptive production action requires human approval.
+
+}0-2:15 — Approvals queue
+
+OrgMemory does not approve its own recommendation.
+Reads are permission-trimmed to the user's team scope. Reporting an outcome only appends to the ledger.
+‘And adding a fact to shared company memory requires a proposal that a human reviews.
+
+Capability is never treated as authorization.
+
+2:15-2:40 — Outcome ledger
+
+Serving the briefing opens an entry in the outcome ledger.
+After acting—from GitHub, PagerDuty, or another system—the agent calls record_orgmemory outcome
+what it did and whether it worked.
+
+Now the loop is complete: context served, action taken, outcome observed.
+
+Over time, OrgMemory learns which company context actually led to successful action.
+
+s
+
+2:40-2:55 — Close on WebMCP manifest
+
+OrgMemory gives every engineering change its full, 1 pany context—with evidence, permissions, and human
+control.
+
+Do anything
+
++ © Approve for me
+
+sesolticny & @
+
+& Local v
+B main v
++© Commit or push
+
+© Compare branch a
+
+Sources oe
+
+codex-clipboard-ad39939d-4c03-4
+WB codex-clipboard-ce7dd775-4e0b-4c
+= codex-clipboard-b569de4c-16a0-44
+& View all

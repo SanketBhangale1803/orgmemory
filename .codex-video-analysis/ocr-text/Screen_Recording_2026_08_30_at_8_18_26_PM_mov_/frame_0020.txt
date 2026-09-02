@@ -1,0 +1,45 @@
+R
+
+‘OrgMemory
+
+Agents operate on organizational memory.
+
+This launch is spread across 7 spaces. The answer to any of the questions below sits in four of
+them at once. Each request runs real tool calls against this workspace — and because this page
+registers the same 16 tools on document.mode Context, a browser agent you connect can call
+them too, without touching this interface.
+
+What is blocking production?
+
+AGENT ACTIVITY
+
+find_orgmemory_blockers()
+THouckt ~ The question asks what is blocking, so I'l start with the tool purpose-built for root causes of stalls,
+
+1 blocker(s) — Complete OAuth security approval (critical), holding 2 item(s).
+
+© WebMCP Live - 16 tools  Toolreference Back to chat
+
+LAUNCH READINESS
+
+NOT READY
+
+Launch checkout OAuth sign-in
+
+Approve final sign-in interface 7
+
+Test backend release candidate rc-14 fe
+Complete OAuth security approval oven
+Promote rc-14 to production BtockeD
+Launch checkout OAuth sign-in stockeD
+
+STANDING WATCH
+
+Start watching
+
+SPACES
+Customer Support
+Design 2
+
+Engineering
+

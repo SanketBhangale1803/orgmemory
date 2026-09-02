@@ -1,0 +1,72 @@
+R
+
+‘OrgMe!
+AGENT OPERATIONS.
+
+WOM THIS WAS ANSWERED
+
+Applied
+
++ Mark “Complete OAuth security approval” complete*oAut
+this task tracks. The task was never updated
+
+put
+
+Now are we ready for launch?
+
+AGENT ACTIVITY
+
+get_orgmemory_readiness()
+
+security review approved for Friday release” (Launch, 2026-08-30T15:42) settles the record
+
+running
+
+Twoucut ~ The question is a launch readiness check, so the most specific tool is the readiness computation over the dependency graph.
+
+READY — 0 blocker(s), 5 checklist items.
+
+jen after Launch settled it?
+
+rity appro\
+
+Ask anything about this organization.
+
+how the pi
+
+oposed OAuth change I need to a
+
+© WebMCP Live » 16 tools
+
+vesign
+Engineering
+Infrastructure
+Launch
+Product
+
+Security
+
+Lave weance AcTviTY
+
+docunent .modeLContext. registerTool(). (
+
+WEBNCP SURFACE
+
+READ
+
+write
+
+APPROVE
+
+TRANSPORT
+
+Tool reference
+
+4B tools, no approval
+3 tools, approval required
+No tool. A person only.
+
+document.modetContext
+
+Back to chat
+

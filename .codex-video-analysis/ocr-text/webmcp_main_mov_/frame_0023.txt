@@ -1,0 +1,8 @@
+IDENTITY
+
+Account
+
+Your identity, active workspace, and who else belongs here.
+
+‘Authentication required
+

@@ -1,0 +1,43 @@
+‘OrgMemory
+
+‘1 change(s) proposed and waiting for a person. Nothing applied. Basis: 10 matching memories. 1 conflict(s) — "Complete OAuth security approval”
+
+is open, but Launch already settled it. The proposed changes are shown below — approving or declining them is a person's call, not the agent's.
+mmen_33f084c0 | wem_fela082c | men_7c6129bc | men_f8416cc7 | nen_ac9af353
+
+WOM THIS WAS ANSWERED
+
+Applied
+
++ Mark “Complete OAuth security approval” complete*OAuth security review approved for Friday release" (Launch, 2026-08-30T15:42) settles the record
+
+this task tracks. The t
+
+s never updated.
+
+Now are we ready for launch?
+
+AGENT ACTIVITY
+
+© WebMCP Live + 16 tools  Toolreference Back to chat
+
+vesign
+Engineering
+Infrastructure
+Launch
+Product
+
+Security 3
+
+Lave Weence ACTIVITY
+
+docunent .modelcontext. registerTool()
+
+WEBNCP SURFACE
+
+READ 48 tools, no approval
+write 3 tools, approval required
+APPROVE No tool. A person only.
+
+TRANSPORT document.modeiContext
+

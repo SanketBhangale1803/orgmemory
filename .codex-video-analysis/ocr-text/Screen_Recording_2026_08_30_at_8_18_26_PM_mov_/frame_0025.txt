@@ -1,0 +1,63 @@
+R
+
+‘OrgMemory
+
+Agents operate on organizational memory.
+
+This launch is spread across 7 spaces. The answer to any of the questions below sits in four of
+
+them at once. Each request runs real tool calls against this workspace — and because this page
+registers the same 16 tools on document .mode Context, a browser agent you connect can call
+them too, without touching this interface.
+
+What is blocking production?
+
+AGENT ACTIVITY
+
+find_orgmemory_blockers() 3
+THoucnt - The question asks what is blocking, so I'l start with the tool purpose-built for root causes of stalls,
+
+1 blocker(s) — Complete OAuth security approval (critical), holding 2 item(s) k
+
+ANSWER
+
+Production is blocked by one root cause: ‘Complete OAuth security approval’ (task f2c73¢449803ee26a507) —a critical, open gate task in the
+Security space owned by Dana Whitfield, whose description is to record the security review outcome for the external OAuth sign-in surface
+(evidence: mem_7c6129bcI7baa2dacSdc, mem_ac9af353a6c0ec800992). Its own prerequisites are already met, so itis the stall point, and it is
+holding two downstream items: 'Promote re-14 to production’ (task_ff14116f9f7603821c55, Infrastructure, Sam Okafor — the checkout deploy
+pipeline against the release candidate, mem_4780790dabc00225ed32) and ultimately ‘Launch checkout OAuth sign-in’
+(task_208e63Safa464684fdd1, Launch, Priya Raman — Friday 09:00 UTC go-live, mem_6b66865fda20f0e88cdc). Recording the security approval
+‘outcome with Dana unblocks the ro~14 promotion and the launch.
+
+snea_7c6129be
+
+wen_acJaf353 | nen_4780790d | nen_6b66865¢
+
+Catch me up Why is this the priority? Are we ready to launch? Reconcile it
+
+© WebMCP Live - 16 tools Tool reference
+
+LAUNCH READINESS
+
+NOT READY
+
+Launch checkout OAuth sign-in
+Approve final sign-in interface
+
+Test backend release candidate rc-14 one
+
+Complete OAuth security approval oven
+Promote ro-14 to production stocks
+Launch checkout OAuth sign-in Locke
+
+STANDING WATCH
+
+SPACES
+
+Customer Support
+Design 2
+
+Engineering
+
+Back to chat
+

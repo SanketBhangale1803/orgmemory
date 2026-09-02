@@ -1,0 +1,58 @@
+R
+
+‘OrgMer
+AGENT OPERATIONS.
+
+WOM THIS WAS ANSWERED
+
+Applied
+
++ Mark “Complete OAuth security approval” complete*oAuth security review approved for Friday release” (Launch, 2026-08-30T15:42) settes the record
+
+this task tracks. The task was never updated
+
+on in this workspace
+
+Now are we ready for launch?
+
+AGENT ACTIVITY
+
+get_orgmemory_readiness()
+
+Twoucut - The question is a launch readiness check, so the most specific tool is the readiness computation over the dependency graph.
+
+READY — 0 biocker(s), 5 checklist items.
+
+r Launch settled it?
+
+Why is OAuth approval
+
+jomplete OAuth 5:
+
+rity approval?
+
+Ask anything about this organizati
+
+ompute
+
+e | need to approve
+
+© WebMCP Live - 16 tools  Toolreference Back to chat
+vesign 2
+Engineering 4
+Infrastructure 3
+Launch 3
+Product -
+Security a
+
+Lave weence AcTIvETY
+
+docunent .modeLContext. registerTool(). Cones
+
+WEONCP SURFACE
+
+ReaD 43 tools, no approval
+wrrte 3 tools, approval required
+approve No tool. A person only.
+TRANSPORT document.mode Context
+

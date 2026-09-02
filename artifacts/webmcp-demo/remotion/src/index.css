@@ -1,0 +1,15 @@
+:root {
+  font-family: "OrgMemory Sans", Arial, sans-serif;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: #06100e;
+  font-family: "OrgMemory Sans", Arial, sans-serif;
+}

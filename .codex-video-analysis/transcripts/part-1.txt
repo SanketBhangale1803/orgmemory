@@ -1,0 +1,5 @@
+or an engineer, or an AI agent, changes production, it needs more than code.
+It needs the incidents, decisions, and dependencies surrounding that change.
+Today, that context is scattered across repositories, slack, and other docs.
+Word memory brings it together with its evidence and through Web MCP
+makes it available to an agent at the moment it needs to act.
