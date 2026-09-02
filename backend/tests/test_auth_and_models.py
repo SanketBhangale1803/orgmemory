@@ -249,10 +249,13 @@ def test_oauth_state_and_sessions_survive_container_loss(graph, monkeypatch):
     assert principal["active_workspace_id"]
     assert principal["role"] == "owner"
 
-    # A tampered token resolves to nothing. The replacement is chosen to be
-    # different from the original last character — appending "x" would be a
-    # no-op roughly one run in 64 and the test would flake.
-    replacement = "y" if session["token"][-1] == "x" else "x"
-    tampered = session["token"][:-1] + replacement
+    # A tampered token resolves to nothing. Corrupt the FIRST signature
+    # character: every base64 character there is fully significant. (The last
+    # character can carry unused padding bits — changing it sometimes decodes
+    # to the identical signature and the token stays valid, which flaked this
+    # test about one run in thirty.)
+    signature_start = session["token"].rfind(".") + 1
+    head = "y" if session["token"][signature_start] != "y" else "z"
+    tampered = session["token"][:signature_start] + head + session["token"][signature_start + 1 :]
     assert tampered != session["token"]
     assert me_from_token(tampered) is None
