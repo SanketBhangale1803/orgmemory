@@ -148,11 +148,17 @@ def get_connector_registry() -> ConnectorRegistry:
     global _REGISTRY
     if _REGISTRY is None:
         from app.connectors.github import GitHubConnector
+        from app.connectors.google_drive import GoogleDriveConnector
+        from app.connectors.notion import NotionConnector
         from app.connectors.slack import SlackConnector
+        from app.connectors.teams import TeamsConnector
 
         registry = ConnectorRegistry()
         registry.register(GitHubConnector, source="builtin")
         registry.register(SlackConnector, source="builtin")
+        registry.register(NotionConnector, source="builtin")
+        registry.register(GoogleDriveConnector, source="builtin")
+        registry.register(TeamsConnector, source="builtin")
         try:
             from app.core.config import settings
 

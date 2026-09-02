@@ -86,6 +86,20 @@ class SlackIngestRequest(BaseModel):
     team_ids: list[str] = Field(default_factory=list, max_length=50)
 
 
+class WebIngestRequest(BaseModel):
+    project_id: str = Field(min_length=4, max_length=128)
+    url: str = Field(min_length=4, max_length=2000)
+    team_ids: list[str] = Field(default_factory=list, max_length=50)
+
+
+class RestSourceCreateRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    base_url: str = Field(min_length=8, max_length=2000)
+    config: dict[str, Any] = Field(default_factory=dict)
+    headers: dict[str, str] = Field(default_factory=dict)
+    version: str = Field("1.0.0", max_length=32)
+
+
 class TokenRequest(BaseModel):
     token: str
     display_name: str = "Local connection"

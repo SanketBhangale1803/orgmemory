@@ -74,6 +74,11 @@ from app.governance import ScopeService
 from app.graph import get_graph_store
 from app.hcag_adapter import HCAGAdapter
 from app.importers import NotConnectedError, get_importer, importer_statuses
+from app.ingestion.documents import (
+    SUPPORTED_UPLOAD_SUFFIXES,
+    UnsupportedDocumentError,
+    extract_document,
+)
 from app.ingestion.maintenance import (
     rebuild_atomic_memories_from_index,
     rebuild_services_from_index,
@@ -82,6 +87,7 @@ from app.ingestion.maintenance import (
 from app.ingestion.repository import RepositoryIngestor
 from app.ingestion.service import IngestionService
 from app.ingestion.slack import SlackIngestor
+from app.ingestion.web import WebFetchError, fetch_web_document
 from app.intelligence import (
     DriftService,
     SimulationService,
@@ -158,6 +164,7 @@ from .schemas import (
     RepositoryRefreshProposalRequest,
     RepositoryRefreshResolutionRequest,
     ResolveRequest,
+    RestSourceCreateRequest,
     SemanticChangeInterpretRequest,
     SimulateRequest,
     SkillCompileRequest,
@@ -165,6 +172,7 @@ from .schemas import (
     TeamCreateRequest,
     TeamMemberRequest,
     UploadRequest,
+    WebIngestRequest,
     WorkspaceCreateRequest,
 )
 
@@ -1497,15 +1505,94 @@ def ingest_upload(request: UploadRequest, authorization: str | None = Header(def
 async def ingest_file(
     project_id: str = Form(...),
     source_type: str = Form("doc"),
+    team_ids: str = Form(""),
     file: UploadFile = File(...),
     authorization: str | None = Header(default=None),
 ):
-    _authorize_project(project_id, authorization, write=True)
-    suffix = Path(file.filename or "upload.txt").suffix.lower()
-    if suffix not in {".md", ".txt", ".json", ".csv", ".log", ".yaml", ".yml"}:
-        raise HTTPException(415, "Unsupported file type")
-    content = (await file.read()).decode("utf-8", errors="replace")
-    return ingestion.ingest_item(project_id, source_type, file.filename or "Upload", content)
+    """Ingest any supported artifact: code and text files, PDF, DOCX, XLSX,
+    PPTX, ODT, RTF, HTML, and mail exports. Binary formats are converted to
+    plain text (page/slide/sheet markers preserved) before chunking, so
+    retrieval and provenance behave exactly like any other source."""
+    principal = _authorize_project(project_id, authorization, write=True)
+    filename = file.filename or "upload.txt"
+    suffix = Path(filename).suffix.lower()
+    if suffix not in SUPPORTED_UPLOAD_SUFFIXES:
+        raise HTTPException(
+            415,
+            "Unsupported file type. Supported: PDF, DOCX, XLSX, PPTX, ODT, RTF, HTML, "
+            "EML, CSV, JSON, YAML, Markdown, and source files.",
+        )
+    data = await file.read()
+    try:
+        document = extract_document(filename, data)
+    except UnsupportedDocumentError as exc:
+        raise HTTPException(415, str(exc)) from exc
+    scoped_team_ids = _validate_team_scope(
+        principal, [item for item in team_ids.replace(",", " ").split() if item]
+    )
+    source_type = "document" if source_type == "doc" else source_type
+    result = ingestion.ingest_item(
+        project_id,
+        source_type,
+        document.title or filename,
+        document.text,
+        metadata={
+            **document.metadata,
+            "path": filename,
+            "team_ids": scoped_team_ids,
+            "actor": principal["id"],
+        },
+    )
+    return {
+        "project_id": project_id,
+        **result,
+        "status": "success",
+        "format": document.format,
+        "warnings": document.warnings,
+    }
+
+
+@router.post("/ingest/website")
+def ingest_website(request: WebIngestRequest, authorization: str | None = Header(default=None)):
+    """Ingest a public web page or hosted document (PDF/DOCX/… served over HTTP).
+
+    SSRF-guarded: the URL is re-resolved and re-validated before every request
+    and every redirect hop, and private or special-use addresses are refused.
+    """
+    principal = _authorize_project(request.project_id, authorization, write=True)
+    team_ids = _validate_team_scope(principal, request.team_ids)
+    job_id = _create_job("website", request.url, project_id=request.project_id)
+    try:
+        document, fetch_metadata = fetch_web_document(request.url)
+        result = ingestion.ingest_item(
+            request.project_id,
+            "web_page",
+            document.title or request.url,
+            document.text,
+            source_url=fetch_metadata["final_url"],
+            metadata={
+                **document.metadata,
+                **fetch_metadata,
+                "team_ids": team_ids,
+                "actor": principal["id"],
+            },
+        )
+        _finish_job(job_id, "succeeded", {"project_id": request.project_id, **result})
+        return {
+            "job_id": job_id,
+            "project_id": request.project_id,
+            **result,
+            "status": "success",
+            "format": document.format,
+            "final_url": fetch_metadata["final_url"],
+            "warnings": document.warnings,
+        }
+    except (WebFetchError, UnsupportedDocumentError) as exc:
+        _fail_job(job_id, exc)
+        fail(exc)
+    except Exception as exc:
+        _fail_job(job_id, exc)
+        fail(exc)
 
 
 @router.post("/ingest/slack")
@@ -3664,6 +3751,30 @@ def register_custom_connector(
             oauth=request.oauth,
             manifest_payload=request.manifest,
             signing_key_id=request.signing_key_id,
+        )
+    except Exception as exc:
+        fail(exc)
+
+
+@router.post("/connectors/custom/rest-sources")
+def register_rest_source(
+    request: RestSourceCreateRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Register any JSON-over-HTTPS platform as a scheduled sync source."""
+    principal = _authorize_workspace(authorization, admin=True)
+    if not settings.connector_rest_sources_enabled:
+        raise HTTPException(403, "Custom API source registration is disabled")
+    if not request.base_url.lower().startswith("https://"):
+        raise HTTPException(422, "API source URLs must use HTTPS")
+    try:
+        return connector_runtime.register_rest_source(
+            principal,
+            name=request.name,
+            base_url=request.base_url,
+            config=request.config,
+            headers=request.headers,
+            version=request.version,
         )
     except Exception as exc:
         fail(exc)

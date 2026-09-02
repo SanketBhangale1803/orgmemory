@@ -88,6 +88,8 @@ class Settings(BaseSettings):
     slack_signing_secret: str = ""
     slack_redirect_uri: str = "http://localhost:8000/api/auth/slack/callback"
     slack_bot_token: str = ""
+    notion_client_id: str = ""
+    notion_client_secret: str = ""
     integration_encryption_key: str = ""
     connector_vault_provider: str = "local"
     connector_kms_key_id: str = ""
@@ -101,6 +103,7 @@ class Settings(BaseSettings):
     # How often standing organizational watches are re-evaluated.
     org_watch_poll_seconds: int = 120
     connector_custom_mcp_enabled: bool = True
+    connector_rest_sources_enabled: bool = True
     connector_custom_mcp_allow_private_networks: bool = False
 
     mcp_public_url: str = "http://localhost:8001"

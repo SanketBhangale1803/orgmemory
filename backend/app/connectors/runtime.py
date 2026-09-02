@@ -5,12 +5,13 @@ import re
 from typing import Any
 
 from app.audit import AuditService
-from app.auth.vault import OAuthTokenVault
+from app.auth.vault import OAuthTokenVault, configured_cipher
 from app.core.database import connect, new_id, row, rows, utcnow
 
 from .base import Connector, ConnectorCapabilityError, ToolKind
 from .registry import ConnectorRegistry, get_connector_registry
 from .remote_mcp import RemoteMCPConnector, manifest_from_registration
+from .rest_pull import RestPullConnector
 from .stubs.registry import connector_catalog as product_connector_catalog
 from .url_security import validate_remote_connector_url
 
@@ -30,6 +31,20 @@ def _result_summary(result: Any) -> dict[str, Any]:
     if isinstance(result, list):
         return {"items": len(result), "redacted": True}
     return {"type": type(result).__name__, "redacted": True}
+
+
+def custom_connector_kind(record: dict[str, Any]) -> str:
+    try:
+        config = json.loads(record.get("manifest_json") or "{}")
+    except (ValueError, TypeError):
+        config = {}
+    return str(config.get("kind") or "remote_mcp")
+
+
+def custom_connector_from_record(record: dict[str, Any], vault: OAuthTokenVault) -> Connector:
+    if custom_connector_kind(record) == "rest":
+        return RestPullConnector(record, vault)
+    return RemoteMCPConnector(record, vault)
 
 
 class ConnectorRuntime:
@@ -61,7 +76,7 @@ class ConnectorRuntime:
             )
             if not record:
                 raise
-            return RemoteMCPConnector(record, self.vault(principal))
+            return custom_connector_from_record(record, self.vault(principal))
 
     def list_connectors(self, principal: dict[str, Any]) -> list[dict[str, Any]]:
         result = []
@@ -80,7 +95,7 @@ class ConnectorRuntime:
             ORDER BY name""",
             (principal["active_workspace_id"],),
         ):
-            connector = RemoteMCPConnector(record, self.vault(principal))
+            connector = custom_connector_from_record(record, self.vault(principal))
             status = connector.status()
             result.append({**status.__dict__, "manifest": connector.manifest.public_dict()})
         return result
@@ -109,15 +124,19 @@ class ConnectorRuntime:
                 ORDER BY name""",
                 (principal["active_workspace_id"],),
             ):
-                manifest = RemoteMCPConnector(record, self.vault(principal)).manifest
+                connector = custom_connector_from_record(record, self.vault(principal))
+                manifest = connector.manifest
                 installed.add(manifest.id)
+                kind = custom_connector_kind(record)
                 catalog.append(
                     {
                         "provider": manifest.id,
                         "label": manifest.name,
-                        "category": "Custom remote MCP",
-                        "connector_type": "custom_mcp",
-                        "role": "tool",
+                        "category": (
+                            "Custom remote MCP" if kind == "remote_mcp" else "Custom API source"
+                        ),
+                        "connector_type": "custom_mcp" if kind == "remote_mcp" else "custom_rest",
+                        "role": "tool" if kind == "remote_mcp" else "source_and_tool",
                         "status": "live",
                         "memory": [resource.label for resource in manifest.resources],
                         "manifest": manifest.public_dict(),
@@ -219,6 +238,109 @@ class ConnectorRuntime:
                 "server_url": server_url,
                 "version": version,
                 "manifest_digest": digest,
+            },
+        )
+        record = row(
+            "SELECT * FROM custom_connectors WHERE workspace_id=? AND provider=?",
+            (principal["active_workspace_id"], provider),
+        )
+        return self._public_custom(record or {})
+
+    def register_rest_source(
+        self,
+        principal: dict[str, Any],
+        *,
+        name: str,
+        base_url: str,
+        config: dict[str, Any],
+        headers: dict[str, str] | None = None,
+        version: str = "1.0.0",
+    ) -> dict[str, Any]:
+        """Register a workspace API source pulled on schedule.
+
+        Any platform that can serve a JSON list over HTTPS becomes a sync
+        source. Headers (e.g. ``Authorization``) are encrypted under the
+        workspace scope and never returned through the API.
+        """
+        base_url = validate_remote_connector_url(base_url)
+        slug = re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")[:48]
+        if not slug:
+            raise ValueError("Source name must contain a letter or number")
+        provider = f"custom.{principal['active_workspace_id']}.{slug}"
+        payload = {
+            "kind": "rest",
+            "icon": str(config.get("icon") or "api"),
+            "resource_type": str(config.get("resource_type") or "record"),
+            "items_path": str(config.get("items_path") or ""),
+            "id_field": str(config.get("id_field") or "id"),
+            "title_field": str(config.get("title_field") or "title"),
+            "content_fields": list(
+                config.get("content_fields") or ["content", "body", "description"]
+            ),
+            "url_field": str(config.get("url_field") or "url"),
+            "updated_field": str(config.get("updated_field") or "updated_at"),
+            "page_param": str(config.get("page_param") or ""),
+            "page_size": int(config.get("page_size") or 0),
+            "page_size_param": str(config.get("page_size_param") or "per_page"),
+            "next_url_path": str(config.get("next_url_path") or ""),
+            "base_url": base_url,
+        }
+        oauth_payload: dict[str, Any] = {}
+        if headers:
+            cipher = configured_cipher()
+            context = {
+                "application": "orgmemory",
+                "workspace_id": str(principal["active_workspace_id"]),
+                "user_id": "",
+                "provider": provider,
+            }
+            oauth_payload["headers_encrypted"] = cipher.encrypt(json.dumps(dict(headers)), context)
+        now = utcnow()
+        with connect() as conn:
+            conn.execute(
+                """INSERT INTO custom_connectors
+                (id,workspace_id,created_by,provider,name,server_url,version,oauth_json,
+                 manifest_json,manifest_digest,signing_key_id,status,created_at,updated_at,revoked_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,'workspace-attested','active',?,?,NULL)
+                ON CONFLICT(workspace_id,provider) DO UPDATE SET
+                  name=excluded.name,server_url=excluded.server_url,version=excluded.version,
+                  oauth_json=excluded.oauth_json,manifest_json=excluded.manifest_json,
+                  manifest_digest=excluded.manifest_digest,
+                  signing_key_id=excluded.signing_key_id,status='active',
+                  updated_at=excluded.updated_at,revoked_at=NULL""",
+                (
+                    new_id("custom"),
+                    principal["active_workspace_id"],
+                    principal["id"],
+                    provider,
+                    name.strip(),
+                    base_url,
+                    version,
+                    json.dumps(oauth_payload),
+                    json.dumps(payload),
+                    "",
+                    now,
+                    now,
+                ),
+            )
+        record = row(
+            "SELECT * FROM custom_connectors WHERE workspace_id=? AND provider=?",
+            (principal["active_workspace_id"], provider),
+        )
+        digest = RestPullConnector(record or {}).manifest.digest()
+        with connect() as conn:
+            conn.execute(
+                "UPDATE custom_connectors SET manifest_digest=? WHERE workspace_id=? AND provider=?",
+                (digest, principal["active_workspace_id"], provider),
+            )
+        self.audit.record(
+            "connector.rest.registered",
+            f"Registered API source {name.strip()}",
+            actor=str(principal["id"]),
+            payload={
+                "workspace_id": principal["active_workspace_id"],
+                "provider": provider,
+                "base_url": base_url,
             },
         )
         record = row(

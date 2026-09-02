@@ -56,6 +56,22 @@ class SyncEngine:
         self.audit = audit or AuditService()
         self.rate_limiter = ConnectorRateLimiter()
 
+    def _resolve_connector(self, provider: str, vault: OAuthTokenVault):
+        """Built-in and installed packages first, then workspace registrations."""
+        try:
+            return self.registry.get(provider, vault)
+        except KeyError:
+            from .runtime import custom_connector_from_record
+
+            record = row(
+                """SELECT * FROM custom_connectors
+                WHERE workspace_id=? AND provider=? AND status='active' AND revoked_at IS NULL""",
+                (vault.workspace_id, provider),
+            )
+            if not record:
+                raise
+            return custom_connector_from_record(record, vault)
+
     def enqueue(
         self,
         provider: str,
@@ -67,7 +83,9 @@ class SyncEngine:
         cursor: dict[str, Any] | None = None,
         idempotency_key: str = "",
     ) -> dict[str, Any]:
-        manifest = self.registry.get(provider, OAuthTokenVault(workspace_id, user_id)).manifest
+        manifest = self._resolve_connector(
+            provider, OAuthTokenVault(workspace_id, user_id)
+        ).manifest
         cursor = {**(cursor or {}), "resource_id": resource_id}
         key = (
             idempotency_key
@@ -259,7 +277,7 @@ class SyncEngine:
         if not job:
             return
         vault = OAuthTokenVault(job["workspace_id"], job["user_id"])
-        connector = self.registry.get(job["provider"], vault)
+        connector = self._resolve_connector(job["provider"], vault)
         account = vault.account(job["provider"])
         if not account:
             self._retry(job, ValueError("Delegated OAuth grant is disconnected"))
@@ -326,7 +344,7 @@ class SyncEngine:
             self._retry(job, exc)
 
     def _retry(self, job: dict[str, Any], exc: Exception) -> None:
-        connector = self.registry.get(
+        connector = self._resolve_connector(
             job["provider"], OAuthTokenVault(job["workspace_id"], job["user_id"])
         )
         attempts = int(job["attempts"]) + 1

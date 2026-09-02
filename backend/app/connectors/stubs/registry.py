@@ -41,7 +41,7 @@ def connector_catalog() -> list[dict[str, Any]]:
             "label": "Google Drive",
             "category": "Google Workspace",
             "role": "source",
-            "status": "next",
+            "status": "live",
             "memory": ["Docs", "Sheets", "Slides", "shared files"],
         },
         {
@@ -65,8 +65,8 @@ def connector_catalog() -> list[dict[str, Any]]:
             "label": "Microsoft Teams",
             "category": "Microsoft",
             "role": "source_and_channel",
-            "status": "next",
-            "memory": ["chats", "channels", "meetings", "approved replies"],
+            "status": "live",
+            "memory": ["channel messages", "teams", "shared files"],
         },
         {
             "provider": "outlook",
@@ -89,8 +89,8 @@ def connector_catalog() -> list[dict[str, Any]]:
             "label": "Notion",
             "category": "Knowledge",
             "role": "source",
-            "status": "planned",
-            "memory": ["pages", "databases", "comments"],
+            "status": "live",
+            "memory": ["pages", "databases", "database rows"],
         },
         {
             "provider": "linear",
@@ -123,6 +123,22 @@ def connector_catalog() -> list[dict[str, Any]]:
             "role": "source_and_channel",
             "status": "planned",
             "memory": ["mail", "threads", "attachments"],
+        },
+        {
+            "provider": "web",
+            "label": "Websites & hosted documents",
+            "category": "Knowledge",
+            "role": "source",
+            "status": "live",
+            "memory": ["public web pages", "hosted PDFs", "hosted documents"],
+        },
+        {
+            "provider": "custom_rest_source",
+            "label": "Any API (custom REST source)",
+            "category": "Universal ingestion",
+            "role": "source",
+            "status": "live",
+            "memory": ["any JSON-over-HTTPS platform with scheduled pull"],
         },
         {
             "provider": "mcp",

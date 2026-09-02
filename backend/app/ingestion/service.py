@@ -41,6 +41,12 @@ DOCUMENT_SOURCE_TYPES = {
     "report",
     "text",
     "upload",
+    "web_page",
+    "pdf",
+    "spreadsheet",
+    "presentation",
+    "email",
+    "email_export",
 }
 SUPPORTED_SOURCE_TYPES = REPOSITORY_SOURCE_TYPES | SLACK_SOURCE_TYPES | DOCUMENT_SOURCE_TYPES
 

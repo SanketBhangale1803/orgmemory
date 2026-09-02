@@ -358,6 +358,20 @@ class OAuthTokenVault:
         account = self.account(provider)
         return account.access_token if account else None
 
+    def refresh_token(self, provider: str) -> str:
+        """The stored refresh token for the delegated grant, if one exists."""
+        if not self.workspace_id or not self.user_id:
+            return ""
+        records = rows(
+            """SELECT refresh_token_encrypted FROM oauth_token_grants
+            WHERE workspace_id=? AND user_id=? AND provider=? AND status='connected'
+            ORDER BY updated_at DESC LIMIT 1""",
+            (self.workspace_id, self.user_id, provider),
+        )
+        if not records or not records[0].get("refresh_token_encrypted"):
+            return ""
+        return self.cipher.decrypt(records[0]["refresh_token_encrypted"], self._context(provider))
+
     def status(self, provider: str) -> list[dict[str, Any]]:
         if not self.workspace_id:
             return []
