@@ -249,5 +249,10 @@ def test_oauth_state_and_sessions_survive_container_loss(graph, monkeypatch):
     assert principal["active_workspace_id"]
     assert principal["role"] == "owner"
 
-    # A tampered token resolves to nothing.
-    assert me_from_token("omr_" + session["token"].removeprefix("omr_")[:-1] + "x") is None
+    # A tampered token resolves to nothing. The replacement is chosen to be
+    # different from the original last character — appending "x" would be a
+    # no-op roughly one run in 64 and the test would flake.
+    replacement = "y" if session["token"][-1] == "x" else "x"
+    tampered = session["token"][:-1] + replacement
+    assert tampered != session["token"]
+    assert me_from_token(tampered) is None
