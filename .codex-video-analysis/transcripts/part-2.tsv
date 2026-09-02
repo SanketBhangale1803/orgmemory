@@ -1,5 +1,0 @@
-start	end	text
-0	7800	This authenticated page exposes org memory through web mcp
-10020	15580	browser native tools that use the pages existing sessions and permissions.
-16080	18620	The agent never receives a separate API credential.
-18880	24560	It can only access what the user signed in, what the signed in user is allowed to access.
