@@ -6,10 +6,14 @@ import Page from "@/components/Page";
 import GitHubIcon from "@/components/icons/GitHubIcon";
 import { api } from "@/lib/api";
 
-type SourceKind = "paste" | "github" | "slack";
+type SourceKind = "paste" | "github" | "slack" | "website" | "files";
+
+const DOCUMENT_ACCEPT = ".md,.markdown,.txt,.json,.yaml,.yml,.toml,.xml,.csv,.tsv,.log,.pdf,.docx,.xlsx,.pptx,.odt,.rtf,.html,.htm,.eml,.py,.js,.ts,.tsx,.jsx,.go,.rs,.java,.sh,.sql";
 
 const sourceChoices = [
   {id: "paste", icon: "✦", title: "Paste knowledge", note: "Fastest", description: "A decision, policy, report, or any useful context."},
+  {id: "files", icon: "📎", title: "Upload documents", note: "PDF · Office", description: "PDF, Word, Excel, PowerPoint, HTML, mail exports, code, and text."},
+  {id: "website", icon: "🌐", title: "Ingest a website", note: "Public URL", description: "A web page or a hosted document becomes searchable memory."},
   {id: "github", icon: "github", title: "Connect a repository", note: "Automatic", description: "Code, docs, issues, pull requests, and ownership."},
   {id: "slack", icon: "SL", title: "Remember a channel", note: "Continuous", description: "Team decisions, conventions, and conversations."},
 ] as const;
@@ -30,6 +34,9 @@ export default function Ingest() {
   const [channel, setChannel] = useState("");
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
+  const [websiteUrl, setWebsiteUrl] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
+  const [fileProgress, setFileProgress] = useState("");
   const [sourceType, setSourceType] = useState("doc");
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState(0);
@@ -93,6 +100,29 @@ export default function Ingest() {
           method: "POST",
           body: JSON.stringify({repo_url_or_path: repo, project_name: repoName || selectedRepo?.full_name || selectedRepo?.name, team_ids}),
         });
+      } else if (kind === "website") {
+        const projectId = await ensureProject();
+        response = await api("/api/ingest/website", {
+          method: "POST",
+          body: JSON.stringify({project_id: projectId, url: websiteUrl.trim(), team_ids}),
+        });
+      } else if (kind === "files") {
+        const projectId = await ensureProject();
+        const aggregate: any = {chunks_created: 0, memory_units_created: 0, warnings: [] as string[], project_id: projectId};
+        for (let index = 0; index < files.length; index += 1) {
+          const file = files[index];
+          setFileProgress(`Uploading ${file.name} (${index + 1}/${files.length})…`);
+          const form = new FormData();
+          form.append("project_id", projectId);
+          form.append("file", file);
+          const uploaded: any = await api("/api/ingest/file", {method: "POST", body: form});
+          aggregate.chunks_created += uploaded.chunks_created ?? 0;
+          aggregate.memory_units_created += uploaded.memory_units_created ?? 0;
+          aggregate.warnings.push(...(uploaded.warnings || []));
+          aggregate.format = uploaded.format;
+        }
+        setFileProgress("");
+        response = aggregate;
       } else if (kind === "slack") {
         const projectId = await ensureProject();
         response = await api("/api/ingest/slack", {
@@ -131,7 +161,15 @@ export default function Ingest() {
     }
   }
 
-  const canBuild = kind === "paste" ? Boolean(content.trim() && (project !== "__new__" || newProject.trim())) : kind === "github" ? Boolean(repo && (repoName || selectedRepo)) : Boolean(channel && (project !== "__new__" || newProject.trim()));
+  const canBuild = kind === "paste"
+    ? Boolean(content.trim() && (project !== "__new__" || newProject.trim()))
+    : kind === "github"
+      ? Boolean(repo && (repoName || selectedRepo))
+      : kind === "website"
+        ? Boolean(/^https?:\/\/.+\..+|^[^\s]+\.[^\s]+/.test(websiteUrl.trim()) && (project !== "__new__" || newProject.trim()))
+        : kind === "files"
+          ? Boolean(files.length && (project !== "__new__" || newProject.trim()))
+          : Boolean(channel && (project !== "__new__" || newProject.trim()));
   const memoryCount = result?.memory_units_created ?? result?.memory_unit_ids?.length ?? 0;
 
   return <Page eyebrow="Build company memory" title="Add knowledge" description="Choose a source. OrgMemory handles chunking, memory extraction, relationships, and indexing automatically.">
@@ -162,6 +200,21 @@ export default function Ingest() {
             <input aria-label="Source title" value={title} onChange={event => setTitle(event.target.value)} placeholder="Optional source title" />
           </div>}
 
+          {kind === "website" && <div className="quick-memory-form">
+            <div className="builder-title"><span className="source-hero-icon">🌐</span><div><h2>Ingest a website</h2><p>Public pages and hosted documents (PDF, DOCX, and more) are fetched, converted to text, and indexed with a link back to the source.</p></div></div>
+            <input autoFocus aria-label="Website URL" value={websiteUrl} onChange={event => setWebsiteUrl(event.target.value)} placeholder="https://company.example.com/runbook or https://docs.example.com/architecture.pdf" />
+            <p className="privacy-note"><i/> Public URLs only. Private addresses are refused; redirects are validated on every hop.</p>
+          </div>}
+
+          {kind === "files" && <div className="quick-memory-form">
+            <div className="builder-title"><span className="source-hero-icon">📎</span><div><h2>Upload documents</h2><p>PDF, Word, Excel, PowerPoint, OpenDocument, HTML, mail exports, CSV/JSON/YAML, and source files. Page, slide, and sheet structure is preserved.</p></div></div>
+            <label className="file-drop">
+              <input type="file" multiple accept={DOCUMENT_ACCEPT} onChange={event => setFiles(Array.from(event.target.files || []))} />
+              {files.length ? <><strong>{files.length} file{files.length === 1 ? "" : "s"} selected</strong><span>{files.map(file => file.name).join(", ").slice(0, 120)}{files.map(file => file.name).join(", ").length > 120 ? "…" : ""}</span></> : <><strong>Choose files</strong><span>or drop them here — up to 100MB per file</span></>}
+            </label>
+            {fileProgress && <p className="privacy-note">{fileProgress}</p>}
+          </div>}
+
           {kind === "github" && <div className="quick-memory-form">
             <div className="builder-title"><span className="source-hero-icon"><GitHubIcon size={27}/></span><div><h2>Choose a repository</h2><p>OrgMemory reads the repository and builds its project memory automatically.</p></div></div>
             {!connected("github") ? <div className="builder-connect"><strong>Connect GitHub once</strong><p>Authorize the repositories you want OrgMemory to remember.</p><Link className="button" href="/connectors">Connect GitHub →</Link></div> : <><select aria-label="GitHub repository" value={repo} onChange={event => {setRepo(event.target.value);const match=repositories.find(item=>item.clone_url===event.target.value);setRepoName(match?.full_name || match?.name || "");}}><option value="">Select a repository…</option>{repositories.map(item => <option key={item.id} value={item.clone_url}>{item.full_name}{item.private ? " · Private" : ""}</option>)}</select><p className="privacy-note"><i/> Private repositories supported. Existing source permissions are preserved.</p>
@@ -190,7 +243,7 @@ export default function Ingest() {
           <details className="builder-options"><summary>Options <span>Team visibility and source type</span></summary><div>{teams.length ? <div className="field"><label>Visible to</label><select value={team} onChange={event => setTeam(event.target.value)}><option value="">Everyone in this workspace</option>{teams.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></div> : null}{kind === "paste" && <div className="field"><label>Source type</label><select value={sourceType} onChange={event => setSourceType(event.target.value)}>{["doc","report","slack_export","incident","log","text"].map(value => <option key={value}>{value.replace(/_/g," ")}</option>)}</select></div>}</div></details>
 
           {error && <div className="notice error">{error}</div>}
-          {busy ? <div className="memory-building"><div className="memory-pulse"><i/><i/><i/></div><div><strong>{["Reading the source…","Extracting atomic memory…","Linking the memory graph…"][phase]}</strong><span>Source → chunks → memory → relationships</span></div></div> : <button className="button builder-submit" disabled={!canBuild} onClick={buildMemory}>{kind === "paste" ? "Remember this" : kind === "github" ? "Build repository memory" : "Remember this channel"}<span>→</span></button>}
+          {busy ? <div className="memory-building"><div className="memory-pulse"><i/><i/><i/></div><div><strong>{kind === "files" && fileProgress ? fileProgress : ["Reading the source…","Extracting atomic memory…","Linking the memory graph…"][phase]}</strong><span>Source → chunks → memory → relationships</span></div></div> : <button className="button builder-submit" disabled={!canBuild} onClick={buildMemory}>{kind === "paste" ? "Remember this" : kind === "github" ? "Build repository memory" : kind === "website" ? "Ingest this page" : kind === "files" ? "Remember these files" : "Remember this channel"}<span>→</span></button>}
         </div>
       </> : <section className="memory-success">
         <div className="success-rings"><i/><i/><i/><span>✓</span></div>

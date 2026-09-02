@@ -845,6 +845,11 @@ input:focus, textarea:focus, select:focus { border-color: #914d5e; box-shadow: 0
 .builder-connect p { color:var(--muted); font-size:11px; margin:7px 0 17px; }
 .privacy-note { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:10px; }
 .privacy-note i { width:7px; height:7px; border-radius:50%; background:#c75974; box-shadow:0 0 0 4px rgba(199,89,116,.1); }
+.file-drop { display:flex; flex-direction:column; gap:4px; justify-content:center; padding:26px 20px; border:1px dashed #d0bfc3; border-radius:10px; background:#fbf8f9; cursor:pointer; text-align:center; }
+.file-drop:hover { border-color:#b59aa0; background:#f7f1f2; }
+.file-drop input { display:none; }
+.file-drop strong { font-size:13px; }
+.file-drop span { color:var(--muted); font-size:10px; word-break:break-all; }
 
 .memory-building { min-height:62px; display:flex; align-items:center; justify-content:center; gap:18px; border-radius:9px; background:#f3dfe4; color:var(--ink-strong); animation:builder-glow 1.8s ease-in-out infinite; }
 .memory-building > div:last-child { display:flex; flex-direction:column; gap:5px; }

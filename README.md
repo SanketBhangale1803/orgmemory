@@ -11,7 +11,7 @@ Built for the [OpenAI WebMCP Challenge](https://openai.com/webmcp-challenge/). T
 | **Stack** | Next.js 15 · React 19 · FastAPI · Python 3.13 · SQLite + ArcadeDB |
 | **WebMCP tools** | 21 — 14 read-only, 1 ledger-append, 6 human-governed |
 | **Surfaces** | Web app · REST API · Python SDK · CLI · MCP server (stdio + HTTP) |
-| **Tests** | 258 backend · 23 frontend · 5 SDK |
+| **Tests** | 305 backend · 26 frontend · 5 SDK · CI on every push |
 
 ---
 
@@ -565,7 +565,7 @@ Current state:
 
 | Suite | Result |
 |---|---|
-| Backend (`pytest backend`) | 258 passed, 1 skipped (deliberate live-LLM contract test) |
+| Backend (`pytest backend`) | 300 passed, 1 skipped (deliberate live-LLM contract test) |
 | Frontend (`node:test`) | 23 passed |
 | Python SDK | 5 passed |
 | `ruff` / `black` / `tsc` | clean |
@@ -606,7 +606,7 @@ Service matching is against `scope.service`, the subject, and the body. If the e
 ## Known limitations
 
 - Extraction is deliberately conservative and primarily deterministic. GPT, Claude, Gemini, Grok, or Kimi may synthesize answers but cannot promote unsupported memory.
-- GitHub, Slack, uploads, API, Python, CLI, and MCP are live. Google Workspace, Gmail, Microsoft 365, Teams, Outlook, and Atlassian remain adapter work.
+- GitHub, Slack, uploads (PDF/DOCX/XLSX/PPTX/ODT/RTF/HTML/EML), websites, Notion, Google Drive, Microsoft Teams, custom REST API sources, API, Python, CLI, and MCP are live. Gmail, Microsoft 365 (SharePoint/OneDrive), Outlook, and Atlassian remain adapter work; any JSON-over-HTTPS platform can already be ingested through a custom REST source.
 - Conflict matching relies on normalized subjects; entity-assisted and model-assisted reconciliation would improve it.
 - Profiles are assembled on read from current memories rather than materialized incrementally.
 - Team grants are project- and source-scoped. Field-level classification and external identity-group sync are not implemented.
