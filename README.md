@@ -636,6 +636,12 @@ Service matching is against `scope.service`, the subject, and the body. If the e
 
 ---
 
+## License
+
+OrgMemory is released under the [MIT License](LICENSE).
+
+---
+
 ## Product boundary
 
 OrgMemory is organization-specific rather than a generic memory API: company, project, repository, service, and person profiles; temporal validity; conflicts; permission-aware retrieval; an inspectable company graph; and approval-aware work. The web app is the starting point — channels, IDEs, SDKs, CLI, and MCP are delivery surfaces for the same governed brain.
