@@ -9,7 +9,7 @@ Built for the [OpenAI WebMCP Challenge](https://openai.com/webmcp-challenge/). T
 | | |
 |---|---|
 | **Stack** | Next.js 15 · React 19 · FastAPI · Python 3.13 · SQLite + ArcadeDB |
-| **WebMCP tools** | 21 — 14 read-only, 1 ledger-append, 6 human-governed |
+| **WebMCP tools** | 37 in the signed-in workspace — 21 read-only, 1 ledger-append, 15 human-governed; the agent console registers the 16-tool org-operations subset |
 | **Surfaces** | Web app · REST API · Python SDK · CLI · MCP server (stdio + HTTP) |
 | **Tests** | 305 backend · 26 frontend · 5 SDK · CI on every push |
 

@@ -1,11 +1,7 @@
 import Link from "next/link";
 import HomeCommandOrb from "@/components/HomeCommandOrb";
 import { RunbookMark } from "@/components/RunbookLogo";
-import {
-  WEBMCP_GOVERNED_TOOL_COUNT,
-  WEBMCP_READ_TOOL_COUNT,
-  WEBMCP_TOOL_CATALOG,
-} from "@/lib/webmcpCatalog";
+import { ORG_READ_TOOLS, ORG_TOOL_NAMES, ORG_WRITE_TOOLS } from "@/lib/orgTools";
 
 /* The landing page names the vertical in the first two lines.
    "Organizational memory" describes a category and sells to nobody. Engineering
@@ -41,7 +37,10 @@ export default function HomePage() {
         <HomeCommandOrb />
         <Link href="/webmcp" className="entry-webmcp-status">
           <span><i /> WebMCP ready</span>
-          <small>{WEBMCP_TOOL_CATALOG.length} tools · {WEBMCP_READ_TOOL_COUNT} read-only · {WEBMCP_GOVERNED_TOOL_COUNT} human-governed</small>
+          {/* Counts must match what the authenticated page actually registers
+              (ORG_TOOLS — the same source /webmcp reports); the marketing
+              catalog is a larger superset and would overstate the live surface. */}
+          <small>{ORG_TOOL_NAMES.length} tools · {ORG_READ_TOOLS.length} read-only · {ORG_WRITE_TOOLS.length} human-governed</small>
           <b aria-hidden="true">→</b>
         </Link>
       </section>
